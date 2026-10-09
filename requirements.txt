@@ -1,0 +1,9 @@
+# Dépendances d'exécution (versions exactes, auditées avec pip-audit)
+requests==2.33.0
+websocket-client==1.8.0
+paho-mqtt==2.1.0
+pandas==2.2.2
+numpy==2.4.4
+scikit-learn==1.5.1
+joblib==1.4.2
+python-dotenv==1.2.2

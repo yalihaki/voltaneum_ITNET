@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+models/
+backups/
+logs/
+__pycache__/
+.pytest_cache/
+
+.venv/

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.voltaneum.main</string>
+    <key>WorkingDirectory</key><string>/Users/voltaneum/Voltaneum</string>
+    <key>ProgramArguments</key>
+    <array><string>/Users/voltaneum/Voltaneum/venv/bin/python</string><string>/Users/voltaneum/Voltaneum/main.py</string></array>
+    <key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/Users/voltaneum/Voltaneum/logs/main.log</string>
+    <key>StandardErrorPath</key><string>/Users/voltaneum/Voltaneum/logs/main.error.log</string>
+</dict>
+</plist>

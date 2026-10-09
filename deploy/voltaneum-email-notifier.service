@@ -1,0 +1,22 @@
+[Unit]
+Description=Voltaneum email notifier
+After=network-online.target voltaneum.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voltaneum
+Group=voltaneum
+WorkingDirectory=/opt/voltaneum
+EnvironmentFile=/opt/voltaneum/.env
+ExecStart=/opt/voltaneum/venv/bin/python -m notifications.email_notifier
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/voltaneum
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+# Outils de test et de contrôle qualité (développement uniquement)
+-r requirements.txt
+pytest==9.0.3
+ruff==0.6.9
+mypy==1.11.1
+pip-audit==2.7.3
+bandit==1.9.4
