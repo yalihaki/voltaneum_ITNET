@@ -12,8 +12,8 @@
 #
 # Options :
 #     --db <chemin>   base SQLite de sortie (défaut : voltaneum.db, dans le projet)
-#     --status        état de la collecte (processus, dernières mesures, logs)
-#     --stop          arrête la collecte et retire la tâche cron
+#     --status        état de la collecte (processus, dernières mesures, logs) ; "status" accepté
+#     --stop          arrête la collecte et retire la tâche cron ; "stop" accepté
 #     --dry-run       affiche la tâche cron sans rien modifier
 set -euo pipefail
 
@@ -27,8 +27,8 @@ DRY_RUN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --db) DB_PATH="${2:?--db attend un chemin}"; shift 2 ;;
-        --status) ACTION="status"; shift ;;
-        --stop) ACTION="stop"; shift ;;
+        --status|status) ACTION="status"; shift ;;
+        --stop|stop) ACTION="stop"; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         *) echo "Option inconnue : $1" >&2; exit 2 ;;
     esac
