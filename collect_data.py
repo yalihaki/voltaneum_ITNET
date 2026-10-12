@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import signal
 import threading
 import time
@@ -30,6 +31,25 @@ def telemetry_count(db_path: str) -> int:
     with sqlite_client.connect(db_path) as connection:
         row = connection.execute("SELECT COUNT(*) FROM telemetry").fetchone()
     return int(row[0]) if row else 0
+
+
+def configure_logging(log_file: str | None) -> None:
+    """Journalisation sur la console, ou dans un fichier à rotation (10 Mo x 5) si `log_file`
+    est donné — utilisé quand la collecte tourne en arrière-plan (voir deploy/)."""
+    handler: logging.Handler
+    if log_file:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+    else:
+        handler = logging.StreamHandler()
+    logging.basicConfig(
+        level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[handler],
+        force=True,
+    )
 
 
 def make_sensor_reader(listener: OutdoorSensorListener | None):
@@ -67,7 +87,13 @@ def main() -> None:
         default=config.SNAPSHOT_INTERVAL_SECONDS,
         help="Intervalle des snapshots en secondes",
     )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Fichier de log à rotation (défaut : console)",
+    )
     args = parser.parse_args()
+    configure_logging(args.log_file)
 
     if args.hours < 0 or args.interval <= 0:
         parser.error("--hours doit être >= 0 et --interval doit être > 0")
@@ -125,8 +151,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
     main()

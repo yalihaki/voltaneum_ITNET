@@ -700,7 +700,7 @@ Le test terrain doit être réalisé depuis le réseau industriel ou le VPN offi
 
 Choix retenu : `main.py` supervise la collecte, le contrôle, le stockage et ses composants internes ; le notifier email et le monitoring ML sont des processus indépendants supervisés par le système d'exploitation.
 
-- Linux, collecte seule en arrière-plan : `git pull && bash deploy/install-collect-service.sh` (relançable après chaque mise à jour ; crée le virtualenv si besoin, vérifie `.env`, installe et redémarre le service `voltaneum-collect` ; logs : `journalctl -u voltaneum-collect -f`).
+- Linux, collecte seule en continu, **sans droits root** : `git pull && bash deploy/install-collect-service.sh`. Installe une tâche cron (crontab de l'utilisateur) qui relance la collecte chaque minute si elle ne tourne pas (`deploy/collect-watchdog.sh`, verrou `flock` : jamais deux collectes) ; elle continue après la déconnexion et repart après un redémarrage. Relançable après chaque mise à jour. `--status` : état et dernières mesures ; `--stop` : arrêt ; logs : `logs/collect.log` (rotation 10 Mo x 5).
 - Linux : copier les unités `deploy/voltaneum*.service` vers `/etc/systemd/system/`, adapter le chemin et l'utilisateur, puis exécuter `sudo systemctl daemon-reload` et `sudo systemctl enable --now voltaneum.service voltaneum-email-notifier.service voltaneum-model-monitor.service`.
 - macOS : adapter les chemins des fichiers `deploy/com.voltaneum*.plist`, créer `logs/`, puis les charger avec `launchctl bootstrap`.
 - Windows : depuis PowerShell administrateur, exécuter `.\deploy\install-windows-tasks.ps1 -ProjectRoot C:\Voltaneum` avec un compte de service et des ACL NTFS limitées.
