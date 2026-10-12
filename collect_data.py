@@ -19,6 +19,8 @@ from pathlib import Path
 
 import config
 from collectors.gateway_collector import GatewayCollector
+from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
+from collectors.outdoor_temperature import OutdoorTemperatureSource
 from database import sqlite_client
 
 logger = logging.getLogger("voltaneum.collect_data")
@@ -28,6 +30,21 @@ def telemetry_count(db_path: str) -> int:
     with sqlite_client.connect(db_path) as connection:
         row = connection.execute("SELECT COUNT(*) FROM telemetry").fetchone()
     return int(row[0]) if row else 0
+
+
+def make_sensor_reader(listener: OutdoorSensorListener | None):
+    """Lecture du capteur extérieur physique seul (None si absent, muet ou en panne)."""
+
+    def read() -> float | None:
+        if config.OUTDOOR_SENSOR_MODE == "mqtt":
+            return None if listener is None else listener.get_last_value()
+        try:
+            return get_outdoor_temperature_http()
+        except Exception as exc:
+            logger.warning("Capteur extérieur (mode http) indisponible : %s", exc)
+            return None
+
+    return read
 
 
 def main() -> None:
@@ -67,10 +84,19 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
+    # Température extérieure de chaque instantané : capteur physique en priorité, API météo
+    # en repli (voir collectors/outdoor_temperature.py) — la colonne n'est plus laissée vide.
+    listener: OutdoorSensorListener | None = None
+    if config.OUTDOOR_SENSOR_MODE == "mqtt":
+        listener = OutdoorSensorListener()
+        threading.Thread(target=listener.run_forever, name="outdoor-sensor-listener", daemon=True).start()
+    outdoor_temperature = OutdoorTemperatureSource(read_sensor=make_sensor_reader(listener))
+
     collector = GatewayCollector(
         mqtt_client=None,
         snapshot_interval_seconds=args.interval,
         db_path=db_path,
+        outdoor_temperature=outdoor_temperature.read,
     )
     worker = threading.Thread(target=collector.run_forever, name="data-collector")
     worker.start()
@@ -83,6 +109,8 @@ def main() -> None:
             stop_event.wait(1.0)
     finally:
         collector.stop()
+        if listener is not None:
+            listener.stop()
         worker.join(timeout=15)
         if worker.is_alive():
             logger.error("Le thread de collecte ne s'est pas arrêté dans les 15 secondes.")

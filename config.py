@@ -222,9 +222,9 @@ OUTDOOR_SENSOR_MAX_AGE_SECONDS: int = _env_int("OUTDOOR_SENSOR_MAX_AGE_SECONDS",
 # la source utilisée est enregistrée en base (colonne `temp_outdoor_source`).
 OUTDOOR_WEATHER_FALLBACK_ENABLED: bool = _env_bool("OUTDOOR_WEATHER_FALLBACK_ENABLED", True)
 # Intervalle minimal entre deux appels à l'API météo (secondes) : par défaut, le rythme
-# auquel la valeur du capteur est relue (boucle de contrôle).
+# des instantanés (une valeur à jour pour chaque ligne enregistrée).
 OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS: int = _env_int(
-    "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", int(CONTROL_LOOP_INTERVAL_SECONDS)
+    "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", SNAPSHOT_INTERVAL_SECONDS
 )
 
 # Vérification de cohérence capteur / météo (n'a lieu que si le capteur fournit une

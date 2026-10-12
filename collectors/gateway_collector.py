@@ -21,6 +21,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 
 import requests
 import websocket
@@ -83,6 +84,7 @@ class GatewayCollector:
         mqtt_client=None,
         snapshot_interval_seconds: float = config.SNAPSHOT_INTERVAL_SECONDS,
         db_path: str = config.SQLITE_DB_PATH,
+        outdoor_temperature: Callable[[], tuple[float | None, str | None]] | None = None,
     ) -> None:
         self.manage_api_url = manage_api_url
         self.iot_api_url = iot_api_url
@@ -104,6 +106,9 @@ class GatewayCollector:
         self.mqtt_client = mqtt_client
         self.snapshot_interval_seconds = snapshot_interval_seconds
         self.db_path = db_path
+        # Fournit (température extérieure, source) à chaque instantané : capteur, sinon API
+        # météo (voir collectors/outdoor_temperature.py). None = colonne non renseignée ici.
+        self.outdoor_temperature = outdoor_temperature
 
         self.token: str | None = None
         self.keynode_to_column: dict[str, str] = {}
@@ -420,7 +425,9 @@ class GatewayCollector:
         """
         snapshot = self.snapshot()
 
-        if all(value is None for value in snapshot.values()):
+        # temp_outdoor exclue : elle ne vient pas de la passerelle (capteur ou API météo), une
+        # ligne ne contenant qu'elle n'apporterait aucune mesure de l'installation.
+        if all(value is None for column, value in snapshot.items() if column != "temp_outdoor"):
             return False
 
         if self._stream_is_silent():
@@ -434,6 +441,8 @@ class GatewayCollector:
             return False
         self._stale_reported = False
 
+        self._refresh_outdoor_temperature()
+        snapshot = self.snapshot()
         outdoor_source = self.source_of("temp_outdoor") if snapshot.get("temp_outdoor") is not None else None
         sqlite_client.insert_reading(
             pt01=snapshot.get("pt01"),
@@ -476,6 +485,17 @@ class GatewayCollector:
         """Version publique de `_stream_is_silent` (flux muet plus longtemps que
         `WS_SILENCE_TIMEOUT_SECONDS`)."""
         return self._stream_is_silent()
+
+    def _refresh_outdoor_temperature(self) -> None:
+        """Met à jour temp_outdoor (et sa source) juste avant d'écrire l'instantané."""
+        if self.outdoor_temperature is None:
+            return
+        try:
+            value, source = self.outdoor_temperature()
+        except Exception:
+            logger.exception("Température extérieure indisponible pour cet instantané")
+            value, source = None, None
+        self.set_value("temp_outdoor", value, source=source)
 
     def _stream_is_silent(self) -> bool:
         """Vrai si le flux est resté muet plus longtemps que `WS_SILENCE_TIMEOUT_SECONDS`

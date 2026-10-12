@@ -405,8 +405,11 @@ d'entrée (aucune prédiction possible).
 
 **Décision** : le capteur reste prioritaire ; quand il n'a pas de valeur
 actuelle, la température d'Open-Meteo est utilisée à sa place (révise le
-point 10, où la météo ne servait qu'à comparer). Relue au rythme de la boucle
-de contrôle (`OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS`, 60 s), jamais
+point 10, où la météo ne servait qu'à comparer). Relue à chaque instantané
+du collecteur, donc aussi avec `collect_data.py` (module
+`collectors/outdoor_temperature.py`, `OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS`,
+15 s par défaut ; une ligne ne contenant que la température extérieure n'est
+jamais écrite), jamais
 utilisée si elle date de plus de `OUTDOOR_SENSOR_MAX_AGE_SECONDS`. La source
 est enregistrée dans la nouvelle colonne `telemetry.temp_outdoor_source`
 (`sensor` / `weather`, migration automatique des bases existantes) et publiée

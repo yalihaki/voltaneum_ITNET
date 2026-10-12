@@ -50,6 +50,7 @@ class FakeCollector(_Stoppable):
         super().__init__()
         self.last_known = {column: None for column in config.FEATURE_COLUMNS + [config.TARGET_COLUMN]}
         self.sources = {}
+        self.kwargs = kwargs
 
     # Âge simulé du dernier message de la passerelle (None = aucun message encore attendu).
     message_age: float | None = 1.0
@@ -516,6 +517,11 @@ class TestOutdoorWeatherFallback:
         app._control_tick(1.0)
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
         assert message["t_outdoor"] == 12.0 and message["t_outdoor_source"] == "weather"
+
+    def test_collector_receives_the_same_outdoor_source(self, app):
+        """Le collecteur renseigne temp_outdoor à chaque instantané avec le même fournisseur."""
+        app.start()
+        assert app.collector.kwargs["outdoor_temperature"] == app.outdoor_temperature.read
 
     def test_fallback_can_be_disabled(self, app, monkeypatch):
         monkeypatch.setattr(config, "OUTDOOR_WEATHER_FALLBACK_ENABLED", False)

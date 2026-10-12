@@ -39,6 +39,7 @@ import config
 from collectors.gateway_collector import GatewayCollector
 from collectors.outdoor_consistency_checker import OutdoorConsistencyChecker
 from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
+from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_temperature
 from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint
@@ -77,12 +78,13 @@ class VoltaneumApp:
         # Idem quand seule la mesure d'huile est périmée (capteur muet alors que les autres émettent).
         self._target_stale_reported = False
 
-        # Repli météo de la température extérieure (cache : l'API n'est pas appelée à
-        # chaque cycle si OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS est plus long).
-        self._weather_value: float | None = None
-        self._weather_value_at: float | None = None
-        self._weather_attempted_at: float | None = None
-        self._outdoor_source: str | None = None
+        # Température extérieure : capteur prioritaire, API météo en repli. Partagée entre le
+        # collecteur (chaque instantané, 15 s) et la boucle de contrôle (cache commun).
+        # `get_outdoor_temperature` est résolu à l'appel (remplaçable dans les tests).
+        self.outdoor_temperature = OutdoorTemperatureSource(
+            read_sensor=self._read_outdoor_temperature,
+            fetch_weather=lambda: get_outdoor_temperature(),
+        )
 
     # ------------------------------------------------------------------
     # Cycle de vie
@@ -94,7 +96,10 @@ class VoltaneumApp:
         sqlite_client.init_db(config.SQLITE_DB_PATH)
 
         self.mqtt_client = create_client("voltaneum-main")
-        self.collector = GatewayCollector(mqtt_client=self.mqtt_client, db_path=config.SQLITE_DB_PATH)
+        self.collector = GatewayCollector(
+            mqtt_client=self.mqtt_client, db_path=config.SQLITE_DB_PATH,
+            outdoor_temperature=self.outdoor_temperature.read,
+        )
         self.storage_manager = StorageManager(db_path=config.SQLITE_DB_PATH)
         self.outdoor_consistency_checker = OutdoorConsistencyChecker(
             get_sensor_value=self._read_outdoor_temperature
@@ -248,7 +253,7 @@ class VoltaneumApp:
             self._target_stale_reported = False
 
         # Capteur prioritaire, API météo en repli ; None si aucune des deux n'est disponible.
-        t_outdoor, outdoor_source = self._outdoor_temperature_with_fallback()
+        t_outdoor, outdoor_source = self.outdoor_temperature.read()
         collector.set_value("temp_outdoor", t_outdoor, source=outdoor_source)
         last_known["temp_outdoor"] = t_outdoor
 
@@ -276,52 +281,12 @@ class VoltaneumApp:
             "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C ({outdoor_source})",
         )
 
-    def _outdoor_temperature_with_fallback(self) -> tuple[float | None, str | None]:
-        """Température extérieure et sa source : "sensor" (prioritaire), sinon "weather".
-
-        Le capteur est utilisé dès qu'il a une valeur actuelle ; l'API météo ne sert que
-        lorsqu'il n'en a pas (non installé, muet ou défaillant).
-        """
-        value = self._read_outdoor_temperature()
-        source: str | None = "sensor" if value is not None else None
-        if value is None and config.OUTDOOR_WEATHER_FALLBACK_ENABLED:
-            value = self._read_weather_temperature()
-            source = "weather" if value is not None else None
-
-        if source != self._outdoor_source:
-            if source == "sensor":
-                logger.info("Température extérieure : capteur utilisé.")
-            elif source == "weather":
-                logger.warning("Température extérieure : capteur sans valeur, repli sur l'API météo.")
-            else:
-                logger.warning("Température extérieure indisponible (ni capteur, ni météo).")
-            self._outdoor_source = source
-        return value, source
-
-    def _read_weather_temperature(self) -> float | None:
-        """Température de l'API météo, appelée au plus toutes les
-        OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS. Une valeur plus ancienne que
-        OUTDOOR_SENSOR_MAX_AGE_SECONDS (API injoignable depuis longtemps) vaut None.
-        """
-        now = time.monotonic()
-        if (self._weather_attempted_at is None
-                or now - self._weather_attempted_at >= config.OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS):
-            self._weather_attempted_at = now  # même en cas d'échec : pas de rafale d'appels
-            try:
-                self._weather_value = get_outdoor_temperature()
-                self._weather_value_at = now
-            except Exception as exc:
-                logger.warning("API météo indisponible pour le repli de température extérieure : %s", exc)
-        if self._weather_value_at is None or now - self._weather_value_at > config.OUTDOOR_SENSOR_MAX_AGE_SECONDS:
-            return None
-        return self._weather_value
-
     def _read_outdoor_temperature(self) -> float | None:
         """Température extérieure ACTUELLE du capteur indépendant, ou None si indisponible.
 
         Capteur seul (sert aussi à la vérification de cohérence capteur/météo, qui ne doit
         jamais comparer la météo à elle-même) ; le repli météo est fait par
-        `_outdoor_temperature_with_fallback`.
+        `collectors.outdoor_temperature.OutdoorTemperatureSource`.
         """
         if config.OUTDOOR_SENSOR_MODE == "mqtt":
             return None if self.outdoor_sensor is None else self.outdoor_sensor.get_last_value()

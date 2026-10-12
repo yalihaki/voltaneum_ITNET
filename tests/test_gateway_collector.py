@@ -598,3 +598,51 @@ class TestOutdoorSourceRecorded:
         with sqlite_client.connect(temp_db_path) as conn:
             row = conn.execute("SELECT temp_outdoor, temp_outdoor_source FROM telemetry").fetchone()
         assert row == (None, None)
+
+
+class TestOutdoorTemperatureAtEverySnapshot:
+    """Chaque instantané (15 s) renseigne temp_outdoor via le fournisseur capteur / météo."""
+
+    @staticmethod
+    def _rows(db):
+        from database import sqlite_client
+
+        with sqlite_client.connect(db) as conn:
+            return conn.execute("SELECT temp_outdoor, temp_outdoor_source FROM telemetry ORDER BY id").fetchall()
+
+    def test_each_snapshot_gets_the_current_outdoor_temperature(self, temp_db_path):
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+        readings = iter([(9.8, "weather"), (10.1, "weather"), (17.0, "sensor")])
+        collector = GatewayCollector(username="u", password="p", db_path=temp_db_path,
+                                     outdoor_temperature=lambda: next(readings))
+        collector.set_value("pt02", 34.0)
+        for _ in range(3):
+            assert collector._snapshot_once() is True
+        assert self._rows(temp_db_path) == [(9.8, "weather"), (10.1, "weather"), (17.0, "sensor")]
+
+    def test_provider_failure_writes_the_row_without_outdoor_temperature(self, temp_db_path):
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+
+        def broken():
+            raise RuntimeError("panne inattendue")
+
+        collector = GatewayCollector(username="u", password="p", db_path=temp_db_path,
+                                     outdoor_temperature=broken)
+        collector.set_value("pt02", 34.0)
+        assert collector._snapshot_once() is True
+        assert self._rows(temp_db_path) == [(None, None)]
+
+    def test_no_row_with_only_outdoor_temperature(self, temp_db_path):
+        """Tant que la passerelle n'a rien envoyé, aucune ligne « météo seule » n'est écrite."""
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+        collector = GatewayCollector(username="u", password="p", db_path=temp_db_path,
+                                     outdoor_temperature=lambda: (9.8, "weather"))
+        collector.set_value("temp_outdoor", 9.8, source="weather")
+        assert collector._snapshot_once() is False
+        assert self._rows(temp_db_path) == []
