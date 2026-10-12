@@ -1,9 +1,159 @@
-# CHANGELOG.md — Revue d'ingénierie du 17-24 septembre 2026
+# CHANGELOG.md
 
-Ce journal documente les corrections apportées au projet lors d'une revue de
-code complète, avant la première campagne de test réel prévue le 24 septembre
-2026. Chaque entrée indique le fichier concerné, le problème trouvé, et
-comment il a été vérifié (pas seulement corrigé).
+Journal des modifications du projet, en deux parties :
+
+- **Partie 2 — Mise à jour du 9 octobre 2026** (entrées M1 à M9) : mise en service sur la
+  passerelle réelle, conditions de refroidissement publiées sur MQTT, conservation des
+  données un an.
+- **Partie 1 — Revue d'ingénierie du 17-24 septembre 2026** (entrées 1 à 11), conservée
+  telle quelle pour l'historique. L'entrée 6 (plage de `freq_pompe`) est remplacée par M1.
+
+Chaque entrée indique le fichier concerné, le problème trouvé, et comment il a été
+vérifié (pas seulement corrigé).
+
+# Partie 2 — Mise à jour du 9 octobre 2026
+
+## M1. `config.py` — Plages de validité alignées sur l'installation, et invariant de sécurité
+
+**Problème** : `freq_pompe` était limitée à 0-15 Hz alors que la pompe tourne à **30 Hz** sur
+l'installation (variateur 0-50 Hz) : chaque message de la pompe était rejeté (« Valeur hors
+plage pour freq_pompe ignorée »). `ht01` (débit) avait une plage de 0-200 au lieu de
+0-15 m³/h.
+
+**Correction** : `ht01` = 0-15 m³/h, `freq_pompe` = 0-50 Hz, `temp_outdoor` = -20-55 °C.
+Les sondes `pt01`-`pt04` gardent une borne haute de 150 °C, **volontairement** au-dessus du
+seuil critique (55 °C) : une borne haute à 55 °C aurait rejeté toute mesure > 55 °C comme
+« hors plage », et l'alerte critique ainsi que le bypass du PID n'auraient jamais vu une
+surchauffe réelle. `validate_config()` refuse désormais de démarrer si la borne haute de la
+température d'huile ne dépasse pas `CRITICAL_TEMP`, et valide la table `OUTDOOR_BANDS`.
+
+**Vérification** : `tests/test_config_ranges.py` (valeurs réellement observées acceptées,
+invariant de sécurité, tables incohérentes refusées) ; `tests/test_gateway_collector.py`
+(pompe à 30 Hz acceptée, 51 Hz rejetée, 58 °C mesuré et non rejeté).
+
+## M2. `collectors/gateway_collector.py` — Mapping des deux passerelles réelles
+
+**Problème** : le collecteur ne reconnaissait qu'**un point sur six** (`HT01`) : les autres
+colonnes (`pt01` à `pt04`, fréquence) restaient à `None`. Les noms attendus
+(`PT01-temperature`, `Frequence`) ne correspondaient pas aux catalogues réels relevés le
+9 octobre 2026.
+
+**Correction** : `KEYNAME_TO_COLUMN` accepte les deux catalogues (`PT01-temperature`,
+`Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des
+points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`,
+`Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Un avertissement est
+journalisé si deux points alimentent la même colonne. Résultat sur la passerelle réelle :
+« 6 point(s) reconnu(s) » et les six colonnes remplies en base.
+
+**À confirmer** : `PUMP` est supposé être la fréquence pompe / ventilateur ; un point
+`DIAG Actual frequency VW12` existe aussi.
+
+**Vérification** : tests des deux catalogues réels, test qu'aucun nom de point modifiable
+n'est dans la table, test des doublons.
+
+## M3. `control/pid_controller.py` — Anti-windup côté froid
+
+**Problème** (mesuré par simulation) : l'intégrale pouvait devenir très négative pendant une
+période froide (premier pas non borné : -1500 pour une huile à 10 °C). Résultat : huile à
+10 °C pendant 3 minutes puis 40 °C (5 °C au-dessus de la cible) → consigne à **0 % pendant
+9 minutes**, 100 % seulement après 14 minutes. Un régulateur de refroidissement ne peut pas
+produire de sortie négative : cette « dette » n'avait aucune utilité.
+
+**Correction** : l'intégrale est bornée dans `[0, SETPOINT_MAX / Ki]` (en plus du gel
+conditionnel existant). Même scénario après correction : 11 % dès 36 °C, 100 % en 3 cycles.
+
+**Vérification** : `TestColdSideWindup` (intégrale jamais négative, plafonnée, réaction en
+moins de 3 cycles après une longue période froide).
+
+## M4. `main.py` — Aucune consigne publiée sur des mesures périmées
+
+**Problème** : si le flux de la passerelle se coupait, la dernière température restait
+figée dans le collecteur et la boucle de contrôle continuait de publier, avec un horodatage
+récent : l'automate ne pouvait pas savoir que les données étaient vieilles.
+
+**Correction** : `collector.seconds_since_last_message()` ; au-delà de
+`CONTROL_MAX_DATA_AGE_SECONDS` (120 s) rien n'est publié (un avertissement par panne, reprise
+automatique). Le message publié porte `valid_for_seconds` pour que l'automate ignore un
+message trop ancien.
+
+**Vérification** : 4 tests dans `tests/test_main.py` (flux périmé, aucun message encore reçu,
+reprise, un seul avertissement par panne).
+
+## M5. `control/cooling_advice.py` — Température cible et conditions publiées sur MQTT
+
+**Besoin** : le projet doit publier la température cible et les conditions à suivre selon la
+température extérieure ; l'automate décide seul de démarrer ou d'arrêter le ventilateur.
+
+**Réalisation** : nouveau module de calcul pur (aucun appel réseau, aucun pilote
+d'actionneur) et nouveau topic `voltaneum/control/cooling_conditions` : température cible,
+seuil critique, bande de température extérieure, seuil de marche, seuil d'arrêt
+(hystérésis), fréquence minimale conseillée, durée de validité. Rien n'est publié si la
+température d'huile est invalide. La consigne PID en % reste publiée sur
+`voltaneum/control/setpoint` comme information (désactivable : `PUBLISH_PID_SETPOINT`).
+
+**Valeurs indicatives** : les bandes, décalages, hystérésis et fréquences sont des valeurs de
+départ à valider avec l'automaticien.
+
+**Vérification** : `tests/test_cooling_advice.py` (14 tests), 3 tests dans `test_main.py`,
+étape 8 de `simulate.py`.
+
+## M6. `notifications/email_notifier.py` — Alerte « pompe en marche sans débit »
+
+**Besoin** : une fréquence de pompe non nulle avec un débit nul signale un problème réel
+(vanne fermée, circuit bouché, désamorçage, capteur ou variateur défaillant) et risque la
+marche à sec.
+
+**Réalisation** : règle `pump_without_flow` (CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ`
+(5 Hz) et débit < `FLOW_MIN_M3H` (0,5 m³/h) sur `ALERT_CONFIRMATION_CYCLES` échantillons
+distincts. Une valeur absente ne déclenche jamais l'alerte (un capteur muet est signalé par
+`telemetry_lost`). Seuils indicatifs, à valider avec l'automaticien.
+
+**Vérification** : `TestPumpWithoutFlow` (10 tests), étape 9 de `simulate.py`.
+
+## M7. `database/backup.py`, `database/storage_manager.py` — Conservation d'un an et espace libre
+
+**Exigence** : quand la base est pleine, la compresser et garder les données au moins un an.
+
+**Problème** : `create_backup` ne conservait que les 7 archives les plus récentes, quel que
+soit leur âge : une archive pouvait disparaître en quelques jours.
+
+**Correction** : plancher d'âge `STORAGE_BACKUP_MIN_AGE_DAYS` (365) : une archive n'est
+supprimée que si elle est au-delà des `STORAGE_BACKUP_RETENTION_COUNT` plus récentes **et**
+plus vieille que le plancher (âge lu dans le nom, nom illisible conservé). De plus, avant
+toute purge, le volume de sauvegarde doit offrir la taille de la base ×
+`STORAGE_BACKUP_FREE_SPACE_FACTOR` d'espace libre ; sinon la purge est annulée, rien n'est
+supprimé, alerte CRITIQUE.
+
+**Vérification** : 4 tests dans `test_backup.py`, 3 dans `test_storage_manager.py`, étape 10
+de `simulate.py`.
+
+## M8. Données de test, simulation, configuration d'exemple
+
+- `generate_test_data.py` : débit 0-15 m³/h et fréquence 0-50 Hz réalistes (autour de 30 Hz et
+  10,4 m³/h) au lieu de valeurs hors des plages réelles.
+- `simulate.py` : la purge démontrée à l'étape 2 laissait une archive dans le vrai dossier `backups/` du projet (contrairement à ce que promettait sa documentation) ; elle écrit désormais dans le dossier temporaire. 24 vérifications (15 auparavant) ; étapes 8 à 11 pour les conditions de
+  refroidissement, la règle pompe sans débit, la conservation d'un an et l'invariant de sécurité.
+- `.env.example` : nouvelles variables documentées. `.gitignore` : `venv/`, `.venv/`, caches.
+- Documentation : README, GUIDE_UTILISATION, SIMULATION, CAHIER_DES_CHARGES_FINAL et
+  présentation technique mis à jour.
+
+## M9. Points ouverts — à valider avec l'automaticien
+
+1. `PUMP` (ou `DIAG Actual frequency VW12`) est-il bien la fréquence pompe / ventilateur ?
+2. Bandes de température extérieure, décalages, hystérésis et fréquences conseillées
+   (`OUTDOOR_BANDS`) : valeurs de départ non calibrées.
+3. Seuils de la règle pompe sans débit (`PUMP_RUNNING_MIN_HZ`, `FLOW_MIN_M3H`).
+4. Pont entre MQTT et l'automate : à ma connaissance, le S7-200 SMART n'a pas de client MQTT
+   natif ; le pont doit contrôler l'âge du message, les bornes du variateur et le mode
+   manuel / automatique.
+5. Gains PID non calibrés ; plage d'efficacité de l'échangeur provisoire.
+6. Données réelles : il faut une collecte avec des fréquences de pompe variées avant tout
+   entraînement.
+
+# Partie 1 — Revue d'ingénierie du 17-24 septembre 2026
+
+Ces corrections ont été apportées lors d'une revue de code complète, avant la première
+campagne de test réel prévue le 24 septembre 2026.
 
 ## 1. `control/pid_controller.py` — Inversion du signe de l'erreur PID
 
@@ -86,7 +236,7 @@ insérées.
 
 **Correction** : suppression du code mort.
 
-## 6. `config.py` — Plage de validité de `freq_pompe` corrigée
+## 6. `config.py` — Plage de validité de `freq_pompe` corrigée *(remplacée par M1 : 0-50 Hz)*
 
 **Problème** : `SENSOR_VALID_RANGES["freq_pompe"]` était fixée à `(0.0, 100.0)`,
 alors que le variateur réel de la pompe sur l'automate de test est borné à

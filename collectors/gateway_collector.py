@@ -34,14 +34,31 @@ _MISSING = object()
 
 # Mapping fixe KeyName -> nom de colonne SQLite (contrat 5.3).
 # Codé en dur : ces noms ne changent pas sans intervention sur l'automate.
+#
+# En clair : chaque installation nomme ses points à sa façon. Deux catalogues réels ont été
+# observés (relevés du 9 octobre 2026) ; on accepte les deux pour que la même version du code
+# fonctionne sur les deux passerelles. Seuls des points en LECTURE SEULE (WrEnable = 0) sont
+# listés : les points modifiables du catalogue (ON/OFF, consignes, bypass...) n'apparaissent
+# volontairement JAMAIS ici — ce projet ne lit que, il n'écrit jamais.
 KEYNAME_TO_COLUMN: dict[str, str] = {
+    # Passerelle 1 (10.0.1.33) : noms suffixés « -temperature ».
     "PT01-temperature": "pt01",
     "PT02-temperature": "pt02",
     "PT03-temperature": "pt03",
     "PT04-temperature": "pt04",
+    "Pump frequency": "freq_pompe",
+    # Passerelle 2 (10.0.1.34) : noms courts.
+    "PT01": "pt01",
+    "PT02": "pt02",
+    "PT03": "pt03",
+    "PT04": "pt04",
+    # À CONFIRMER avec l'automaticien : sur cette passerelle, « PUMP » (Int16, lecture seule) est
+    # supposé être la fréquence pompe / ventilateur ; un point « DIAG Actual frequency VW12 »
+    # (diag_vw12) existe aussi et pourrait être la fréquence réellement mesurée.
+    "PUMP": "freq_pompe",
+    # Commun aux deux passerelles : débit du circuit bain d'huile.
     "HT01": "ht01",
-    # TODO: nom exact à confirmer à l'implémentation réelle (voir spec §4/§5.3).
-    # Le KeyName observé sur l'installation pourrait différer de cette hypothèse.
+    # Ancien nom supposé dans la spécification initiale (conservé pour compatibilité).
     "Frequence": "freq_pompe",
 }
 
@@ -226,6 +243,18 @@ class GatewayCollector:
                 continue
             mapping[key_node] = column
 
+        # Deux points du catalogue ne doivent jamais alimenter la même colonne : la dernière
+        # valeur reçue écraserait l'autre sans que personne ne s'en aperçoive.
+        seen_columns: dict[str, str] = {}
+        for key_node, column in mapping.items():
+            if column in seen_columns:
+                logger.warning(
+                    "Colonne %s alimentée par deux points (%s et %s) : la dernière valeur reçue "
+                    "écrasera l'autre — vérifier KEYNAME_TO_COLUMN.",
+                    column, seen_columns[column], key_node,
+                )
+            seen_columns[column] = key_node
+
         if not mapping:
             raise RuntimeError(
                 "Aucun point reconnu dans le catalogue reçu (vérifier "
@@ -384,6 +413,21 @@ class GatewayCollector:
             )
 
         return True
+
+    def seconds_since_last_message(self) -> float | None:
+        """Secondes écoulées depuis le dernier message reçu de la passerelle (horloge monotone),
+        ou None si aucun message n'a encore été attendu.
+
+        Sert à la boucle de contrôle : une consigne ne doit jamais être calculée à partir de
+        mesures périmées (flux coupé, connexion à moitié morte).
+        """
+        last = self._last_message_at
+        return None if last is None else time.monotonic() - last
+
+    def stream_is_silent(self) -> bool:
+        """Version publique de `_stream_is_silent` (flux muet plus longtemps que
+        `WS_SILENCE_TIMEOUT_SECONDS`)."""
+        return self._stream_is_silent()
 
     def _stream_is_silent(self) -> bool:
         """Vrai si le flux est resté muet plus longtemps que `WS_SILENCE_TIMEOUT_SECONDS`

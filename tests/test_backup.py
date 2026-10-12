@@ -72,6 +72,63 @@ def test_retention_keeps_only_the_most_recent_backups(tmp_path):
     assert len(names) == 2 and "voltaneum-20200101T000000Z.db.gz" not in names
 
 
+def _fake_archive(directory, days_old: int):
+    """Crée une fausse archive datée de `days_old` jours (l'âge est lu dans le nom du fichier)."""
+    from datetime import datetime, timedelta, timezone
+    created = datetime.now(timezone.utc) - timedelta(days=days_old)
+    path = directory / f"voltaneum-{created.strftime('%Y%m%dT%H%M%SZ')}.db.gz"
+    path.write_bytes(b"x")
+    return path
+
+
+def test_archives_younger_than_the_minimum_age_are_never_deleted(tmp_path):
+    """Exigence : données conservées au moins un an. Même au-delà de `retention_count`,
+    une archive de moins de `min_age_days` jours ne doit JAMAIS être supprimée."""
+    source = tmp_path / "s.db"
+    _populated_db(source)
+    backup_dir = tmp_path / "bk"
+    backup_dir.mkdir()
+    young = [_fake_archive(backup_dir, age) for age in (10, 30, 100, 200, 300, 364)]
+    create_backup(str(source), str(backup_dir), retention_count=1, min_age_days=365)
+    assert all(path.exists() for path in young)
+
+
+def test_only_archives_beyond_the_count_and_older_than_the_minimum_age_are_deleted(tmp_path):
+    source = tmp_path / "s.db"
+    _populated_db(source)
+    backup_dir = tmp_path / "bk"
+    backup_dir.mkdir()
+    old = [_fake_archive(backup_dir, age) for age in (366, 500, 800)]
+    kept = [_fake_archive(backup_dir, age) for age in (100, 300)]
+    create_backup(str(source), str(backup_dir), retention_count=1, min_age_days=365)
+    assert not any(path.exists() for path in old)
+    assert all(path.exists() for path in kept)
+
+
+def test_the_most_recent_archives_are_kept_even_when_older_than_the_minimum_age(tmp_path):
+    """`retention_count` reste un plancher en nombre : les N plus récentes sont toujours gardées."""
+    source = tmp_path / "s.db"
+    _populated_db(source)
+    backup_dir = tmp_path / "bk"
+    backup_dir.mkdir()
+    very_old = [_fake_archive(backup_dir, age) for age in (400, 500, 600)]
+    create_backup(str(source), str(backup_dir), retention_count=4, min_age_days=365)
+    assert all(path.exists() for path in very_old)   # 4 plus récentes = la nouvelle + ces 3
+
+
+def test_unreadable_archive_name_is_kept(tmp_path):
+    source = tmp_path / "s.db"
+    _populated_db(source)
+    backup_dir = tmp_path / "bk"
+    backup_dir.mkdir()
+    odd = backup_dir / "voltaneum-pas-une-date.db.gz"
+    odd.write_bytes(b"x")
+    for age in (400, 500):
+        _fake_archive(backup_dir, age)
+    create_backup(str(source), str(backup_dir), retention_count=1, min_age_days=0)
+    assert odd.exists()
+
+
 def test_restore_discards_the_stale_wal_of_the_replaced_database(tmp_path):
     """Un ancien `-wal` rejoué sur la base restaurée la corromprait (ou en changerait le contenu)."""
     source = tmp_path / "s.db"

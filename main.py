@@ -16,8 +16,10 @@ Threads (tous supervisés : un thread mort est redémarré automatiquement) :
 Le notifier d'e-mails (notifications/email_notifier.py) et le monitoring des modèles
 (run_model_monitor.py) tournent comme services séparés (voir deploy/).
 
-Règle de sécurité centrale : aucun module n'écrit jamais sur un actionneur. La consigne
-est seulement PUBLIQUE sur MQTT ; l'automate garde seul la décision finale.
+Règle de sécurité centrale : aucun module n'écrit jamais sur un actionneur. Les
+conditions de refroidissement (température cible, seuils de marche et d'arrêt du ventilateur
+selon la température extérieure) et la consigne PID sont seulement PUBLIÉES sur MQTT ;
+l'automate garde seul la décision finale.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import config
 from collectors.gateway_collector import GatewayCollector
 from collectors.outdoor_consistency_checker import OutdoorConsistencyChecker
 from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
+from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint
 from database import sqlite_client
 from database.storage_manager import StorageManager
@@ -68,6 +71,8 @@ class VoltaneumApp:
         self._predictor: DualModelPredictor | None = None
         self._predictor_report_mtime: float | None = None
         self._pid_state: dict = {}
+        # Vrai tant que la boucle de contrôle est suspendue pour mesures périmées (un seul avertissement par panne).
+        self._stale_data_reported = False
 
     # ------------------------------------------------------------------
     # Cycle de vie
@@ -192,6 +197,26 @@ class VoltaneumApp:
         collector = self.collector
         if collector is None:
             return
+
+        # Mesures périmées : si la passerelle ne parle plus, la dernière température connue reste
+        # « figée » dans le collecteur. Publier des conditions calculées dessus, avec un horodatage
+        # récent, tromperait l'automate. On ne publie donc RIEN : au-delà de `valid_for_seconds`,
+        # l'automate ignore de toute façon le dernier message et reprend sa propre régulation.
+        data_age = collector.seconds_since_last_message()
+        if data_age is None or data_age > config.CONTROL_MAX_DATA_AGE_SECONDS:
+            if not self._stale_data_reported:
+                logger.warning(
+                    "Aucun message de la passerelle depuis %s s (seuil %.0f s) : mesures périmées, "
+                    "rien n'est publié.",
+                    "plus longtemps que le démarrage" if data_age is None else f"{data_age:.0f}",
+                    config.CONTROL_MAX_DATA_AGE_SECONDS,
+                )
+                self._stale_data_reported = True
+            return
+        if self._stale_data_reported:
+            logger.info("Messages de la passerelle de nouveau reçus : publication reprise.")
+            self._stale_data_reported = False
+
         last_known = collector.snapshot()
         t_oil = last_known.get(config.TARGET_COLUMN)
         if t_oil is None:
@@ -212,7 +237,14 @@ class VoltaneumApp:
             dt=dt,
             pid_state=self._pid_state,
         )
-        self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
+        # 1) Conditions à suivre (contrat principal) : température cible + seuils selon la
+        #    température extérieure. Rien n'est publié si la température d'huile est invalide.
+        conditions = compute_cooling_conditions(t_oil, t_outdoor)
+        if conditions is not None:
+            self._publish(config.MQTT_TOPIC_COOLING_CONDITIONS, conditions)
+        # 2) Consigne PID en % : INFORMATIVE (suivi, comparaison avec la régulation de l'automate).
+        if config.PUBLISH_PID_SETPOINT:
+            self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
         logger.info(
             "Consigne suggérée : %.1f %% (mode=%s, huile=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
             setpoint, mode, t_oil, config.TARGET_TEMP, t_oil_predicted,

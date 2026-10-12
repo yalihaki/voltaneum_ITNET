@@ -2,7 +2,12 @@
 
 Les sauvegardes sont des copies COHÉRENTES (API de sauvegarde en ligne de SQLite,
 sûre même pendant des écritures concurrentes en mode WAL), compressées en gzip,
-horodatées (UTC) et limitées en nombre pour ne pas encombrer le disque.
+horodatées (UTC).
+
+Conservation : une archive n'est supprimée que si elle est À LA FOIS au-delà des
+`retention_count` plus récentes ET plus vieille que `min_age_days` (plancher d'âge, 365 jours en
+production : les données doivent rester récupérables au moins un an). Une archive plus
+récente que ce plancher n'est jamais supprimée, même en grand nombre.
 
 Sécurité : le dossier de sauvegarde est créé en 0700 et chaque archive en 0600
 (elles contiennent l'intégralité des mesures de l'installation).
@@ -19,7 +24,7 @@ import shutil
 import sqlite3
 import zlib
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -36,8 +41,30 @@ def _remove_sqlite_sidecars(db_file: Path) -> None:
         Path(f"{db_file}{suffix}").unlink(missing_ok=True)
 
 
-def create_backup(db_path: str, backup_dir: str, retention_count: int = 7) -> Path:
-    """Crée une sauvegarde compressée et cohérente, puis supprime les plus anciennes.
+def _prune_backups(destination_dir: Path, retention_count: int, min_age_days: int) -> None:
+    """Supprime seulement les archives au-delà des `retention_count` plus récentes ET plus
+    vieilles que `min_age_days` (plancher de conservation).
+
+    L'âge se lit dans le NOM de l'archive (horodatage UTC de création) et non dans la date du
+    fichier, qu'une copie ou une restauration peut modifier. Un nom illisible est conservé :
+    dans le doute, on ne supprime jamais.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)
+    recent_first = sorted(destination_dir.glob(f"{BACKUP_PREFIX}*.db.gz"), reverse=True)
+    for old_backup in recent_first[retention_count:]:
+        stamp = old_backup.name[len(BACKUP_PREFIX):-len(".db.gz")]
+        try:
+            created = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if created < cutoff:
+            old_backup.unlink(missing_ok=True)
+
+
+def create_backup(db_path: str, backup_dir: str, retention_count: int = 7,
+                  min_age_days: int = 0) -> Path:
+    """Crée une sauvegarde compressée et cohérente, puis supprime les anciennes selon la
+    règle de conservation (voir `_prune_backups`). `min_age_days=0` : seul le nombre compte.
 
     Attention à l'espace disque : la copie temporaire non compressée occupe
     autant de place que la base. Le dossier de sauvegarde doit donc se trouver
@@ -70,8 +97,7 @@ def create_backup(db_path: str, backup_dir: str, retention_count: int = 7) -> Pa
         _remove_sqlite_sidecars(temporary)
 
     # Rétention : le nom contient l'horodatage UTC, l'ordre alphabétique est chronologique.
-    for old_backup in sorted(destination_dir.glob(f"{BACKUP_PREFIX}*.db.gz"), reverse=True)[retention_count:]:
-        old_backup.unlink(missing_ok=True)
+    _prune_backups(destination_dir, retention_count, min_age_days)
     logger.info("Sauvegarde SQLite créée : %s", archive)
     return archive
 

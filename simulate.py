@@ -37,6 +37,7 @@ from database.backup import create_backup, restore_backup, verify_backup
 from database.storage_manager import StorageManager, database_size_bytes
 from ml.train import train_and_compare
 from ml.predictor import DualModelPredictor
+from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint
 from notifications.email_notifier import evaluate_rules
 
@@ -94,23 +95,15 @@ def main() -> int:
 
         # ================= ÉTAPE 1 =================
         banner("1", "Génération de données synthétiques (collectors + database)")
-        print("Génération d'un jeu de données AVEC un vrai cycle de pompe (0-15 Hz),")
+        print("Génération d'un jeu de données AVEC un vrai cycle de pompe (0-50 Hz),")
         print("comme si le collecteur avait tourné plusieurs jours sur une installation")
         print("où la régulation est réellement active (generate_test_data.py) :")
         proc = subprocess.run(  # nosec B603 - exécutable et arguments maîtrisés, aucune entrée externe
             [sys.executable, "generate_test_data.py", "--db", str(db_realistic),
              "--rows", "3000", "--interval", "30", "--force"],
-            capture_output=True, text=True, cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True,
         )
         checks.append(line("generate_test_data.py exécuté sans erreur", proc.returncode == 0))
-        if proc.returncode != 0:
-            print("\n--- Sortie d'erreur de generate_test_data.py ---")
-            print(f"Code de retour : {proc.returncode}"
-                  + (" (processus tué par un signal)" if proc.returncode < 0 else ""))
-            print(f"Interpréteur : {sys.executable}")
-            print(proc.stderr.strip() or proc.stdout.strip() or "(aucune sortie)")
-            print("Simulation interrompue : sans données générées, les étapes suivantes ne peuvent pas tourner.")
-            return 1
         df_check = sqlite_client.get_dataframe("1970-01-01", "2100-01-01", db_path=str(db_realistic))
         checks.append(line(
             f"{len(df_check)} lignes écrites dans {db_realistic.name} via database/sqlite_client.py",
@@ -140,14 +133,19 @@ def main() -> int:
             return True
 
         original_limit, original_grace = config.STORAGE_LIMIT_BYTES, config.STORAGE_GRACE_PERIOD_SECONDS
+        original_backup_dir = config.STORAGE_BACKUP_DIR
         config.STORAGE_LIMIT_BYTES = max(int(size * 1.02), 1)
         config.STORAGE_GRACE_PERIOD_SECONDS = 0
+        # La purge démontrée crée une sauvegarde : elle doit aller dans le dossier TEMPORAIRE,
+        # jamais dans le vrai dossier backups/ du projet (correctif : une archive y était laissée).
+        config.STORAGE_BACKUP_DIR = str(backup_dir)
         try:
             demo_manager = StorageManager(db_path=str(db_realistic), alert_sender=fake_alert_sender)
             demo_manager.check_once()  # déclenche l'avertissement
             result = demo_manager.check_once()  # tente la purge (délai de grâce nul)
         finally:
             config.STORAGE_LIMIT_BYTES, config.STORAGE_GRACE_PERIOD_SECONDS = original_limit, original_grace
+            config.STORAGE_BACKUP_DIR = original_backup_dir
         print(f"   {len(captured)} alerte(s) émise(s) (email SIMULÉ, non envoyé) : "
               f"{[level for _, _, level in captured]}")
         print(f"   Résultat de la purge : {result['purged']} ligne(s) supprimée(s) "
@@ -314,6 +312,90 @@ def main() -> int:
         checks.append(line(
             f"Restauration réussie : {len(restored)} lignes récupérées (attendu {count_before})",
             len(restored) == count_before,
+        ))
+
+
+        # ================= ÉTAPE 8 =================
+        banner("8", "Conditions de refroidissement publiées (control/cooling_advice.py)")
+        cold_air = compute_cooling_conditions(36.0, 3.0)
+        hot_air = compute_cooling_conditions(36.0, 33.0)
+        unknown_air = compute_cooling_conditions(36.0, None)
+        if cold_air is None or hot_air is None or unknown_air is None:
+            raise SystemExit("compute_cooling_conditions() n'a rien retourné pour une température d'huile valide.")
+        print(f"   Air froid ({cold_air['outdoor_band']}) : ventilateur à partir de "
+              f"{cold_air['fan_on_above_temp']:.1f} °C, arrêt sous {cold_air['fan_off_below_temp']:.1f} °C")
+        print(f"   Air chaud ({hot_air['outdoor_band']}) : ventilateur à partir de "
+              f"{hot_air['fan_on_above_temp']:.1f} °C, arrêt sous {hot_air['fan_off_below_temp']:.1f} °C")
+        checks.append(line(
+            "Air froid : le seuil de marche est plus haut que par air chaud (démarrage plus tardif)",
+            cold_air["fan_on_above_temp"] > hot_air["fan_on_above_temp"],
+        ))
+        checks.append(line(
+            "Hystérésis : seuil d'arrêt < seuil de marche < seuil critique, pour chaque bande",
+            all(c["fan_off_below_temp"] < c["fan_on_above_temp"] < c["critical_temp"]
+                for c in (cold_air, hot_air, unknown_air)),
+        ))
+        checks.append(line(
+            "Température extérieure inconnue : seuils neutres, aucune fréquence imposée",
+            unknown_air["outdoor_band"] == "inconnue" and unknown_air["fan_min_freq_hz"] is None,
+        ))
+        checks.append(line(
+            "Température d'huile invalide : rien n'est publié",
+            compute_cooling_conditions(float("nan"), 20.0) is None,
+        ))
+
+        # ================= ÉTAPE 9 =================
+        banner("9", "Règle d'alerte « pompe en marche sans débit »")
+        pump_state: dict = {}
+        pump_alerts: list[dict] = []
+        for index in range(config.ALERT_CONFIRMATION_CYCLES):
+            pump_alerts = evaluate_rules(
+                {"pt02": 36.0, "freq_pompe": 30.0, "ht01": 0.0, "ts": float(index + 1)}, None, pump_state)
+        print(f"   30 Hz sans débit pendant {config.ALERT_CONFIRMATION_CYCLES} mesures : "
+              f"{[a['rule_name'] for a in pump_alerts]}")
+        checks.append(line(
+            "Alerte CRITIQUE « pump_without_flow » après la confirmation multi-mesures",
+            [a["rule_name"] for a in pump_alerts] == ["pump_without_flow"],
+        ))
+        normal_state: dict = {}
+        normal_alerts: list[dict] = []
+        for index in range(config.ALERT_CONFIRMATION_CYCLES + 2):
+            normal_alerts = evaluate_rules(
+                {"pt02": 36.0, "freq_pompe": 30.0, "ht01": 10.4, "ts": float(index + 1)}, None, normal_state)
+        checks.append(line("Aucune alerte quand le débit est normal (30 Hz, 10,4 m³/h)", normal_alerts == []))
+
+        # ================= ÉTAPE 10 =================
+        banner("10", "Conservation des sauvegardes compressées : plancher d'un an")
+        keep_dir = tmp_path / "backups_retention"
+        keep_dir.mkdir()
+
+        def fake_archive(days_old: int) -> Path:
+            created = datetime.now(timezone.utc) - timedelta(days=days_old)
+            archive = keep_dir / f"voltaneum-{created.strftime('%Y%m%dT%H%M%SZ')}.db.gz"
+            archive.write_bytes(b"x")
+            return archive
+
+        young_archives = [fake_archive(age) for age in (10, 120, 364)]
+        old_archives = [fake_archive(age) for age in (366, 700)]
+        create_backup(str(db_realistic), str(keep_dir), retention_count=1,
+                      min_age_days=config.STORAGE_BACKUP_MIN_AGE_DAYS)
+        checks.append(line(
+            f"Archives de moins de {config.STORAGE_BACKUP_MIN_AGE_DAYS} jours : toutes conservées",
+            all(path.exists() for path in young_archives),
+        ))
+        checks.append(line(
+            "Archives de plus d'un an et hors des plus récentes : supprimées",
+            not any(path.exists() for path in old_archives),
+        ))
+
+        # ================= ÉTAPE 11 =================
+        banner("11", "Invariant de sécurité : une surchauffe reste mesurable")
+        oil_upper = config.SENSOR_VALID_RANGES[config.TARGET_COLUMN][1]
+        print(f"   Borne haute valide de {config.TARGET_COLUMN} : {oil_upper} °C ; seuil critique : "
+              f"{config.CRITICAL_TEMP} °C")
+        checks.append(line(
+            "La borne haute valide dépasse le seuil critique (surchauffe jamais rejetée comme hors plage)",
+            oil_upper > config.CRITICAL_TEMP,
         ))
 
     # ================= RÉSUMÉ =================

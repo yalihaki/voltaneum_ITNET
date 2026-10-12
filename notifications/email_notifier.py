@@ -145,7 +145,7 @@ def _update_counter(state: dict, rule_name: str, condition_met: bool) -> int:
     """Incrémente le compteur de cycles consécutifs si la condition est vraie,
     sinon le remet à zéro (et non « en pause ») ; retourne sa nouvelle valeur."""
     counts = state["consecutive_counts"]
-    counts[rule_name] = counts[rule_name] + 1 if condition_met else 0
+    counts[rule_name] = counts.get(rule_name, 0) + 1 if condition_met else 0
     return counts[rule_name]
 
 
@@ -165,6 +165,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
     now = time.time()
     state.setdefault("consecutive_counts", {
         "efficiency_drift": 0, "model_disagreement": 0, "outdoor_sensor_weather_mismatch": 0,
+        "pump_without_flow": 0,
     })
     state.setdefault("last_sent_at", {})
     alerts: list[dict] = []
@@ -181,6 +182,29 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
     if t_oil is not None and t_oil > config.CRITICAL_TEMP:
         emit("CRITIQUE", "critical_temp",
              f"T_bain = {t_oil:.1f}°C > seuil {config.CRITICAL_TEMP:.0f}°C")
+
+    # --- CRITIQUE : fréquence pompe / ventilateur non nulle sans débit ----------
+    # Une pompe qui tourne sans débit (vanne fermée, circuit bouché, désamorçage, variateur ou
+    # capteur de débit défaillant) risque la marche à sec. Seuils : config.PUMP_RUNNING_MIN_HZ
+    # (au-dessus : « en marche ») et config.FLOW_MIN_M3H (en dessous : « pas de débit »).
+    # Confirmation sur plusieurs échantillons distincts : au démarrage de la pompe, le débit met
+    # quelques secondes à monter. Une valeur absente ne déclenche JAMAIS l'alerte (un capteur
+    # muet est un autre problème, signalé par la règle de perte de télémétrie) et remet le
+    # compteur à zéro.
+    if telemetry is not None and _is_new_sample(state, "pump_flow", telemetry):
+        flow = _number(telemetry, "ht01")
+        frequency = _number(telemetry, "freq_pompe")
+        no_flow = (flow is not None and frequency is not None
+                   and frequency > config.PUMP_RUNNING_MIN_HZ and flow < config.FLOW_MIN_M3H)
+        _update_counter(state, "pump_without_flow", no_flow)
+    pump_count = state["consecutive_counts"].get("pump_without_flow", 0)
+    if pump_count >= config.ALERT_CONFIRMATION_CYCLES:
+        flow, frequency = _number(telemetry, "ht01"), _number(telemetry, "freq_pompe")
+        detail = (f"fréquence = {frequency:.1f} Hz, débit = {flow:.2f} m³/h"
+                  if flow is not None and frequency is not None else "valeurs indisponibles")
+        emit("CRITIQUE", "pump_without_flow",
+             f"Pompe/ventilateur en marche sans débit sur {pump_count} mesures consécutives "
+             f"({detail}) — vérifier sur site : vanne, circuit, amorçage, capteur de débit.")
 
     # --- CRITIQUE : perte de communication --------------------------------
     # Référence du silence : le dernier message reçu, ou, si aucun n'est jamais

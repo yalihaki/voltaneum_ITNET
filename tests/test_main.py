@@ -50,11 +50,17 @@ class FakeCollector(_Stoppable):
         super().__init__()
         self.last_known = {column: None for column in config.FEATURE_COLUMNS + [config.TARGET_COLUMN]}
 
+    # Âge simulé du dernier message de la passerelle (None = aucun message encore attendu).
+    message_age: float | None = 1.0
+
     def snapshot(self):
         return dict(self.last_known)
 
     def set_value(self, column, value):
         self.last_known[column] = value
+
+    def seconds_since_last_message(self):
+        return self.message_age
 
 
 class FakeOutdoorSensor(_Stoppable):
@@ -269,6 +275,77 @@ class TestControlTick:
         app._control_tick(1.0)
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)
         assert message["percent"] == 100.0
+
+    # ------------------------------------------------------------------
+    # Conditions de refroidissement publiées sur MQTT
+    # ------------------------------------------------------------------
+    def test_publishes_cooling_conditions_with_target_and_thresholds(self, app):
+        app.start()
+        feed_measurements(app, t_oil=36.0)
+        FakeOutdoorSensor.value = 33.0                        # air chaud : le ventilateur démarre plus tôt
+        app._control_tick(1.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["target_temp"] == config.TARGET_TEMP
+        assert message["outdoor_band"] == "chaud"
+        assert message["fan_on_above_temp"] < config.TARGET_TEMP
+        assert message["fan_off_below_temp"] < message["fan_on_above_temp"] < message["critical_temp"]
+        assert message["valid_for_seconds"] > 0 and "ts" in message
+
+    def test_cooling_conditions_published_without_outdoor_temperature(self, app):
+        app.start()
+        FakeOutdoorSensor.value = None
+        feed_measurements(app, t_oil=36.0)
+        app._control_tick(1.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["outdoor_band"] == "inconnue" and message["fan_min_freq_hz"] is None
+
+    def test_pid_percent_can_be_switched_off_without_losing_the_conditions(self, app, monkeypatch):
+        monkeypatch.setattr(config, "PUBLISH_PID_SETPOINT", False)
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app._control_tick(1.0)
+        assert app.fake_client.messages(config.MQTT_TOPIC_SETPOINT) == []
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)) == 1
+
+    # ------------------------------------------------------------------
+    # Mesures périmées : rien ne doit être publié
+    # ------------------------------------------------------------------
+    def test_nothing_published_when_gateway_stream_is_stale(self, app):
+        """Régression : avec un flux coupé, la dernière température restait figée et le PID
+        continuait de publier avec un horodatage récent, trompant l'automate."""
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app.collector.message_age = config.CONTROL_MAX_DATA_AGE_SECONDS + 1
+        app._control_tick(1.0)
+        assert app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS) == []
+        assert app.fake_client.messages(config.MQTT_TOPIC_SETPOINT) == []
+
+    def test_nothing_published_before_any_gateway_message(self, app):
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app.collector.message_age = None
+        app._control_tick(1.0)
+        assert app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS) == []
+
+    def test_publication_resumes_when_the_stream_comes_back(self, app):
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app.collector.message_age = config.CONTROL_MAX_DATA_AGE_SECONDS + 1
+        app._control_tick(1.0)
+        assert app._stale_data_reported is True
+        app.collector.message_age = 1.0
+        app._control_tick(1.0)
+        assert app._stale_data_reported is False
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)) == 1
+
+    def test_stale_warning_is_logged_once_per_outage(self, app, caplog):
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app.collector.message_age = config.CONTROL_MAX_DATA_AGE_SECONDS + 1
+        with caplog.at_level("WARNING", logger="voltaneum.main"):
+            for _ in range(5):
+                app._control_tick(1.0)
+        assert sum("périmées" in record.getMessage() for record in caplog.records) == 1
 
     def test_stale_outdoor_value_is_cleared_not_kept(self, app):
         app.start()

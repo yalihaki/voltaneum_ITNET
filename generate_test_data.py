@@ -49,13 +49,19 @@ def main() -> None:
 
     outdoor = 18 + 8 * np.sin(phase * 0.7) + rng.normal(0, 0.8, args.rows)
 
-    pump_cycle = 7.0 + 5.0 * np.sin(phase * 0.9 + 1.2)
-    pump_noise = rng.normal(0.0, 1.2, args.rows)
-    pump = np.clip(pump_cycle + pump_noise, 0.0, 15.0)
+    # Fréquence pompe / ventilateur : plage réelle du variateur 0-50 Hz (config.SENSOR_VALID_RANGES),
+    # autour de 30 Hz (valeur relevée sur l'installation), avec de vraies variations.
+    pump_cycle = 30.0 + 15.0 * np.sin(phase * 0.9 + 1.2)
+    pump_noise = rng.normal(0.0, 3.0, args.rows)
+    pump = np.clip(pump_cycle + pump_noise, 0.0, 50.0)
 
-    # Simule un régime plus proche du terrain : pompe faible, PT02 varie peu
-    # mais reste suffisamment explicite pour valider le pipeline et le PID.
-    pt02 = 39.5 + 0.12 * outdoor - 0.22 * pump + rng.normal(0, 0.18, args.rows)
+    # Débit du circuit bain d'huile : plage réelle 0-15 m³/h ; ~10,4 m³/h à 30 Hz relevé sur
+    # l'installation, donc environ proportionnel à la fréquence de la pompe.
+    flow = np.clip(pump * (10.4 / 30.0) + rng.normal(0.0, 0.2, args.rows), 0.0, 15.0)
+
+    # PT02 varie peu mais reste suffisamment explicite pour valider le pipeline et le PID :
+    # plus la pompe tourne vite, plus l'huile est refroidie.
+    pt02 = 37.5 + 0.12 * outdoor - 0.10 * pump + rng.normal(0, 0.18, args.rows)
 
     sqlite_client.init_db(str(path))
     for index, timestamp in enumerate(timestamps):
@@ -65,7 +71,7 @@ def main() -> None:
             pt02=value,
             pt03=value - 1.5,
             pt04=value - 1.7,
-            ht01=39.0 + float(rng.normal(0, 0.2)),
+            ht01=float(flow[index]),
             freq_pompe=float(pump[index]),
             temp_outdoor=float(outdoor[index]),
             timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),

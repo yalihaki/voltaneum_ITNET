@@ -110,6 +110,7 @@ MQTT_TLS_INSECURE: bool = _env_bool("MQTT_TLS_INSECURE")
 MQTT_TOPIC_TELEMETRY = "voltaneum/telemetry"
 MQTT_TOPIC_PREDICTION = "voltaneum/prediction"
 MQTT_TOPIC_SETPOINT = "voltaneum/control/setpoint"
+MQTT_TOPIC_COOLING_CONDITIONS = "voltaneum/control/cooling_conditions"
 MQTT_TOPIC_MODEL_HEALTH = "voltaneum/model_health"
 MQTT_TOPIC_OUTDOOR_CONSISTENCY = "voltaneum/sensors/outdoor_consistency"
 
@@ -129,14 +130,20 @@ SNAPSHOT_INTERVAL_SECONDS: int = _env_int("SNAPSHOT_INTERVAL_SECONDS", 15)
 MAX_GAP_SECONDS: int = _env_int("MAX_GAP_SECONDS", 60)
 
 # Plages physiques plausibles : toute valeur hors plage est rejetée (capteur défaillant).
+#
+# POINT DE SÉCURITÉ — bornes hautes des sondes de température PT01..PT04 : elles restent
+# volontairement AU-DESSUS de CRITICAL_TEMP (55 °C). Une borne haute à 55 °C rejetterait
+# toute mesure > 55 °C comme « hors plage » : l'alerte critique et le bypass de sécurité du
+# PID ne verraient alors JAMAIS une surchauffe réelle. `validate_config()` refuse de démarrer
+# si cette condition n'est pas respectée pour la température d'huile (TARGET_COLUMN).
 SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
-    "pt01": (-20.0, 150.0),
-    "pt02": (-20.0, 150.0),
-    "pt03": (-20.0, 150.0),
-    "pt04": (-20.0, 150.0),
-    "ht01": (0.0, 200.0),
-    "freq_pompe": (0.0, 15.0),   # plage réelle du variateur de la pompe (Hz)
-    "temp_outdoor": (-50.0, 55.0),
+    "pt01": (-20.0, 150.0),      # °C — circuit bain d'huile
+    "pt02": (-20.0, 150.0),      # °C — circuit bain d'huile (grandeur régulée et prédite)
+    "pt03": (-20.0, 150.0),      # °C — circuit dry cooler
+    "pt04": (-20.0, 150.0),      # °C — circuit dry cooler
+    "ht01": (0.0, 15.0),         # m³/h — débit du circuit bain d'huile
+    "freq_pompe": (0.0, 50.0),   # Hz — fréquence pompe / ventilateur (variateur)
+    "temp_outdoor": (-20.0, 55.0),  # °C — capteur extérieur indépendant
 }
 
 # ---------------------------------------------------------------------------
@@ -161,6 +168,32 @@ CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
 PID_KP: float = _env_float("PID_KP", 5.0)
 PID_KI: float = _env_float("PID_KI", 0.1)
 PID_KD: float = _env_float("PID_KD", 1.0)
+# Âge maximal (secondes) du dernier message reçu de la passerelle pour que la boucle de
+# contrôle publie : au-delà, les mesures sont considérées périmées et RIEN n'est publié
+# (l'automate retombe sur sa propre régulation). À augmenter seulement si la passerelle
+# n'envoie ses valeurs que sur changement.
+CONTROL_MAX_DATA_AGE_SECONDS: float = _env_float("CONTROL_MAX_DATA_AGE_SECONDS", 120.0)
+# Publie aussi la consigne PID en pourcentage (voltaneum/control/setpoint) : INFORMATIVE
+# uniquement (suivi / comparaison avec l'automate). Les conditions à suivre sont publiées
+# séparément sur voltaneum/control/cooling_conditions.
+PUBLISH_PID_SETPOINT: bool = _env_bool("PUBLISH_PID_SETPOINT", True)
+
+# ---------------------------------------------------------------------------
+# Conditions de refroidissement publiées sur MQTT (control/cooling_advice.py)
+# ---------------------------------------------------------------------------
+# VALEURS INDICATIVES, À VALIDER AVEC L'AUTOMATICIEN (rien n'est calibré sur le vrai système).
+# Chaque bande : (limite haute EXCLUE en °C, nom, décalage du seuil de marche en °C,
+#                 fréquence minimale conseillée en Hz).
+# Seuil de marche du ventilateur = TARGET_TEMP + décalage. Air extérieur froid : le dry cooler
+# refroidit plus facilement, on peut démarrer plus tard (+). Air chaud : on démarre plus tôt (-).
+OUTDOOR_BANDS: tuple[tuple[float, str, float, float], ...] = (
+    (10.0, "froid", 2.0, 20.0),
+    (25.0, "tempere", 0.0, 30.0),
+    (float("inf"), "chaud", -2.0, 40.0),
+)
+# Écart entre le seuil de marche et le seuil d'arrêt (évite les marche/arrêt rapprochés).
+FAN_HYSTERESIS_CELSIUS: float = 2.0
+
 SETPOINT_MIN: float = 0.0
 SETPOINT_MAX: float = 100.0
 # Termes « feedforward » : anticipent la dérive à partir de la prédiction et de la météo.
@@ -202,6 +235,11 @@ ALERT_EMAIL_TO: str | None = _env_optional("ALERT_EMAIL_TO")
 ALERT_COOLDOWN_MINUTES: int = _env_int("ALERT_COOLDOWN_MINUTES", 30)
 ALERT_CONFIRMATION_CYCLES: int = _env_int("ALERT_CONFIRMATION_CYCLES", 3)
 TELEMETRY_TIMEOUT_SECONDS: int = _env_int("TELEMETRY_TIMEOUT_SECONDS", 300)
+# Règle « pompe en marche sans débit » (risque de marche à sec). VALEURS INDICATIVES, à
+# valider avec l'automaticien : fréquence au-dessus de laquelle la pompe est considérée en
+# marche (Hz), et débit en dessous duquel il n'y a « pas de débit » (m³/h).
+PUMP_RUNNING_MIN_HZ: float = _env_float("PUMP_RUNNING_MIN_HZ", 5.0)
+FLOW_MIN_M3H: float = _env_float("FLOW_MIN_M3H", 0.5)
 # Plage d'efficacité attendue de l'échangeur (provisoire, à resserrer avec des données réelles).
 EFFICIENCY_MIN_EXPECTED: float = _env_float("EFFICIENCY_MIN_EXPECTED", 0.0)
 EFFICIENCY_MAX_EXPECTED: float = _env_float("EFFICIENCY_MAX_EXPECTED", 1.0)
@@ -218,6 +256,13 @@ STORAGE_PURGE_BATCH_SIZE: int = _env_int("STORAGE_PURGE_BATCH_SIZE", 1000)
 # Idéalement un AUTRE volume que la base, avec au moins autant d'espace libre qu'elle.
 STORAGE_BACKUP_DIR: str = _env_path("STORAGE_BACKUP_DIR", "backups")
 STORAGE_BACKUP_RETENTION_COUNT: int = _env_int("STORAGE_BACKUP_RETENTION_COUNT", 7)
+# Âge minimal (jours) d'une sauvegarde compressée avant qu'elle puisse être supprimée :
+# PLANCHER de conservation. Une archive plus récente n'est JAMAIS supprimée, même au-delà des
+# STORAGE_BACKUP_RETENTION_COUNT plus récentes (exigence : données gardées au moins un an).
+STORAGE_BACKUP_MIN_AGE_DAYS: int = _env_int("STORAGE_BACKUP_MIN_AGE_DAYS", 365)
+# Espace libre exigé sur le volume de sauvegarde, en multiple de la taille de la base
+# (copie temporaire non compressée + archive). En dessous : sauvegarde refusée, RIEN supprimé.
+STORAGE_BACKUP_FREE_SPACE_FACTOR: float = _env_float("STORAGE_BACKUP_FREE_SPACE_FACTOR", 1.1)
 STORAGE_ALERT_COOLDOWN_MINUTES: int = _env_int("STORAGE_ALERT_COOLDOWN_MINUTES", 60)
 
 # ---------------------------------------------------------------------------
@@ -231,6 +276,27 @@ _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(f"Configuration invalide : {message}")
+
+
+def _validate_cooling_bands() -> None:
+    """Contrôle la table OUTDOOR_BANDS : bandes ordonnées, seuils sous le seuil critique."""
+    _require(len(OUTDOOR_BANDS) > 0, "OUTDOOR_BANDS ne peut pas être vide.")
+    previous_limit = float("-inf")
+    freq_low, freq_high = SENSOR_VALID_RANGES["freq_pompe"]
+    for upper_limit, name, offset, min_freq_hz in OUTDOOR_BANDS:
+        _require(upper_limit > previous_limit,
+                 f"OUTDOOR_BANDS : limites hautes non strictement croissantes (bande {name!r}).")
+        previous_limit = upper_limit
+        fan_on = TARGET_TEMP + offset
+        _require(fan_on < CRITICAL_TEMP,
+                 f"OUTDOOR_BANDS : le seuil de marche de la bande {name!r} ({fan_on}) doit rester "
+                 f"sous CRITICAL_TEMP ({CRITICAL_TEMP}).")
+        _require(fan_on - FAN_HYSTERESIS_CELSIUS < fan_on, "FAN_HYSTERESIS_CELSIUS doit être positif.")
+        _require(freq_low <= min_freq_hz <= freq_high,
+                 f"OUTDOOR_BANDS : la fréquence de la bande {name!r} ({min_freq_hz} Hz) sort de la plage "
+                 f"valide de freq_pompe [{freq_low}, {freq_high}].")
+    _require(previous_limit == float("inf"),
+             "OUTDOOR_BANDS : la dernière bande doit être ouverte (limite haute = inf).")
 
 
 def validate_config() -> None:
@@ -259,6 +325,9 @@ def validate_config() -> None:
         "STORAGE_LIMIT_BYTES": STORAGE_LIMIT_BYTES, "STORAGE_CHECK_INTERVAL_SECONDS": STORAGE_CHECK_INTERVAL_SECONDS,
         "STORAGE_PURGE_BATCH_SIZE": STORAGE_PURGE_BATCH_SIZE,
         "STORAGE_BACKUP_RETENTION_COUNT": STORAGE_BACKUP_RETENTION_COUNT,
+        "CONTROL_MAX_DATA_AGE_SECONDS": CONTROL_MAX_DATA_AGE_SECONDS,
+        "FAN_HYSTERESIS_CELSIUS": FAN_HYSTERESIS_CELSIUS, "FLOW_MIN_M3H": FLOW_MIN_M3H,
+        "STORAGE_BACKUP_FREE_SPACE_FACTOR": STORAGE_BACKUP_FREE_SPACE_FACTOR,
     }.items():
         _require(value > 0, f"{name} doit être strictement positif, reçu {value}.")
     for name, value in {
@@ -267,6 +336,7 @@ def validate_config() -> None:
         "RETENTION_DAYS": RETENTION_DAYS, "PREDICTIONS_RETENTION_DAYS": PREDICTIONS_RETENTION_DAYS,
         "ALERTS_RETENTION_DAYS": ALERTS_RETENTION_DAYS,
         "PID_KP": PID_KP, "PID_KI": PID_KI, "PID_KD": PID_KD,
+        "STORAGE_BACKUP_MIN_AGE_DAYS": STORAGE_BACKUP_MIN_AGE_DAYS, "PUMP_RUNNING_MIN_HZ": PUMP_RUNNING_MIN_HZ,
     }.items():
         _require(value >= 0, f"{name} ne peut pas être négatif, reçu {value}.")
 
@@ -277,6 +347,12 @@ def validate_config() -> None:
              "EFFICIENCY_MIN_EXPECTED doit être inférieur à EFFICIENCY_MAX_EXPECTED.")
     _require(0.0 < STORAGE_PURGE_TARGET_RATIO < STORAGE_WARNING_RATIO <= 1.0,
              "il faut 0 < STORAGE_PURGE_TARGET_RATIO < STORAGE_WARNING_RATIO <= 1.")
+    # Invariant de sécurité : une surchauffe réelle doit rester MESURABLE (voir SENSOR_VALID_RANGES).
+    oil_upper_bound = SENSOR_VALID_RANGES[TARGET_COLUMN][1]
+    _require(oil_upper_bound > CRITICAL_TEMP,
+             f"la borne haute valide de {TARGET_COLUMN} ({oil_upper_bound}) doit dépasser CRITICAL_TEMP "
+             f"({CRITICAL_TEMP}) : sinon une surchauffe serait rejetée comme « hors plage » et jamais détectée.")
+    _validate_cooling_bands()
 
     # MQTT : TLS toujours vérifié
     _require(not MQTT_TLS_INSECURE,

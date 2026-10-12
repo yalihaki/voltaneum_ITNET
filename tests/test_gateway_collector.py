@@ -163,6 +163,65 @@ class TestRefreshPointMapping:
         assert mapping
         assert "K0" in mapping
 
+    @patch("collectors.gateway_collector.requests.post")
+    def test_second_gateway_catalog_is_fully_recognized(self, mock_post):
+        """Catalogue réel de la passerelle 10.0.1.34 : noms courts, PUMP, points modifiables ignorés."""
+        catalog = {"Data": [
+            {"KeyNode": "K0", "KeyName": "PT01", "DevNode": "idospV1_1", "WrEnable": 0},
+            {"KeyNode": "K1", "KeyName": "PT02", "DevNode": "idospV1_1", "WrEnable": 0},
+            {"KeyNode": "K2", "KeyName": "PT03", "DevNode": "idospV1_1", "WrEnable": 0},
+            {"KeyNode": "K3", "KeyName": "PT04", "DevNode": "idospV1_1", "WrEnable": 0},
+            {"KeyNode": "K4", "KeyName": "HT01", "DevNode": "idospV1_1", "WrEnable": 0},
+            {"KeyNode": "K5", "KeyName": "PUMP", "DevNode": "idospV1_1", "WrEnable": 0},
+            # Points MODIFIABLES du catalogue : ne doivent JAMAIS être mappés (lecture seule).
+            {"KeyNode": "K6", "KeyName": "ON/OFF", "DevNode": "idospV1_1", "WrEnable": 1},
+            {"KeyNode": "K12", "KeyName": "Temperature setpoint", "DevNode": "idospV1_1", "WrEnable": 1},
+            {"KeyNode": "K17", "KeyName": "Emergency stop bypass", "DevNode": "idospV1_1", "WrEnable": 1},
+            {"KeyNode": "auto_mode", "KeyName": "AUTO REQUEST M4.2", "DevNode": "idospV1_1", "WrEnable": 1},
+            {"KeyNode": "diag_vw12", "KeyName": "DIAG Actual frequency VW12", "DevNode": "idospV1_1", "WrEnable": 0},
+        ]}
+        mock_post.return_value = MagicMock(**{"json.return_value": catalog, "raise_for_status.return_value": None})
+        collector = _make_collector()
+        collector.token = "fake"
+        assert collector.refresh_point_mapping() == {
+            "K0": "pt01", "K1": "pt02", "K2": "pt03", "K3": "pt04", "K4": "ht01", "K5": "freq_pompe",
+        }
+
+    @patch("collectors.gateway_collector.requests.post")
+    def test_first_gateway_catalog_still_recognizes_pump_frequency(self, mock_post):
+        catalog = {"Data": [
+            {"KeyNode": "K0", "KeyName": "PT03-temperature", "DevNode": "idospV1_1"},
+            {"KeyNode": "K4", "KeyName": "Pump frequency", "DevNode": "idospV1_1"},
+            {"KeyNode": "K7", "KeyName": "Manual-Auto", "DevNode": "idospV1_1", "WrEnable": 1},
+        ]}
+        mock_post.return_value = MagicMock(**{"json.return_value": catalog, "raise_for_status.return_value": None})
+        collector = _make_collector()
+        collector.token = "fake"
+        assert collector.refresh_point_mapping() == {"K0": "pt03", "K4": "freq_pompe"}
+
+    def test_no_writable_point_name_is_ever_in_the_mapping_table(self):
+        """Règle de sécurité : la table ne contient aucun nom de point modifiable connu."""
+        from collectors.gateway_collector import KEYNAME_TO_COLUMN
+        writable_names = {
+            "ON/OFF", "Temperature setpoint", "Emergency stop bypass", "Phase sequence bypass",
+            "Manual-Auto", "AUTO REQUEST M4.2", "MANUAL PUMP REQUEST M4.3", "Maximum frequency",
+            "Minimum frequency", "Pump downtime", "Clear alarm timers", "Alarm delay",
+        }
+        assert not writable_names & set(KEYNAME_TO_COLUMN)
+
+    @patch("collectors.gateway_collector.requests.post")
+    def test_two_points_for_the_same_column_are_reported(self, mock_post, caplog):
+        catalog = {"Data": [
+            {"KeyNode": "K4", "KeyName": "Pump frequency", "DevNode": "idospV1_1"},
+            {"KeyNode": "K5", "KeyName": "PUMP", "DevNode": "idospV1_1"},
+        ]}
+        mock_post.return_value = MagicMock(**{"json.return_value": catalog, "raise_for_status.return_value": None})
+        collector = _make_collector()
+        collector.token = "fake"
+        with caplog.at_level("WARNING"):
+            collector.refresh_point_mapping()
+        assert any("alimentée par deux points" in r.getMessage() for r in caplog.records)
+
     def test_refresh_point_mapping_requires_login_first(self):
         """Sans token, refresh_point_mapping doit lever RuntimeError avant tout appel réseau."""
         collector = _make_collector()
@@ -226,6 +285,35 @@ class TestOnWsMessage:
         collector._on_ws_message(raw)
         assert collector.last_known["pt01"] == 27.8
         assert collector.last_known["pt02"] == 27.5
+
+    def _message(self, key, value):
+        return json.dumps({"Code": "IotData", "Data": {"Node": "idospV1_1", "Point": [{"K": key, "V": value}]}})
+
+    def test_pump_at_30_hz_is_accepted(self):
+        """Régression : l'ancienne plage 0-15 Hz rejetait une pompe à 30 Hz à chaque message."""
+        collector = self._collector_with_mapping()
+        collector.keynode_to_column["K5"] = "freq_pompe"
+        collector._on_ws_message(self._message("K5", 30))
+        assert collector.last_known["freq_pompe"] == 30.0
+
+    def test_pump_above_50_hz_is_rejected(self):
+        collector = self._collector_with_mapping()
+        collector.keynode_to_column["K5"] = "freq_pompe"
+        collector._on_ws_message(self._message("K5", 51))
+        assert collector.last_known["freq_pompe"] is None
+
+    def test_flow_in_range_is_accepted_and_above_15_is_rejected(self):
+        collector = self._collector_with_mapping()
+        collector._on_ws_message(self._message("K4", 10.4))
+        assert collector.last_known["ht01"] == 10.4
+        collector._on_ws_message(self._message("K4", 15.5))
+        assert collector.last_known["ht01"] == 10.4          # valeur hors plage ignorée
+
+    def test_oil_overheating_is_not_discarded_as_out_of_range(self):
+        """Régression de sécurité : 58 °C (> seuil critique) doit être MESURÉ, pas rejeté."""
+        collector = self._collector_with_mapping()
+        collector._on_ws_message(self._message("K1", 58.0))
+        assert collector.last_known["pt02"] == 58.0
 
     def test_ignores_message_with_other_node(self):
         collector = self._collector_with_mapping()
@@ -378,3 +466,26 @@ def test_run_forever_writes_row_after_60s(temp_db_path):
 
     df = sqlite_client.get_dataframe("2000-01-01", "2100-01-01", db_path=temp_db_path)
     assert len(df) >= 1
+
+class TestMessageAge:
+    """`seconds_since_last_message` : sert à ne pas publier de consigne sur des mesures périmées."""
+
+    def test_none_before_any_message_is_expected(self):
+        assert _make_collector().seconds_since_last_message() is None
+
+    def test_grows_with_time_and_resets_on_a_message(self):
+        collector = _make_collector()
+        collector.keynode_to_column = {"K0": "pt01"}
+        collector._last_message_at = time.monotonic() - 50
+        assert 49 <= collector.seconds_since_last_message() <= 60
+        collector._ws_on_message(None, json.dumps({"Code": "NetworkStatus"}))
+        assert collector.seconds_since_last_message() < 5
+
+    def test_public_silence_check_follows_the_configured_timeout(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "WS_SILENCE_TIMEOUT_SECONDS", 10)
+        collector = _make_collector()
+        collector._last_message_at = time.monotonic() - 5
+        assert collector.stream_is_silent() is False
+        collector._last_message_at = time.monotonic() - 20
+        assert collector.stream_is_silent() is True

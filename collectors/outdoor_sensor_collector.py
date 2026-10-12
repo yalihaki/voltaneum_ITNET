@@ -31,7 +31,7 @@ from messaging.mqtt import connect_with_retry, create_client
 logger = logging.getLogger(__name__)
 
 # Bornes de plausibilité physique d'une température extérieure (°C).
-PLAUSIBLE_TEMP_MIN = -20.0
+PLAUSIBLE_TEMP_MIN = -50.0
 PLAUSIBLE_TEMP_MAX = 55.0
 
 # Clés JSON acceptées pour la température dans un payload objet.

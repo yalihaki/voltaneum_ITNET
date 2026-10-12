@@ -151,6 +151,49 @@ class TestManager:
         assert _count(db) == ROWS                         # AUCUNE donnée supprimée
         assert alerts.sent[-1][2] == "CRITIQUE" and "Sauvegarde" in alerts.sent[-1][0]
 
+    def test_backup_receives_the_one_year_minimum_age(self, db, monkeypatch):
+        """La purge doit créer sa sauvegarde avec le plancher d'âge de STORAGE_BACKUP_MIN_AGE_DAYS."""
+        manager, clock, _ = _manager(db, monkeypatch)
+        received = {}
+        real_create_backup = storage_manager.create_backup
+
+        def spy(db_path, backup_dir, retention_count, min_age_days):
+            received["min_age_days"] = min_age_days
+            return real_create_backup(db_path, backup_dir, retention_count, min_age_days)
+
+        monkeypatch.setattr(storage_manager, "create_backup", spy)
+        manager.check_once()
+        clock["t"] += config.STORAGE_GRACE_PERIOD_SECONDS + 1
+        manager.check_once()
+        assert received["min_age_days"] == config.STORAGE_BACKUP_MIN_AGE_DAYS == 365
+
+    def test_insufficient_backup_space_cancels_the_purge_and_alerts(self, db, monkeypatch):
+        """Volume de sauvegarde trop petit : aucune donnée supprimée, alerte CRITIQUE explicite."""
+        from collections import namedtuple
+        usage = namedtuple("usage", "total used free")
+        manager, clock, alerts = _manager(db, monkeypatch)
+        monkeypatch.setattr(storage_manager.shutil, "disk_usage", lambda path: usage(10, 10, 0))
+        manager.check_once()
+        clock["t"] += config.STORAGE_GRACE_PERIOD_SECONDS + 1
+        assert manager.check_once()["purged"] == 0
+        assert _count(db) == ROWS
+        assert alerts.sent[-1][2] == "CRITIQUE" and "Sauvegarde" in alerts.sent[-1][0]
+        assert "espace libre insuffisant" in alerts.sent[-1][1]
+        assert not list(Path(config.STORAGE_BACKUP_DIR).glob("*.db.gz"))
+
+    def test_inaccessible_backup_volume_cancels_the_purge(self, db, monkeypatch):
+        manager, clock, alerts = _manager(db, monkeypatch)
+
+        def broken(path):
+            raise OSError("volume démonté")
+
+        monkeypatch.setattr(storage_manager.shutil, "disk_usage", broken)
+        manager.check_once()
+        clock["t"] += config.STORAGE_GRACE_PERIOD_SECONDS + 1
+        assert manager.check_once()["purged"] == 0
+        assert _count(db) == ROWS
+        assert "inaccessible" in alerts.sent[-1][1]
+
     def test_invalid_backup_cancels_the_purge(self, db, monkeypatch):
         manager, clock, alerts = _manager(db, monkeypatch)
         monkeypatch.setattr(storage_manager, "verify_backup", lambda path: False)

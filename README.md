@@ -1,8 +1,8 @@
 # Voltaneum / ITNET
 
-Système de télémétrie industrielle pour échangeur thermique : collecte des capteurs, stockage SQLite, prédiction de température, supervision des erreurs, alertes email et calcul d'une consigne de refroidissement publiée sur MQTT.
+Système de télémétrie industrielle pour échangeur thermique : collecte des capteurs, stockage SQLite, prédiction de température, supervision des erreurs, alertes email, et publication sur MQTT de la température cible et des conditions de refroidissement (seuils de marche/arrêt du ventilateur selon la température extérieure).
 
-> Le logiciel ne commande jamais directement un variateur ou un automate. Il publie uniquement une suggestion de consigne ; l'automate reste décisionnaire.
+> Le logiciel ne commande jamais directement un variateur ou un automate. Il publie uniquement des conditions et une suggestion de consigne ; l'automate (ou son pont) lit ces messages et reste seul décisionnaire.
 
 Le cahier des charges maître du projet est [CAHIER_DES_CHARGES_FINAL.md](CAHIER_DES_CHARGES_FINAL.md). Ce README fournit les commandes et procédures d'exploitation associées.
 
@@ -32,18 +32,19 @@ GatewayCollector
 SQLite --> monitoring des prédictions et gestion automatique du stockage
 ```
 
-Le processus principal démarre :
+Le processus principal démarre (chaque thread est supervisé et relancé s'il s'arrête) :
 
 - le collecteur passerelle ;
-- la boucle de contrôle PID ;
-- le superviseur de stockage SQLite.
+- la boucle de contrôle (conditions de refroidissement + PID) ;
+- le superviseur de stockage SQLite ;
+- l'écouteur du capteur extérieur et le vérificateur de cohérence capteur / météo.
 
 Le notifier email et le monitoring des modèles sont des modules indépendants, lançables comme processus séparés lorsqu'un broker MQTT est disponible.
 
 ## 2. Prérequis
 
 - macOS, Linux ou Windows 10/11 ;
-- Python 3.12 recommandé ;
+- Python 3.11 ou plus récent (3.12 recommandé) : les versions épinglées de `requirements.txt` (numpy 2.4) exigent Python ≥ 3.11 ;
 - accès réseau à la passerelle industrielle ;
 - broker MQTT (Mosquitto, par exemple) ;
 - compte de lecture sur la passerelle ;
@@ -101,7 +102,7 @@ pytest -q
 python -m pip_audit -r requirements.txt
 ```
 
-Le résultat attendu au moment de la rédaction est : `86 passed, 3 skipped`, avec `ruff`, `mypy` et `pip-audit` sans erreur connue.
+Le résultat attendu au moment de la rédaction est : `260 passed, 3 skipped` (les 3 tests ignorés sont des tests d'intégration réseau, à lancer avec `RUN_NETWORK_TESTS=1` depuis le réseau concerné), avec `ruff`, `mypy` et `bandit` sans alerte. `python simulate.py` doit afficher `24/24 vérifications réussies`.
 
 Après une installation propre, les commandes de validation créent temporairement des caches locaux ; ils peuvent être supprimés avant transfert :
 
@@ -184,7 +185,7 @@ VOLTANEUM_LAT=48.8566
 VOLTANEUM_LON=2.3522
 ```
 
-La température extérieure vient d'un capteur physique indépendant (pas Open-Meteo, pas un point de l'automate) : soit il publie lui-même sur MQTT (`OUTDOOR_SENSOR_MODE=mqtt`, recommandé), soit il expose une petite API HTTP interrogée à chaque cycle (`OUTDOOR_SENSOR_MODE=http`). En cas d'indisponibilité, la dernière valeur connue est utilisée ; si aucune valeur n'existe encore, le cycle de contrôle est reporté. Voir `collectors/outdoor_sensor_collector.py`.
+La température extérieure vient d'un capteur physique indépendant (pas Open-Meteo, pas un point de l'automate) : soit il publie lui-même sur MQTT (`OUTDOOR_SENSOR_MODE=mqtt`, recommandé), soit il expose une petite API HTTP interrogée à chaque cycle (`OUTDOOR_SENSOR_MODE=http`). Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min par défaut) est ignorée : aucune valeur périmée n'est jamais utilisée. Sans température extérieure, le PID et son bypass de sécurité continuent de fonctionner ; les conditions de refroidissement sont alors publiées avec la bande « inconnue » (seuils neutres, aucune fréquence imposée). Voir `collectors/outdoor_sensor_collector.py`.
 
 ### 4.4 Email SMTP
 
@@ -443,10 +444,13 @@ python -m notifications.email_notifier
 
 Le notifier écoute les topics de télémétrie, prédiction et consigne. Il gère :
 
-- température critique ;
-- perte de télémétrie ;
+- température critique (`critical_temp`, CRITIQUE, immédiat) ;
+- **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` (5 Hz) et débit < `FLOW_MIN_M3H` (0,5 m³/h) sur `ALERT_CONFIRMATION_CYCLES` mesures consécutives ; une valeur absente ne déclenche jamais cette règle ;
+- perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - dérive d'efficacité ;
 - désaccord entre modèles ;
+- écart entre capteur extérieur et météo ;
+- événements de stockage (`storage_*`) ;
 - cooldown anti-spam ;
 - confirmation sur plusieurs cycles pour les alertes d'attention ;
 - journalisation dans `alerts_log`.
@@ -491,7 +495,15 @@ Avant toute purge, le système crée une copie SQLite cohérente, la compresse e
 ```env
 STORAGE_BACKUP_DIR=backups
 STORAGE_BACKUP_RETENTION_COUNT=7
+STORAGE_BACKUP_MIN_AGE_DAYS=365
+STORAGE_BACKUP_FREE_SPACE_FACTOR=1.1
 ```
+
+**Conservation d'un an (exigence)** : une archive compressée n'est supprimée que si elle est à la fois au-delà des `STORAGE_BACKUP_RETENTION_COUNT` plus récentes **et** plus vieille que `STORAGE_BACKUP_MIN_AGE_DAYS` (365 jours). Une archive de moins d'un an n'est jamais supprimée, même en grand nombre. Combiné au plancher `RETENTION_DAYS=365` de la base vivante, aucune donnée n'est perdue avant un an. L'âge est lu dans le nom de l'archive (horodatage UTC de création).
+
+**Espace disque** : la sauvegarde crée d'abord une copie temporaire non compressée de la base, puis son archive. Le volume `STORAGE_BACKUP_DIR` doit donc offrir au moins la taille de la base × `STORAGE_BACKUP_FREE_SPACE_FACTOR` d'espace libre (idéalement un autre disque). Sinon la purge est annulée, rien n'est supprimé et une alerte CRITIQUE est envoyée. Une archive sur le même disque ne protège pas d'une panne de disque : copier aussi les archives sur un autre support.
+
+**Volume réel** : à 15 s par mesure, la télémétrie représente environ 2,1 millions de lignes par an (de l'ordre de quelques centaines de Mo). Avec la limite par défaut de 1 Tio, la base n'approchera jamais le seuil ; réglez `STORAGE_LIMIT_BYTES` sur la part de disque réellement disponible.
 
 Test manuel :
 
@@ -512,7 +524,8 @@ PY
 |---|---|
 | `voltaneum/telemetry` | instantané des capteurs |
 | `voltaneum/prediction` | prédictions des deux modèles |
-| `voltaneum/control/setpoint` | suggestion de consigne, jamais une écriture automate |
+| `voltaneum/control/cooling_conditions` | **température cible et conditions à suivre** (seuils de marche / d'arrêt du ventilateur selon la température extérieure, fréquence minimale conseillée, seuil critique, durée de validité) — jamais un ordre |
+| `voltaneum/control/setpoint` | consigne PID en % (**informative** ; désactivable avec `PUBLISH_PID_SETPOINT=false`), jamais une écriture automate |
 | `voltaneum/model_health` | RMSE glissant et état du monitoring |
 | `voltaneum/sensors/outdoor_temperature` | valeur publiée par le capteur extérieur physique (mode `mqtt`) |
 | `voltaneum/sensors/outdoor_consistency` | écart mesuré entre le capteur extérieur et l'API météo (vérification uniquement, jamais une substitution) |
@@ -523,17 +536,81 @@ Observer les messages avec Mosquitto :
 mosquitto_sub -h localhost -t 'voltaneum/#' -v
 ```
 
-## 13. Contrôle PID et sécurité
+## 13. Conditions de refroidissement, PID et sécurité
 
-Le PID calcule une suggestion entre 0 et 100 %.
+### 13.1 Ce que le système publie (`voltaneum/control/cooling_conditions`)
+
+À chaque cycle de contrôle (60 s par défaut), le système publie la **température cible** et les **conditions à suivre**, choisies selon la température extérieure. Il ne dit jamais « allume » ou « éteins » : l'automate compare lui-même la température d'huile à ces seuils.
+
+```json
+{
+  "target_temp": 35.0,
+  "critical_temp": 55.0,
+  "outdoor_band": "chaud",
+  "fan_on_above_temp": 33.0,
+  "fan_off_below_temp": 31.0,
+  "fan_min_freq_hz": 40.0,
+  "t_oil": 36.2,
+  "t_outdoor": 33.0,
+  "valid_for_seconds": 180.0,
+  "ts": 1791560000.0
+}
+```
+
+| Bande (`OUTDOOR_BANDS`) | Température extérieure | Seuil de marche (cible + décalage) | Fréquence minimale conseillée |
+|---|---|---|---|
+| `froid` | < 10 °C | cible + 2 °C | 20 Hz |
+| `tempere` | 10 à 25 °C | cible | 30 Hz |
+| `chaud` | ≥ 25 °C | cible − 2 °C | 40 Hz |
+| `inconnue` | capteur absent ou muet | cible | aucune (`null`) : l'automate applique ses propres réglages |
+
+Le seuil d'arrêt vaut le seuil de marche moins `FAN_HYSTERESIS_CELSIUS` (2 °C) : cet écart évite les marches / arrêts rapprochés. Air froid : le dry cooler refroidit mieux, le ventilateur démarre plus tard. Air chaud : il démarre plus tôt.
+
+> **Valeurs indicatives.** Les bandes, décalages, hystérésis et fréquences (`OUTDOOR_BANDS`, `FAN_HYSTERESIS_CELSIUS` dans `config.py`) sont des valeurs de départ, **non calibrées sur le vrai système** : à faire valider ou remplacer par l'automaticien. `validate_config()` refuse une table incohérente (bandes non ordonnées, seuil de marche au-delà du seuil critique, fréquence hors de la plage du variateur).
+
+### 13.2 Ce que l'automate (ou son pont) doit faire
+
+L'automate décide seul. À ma connaissance, l'automate Siemens S7-200 SMART n'a pas de client MQTT natif : un pont (passerelle, outil d'intégration) lisant le topic est donc probablement nécessaire — **à confirmer avec l'automaticien**. C'est ce pont qui doit appliquer les contrôles suivants :
+
+- ignorer tout message plus vieux que `valid_for_seconds` (ou dont `ts` est périmé) et **retomber sur sa propre régulation** ;
+- appliquer les conditions dans ses propres bornes (fréquences minimale et maximale du variateur) ;
+- respecter son mode manuel / automatique, ses arrêts d'urgence et ses temporisations ;
+- limiter la vitesse de variation ;
+- ne jamais toucher aux points de sécurité (bypass, arrêt d'urgence) : ce projet n'y écrit jamais.
+
+Sur le broker : authentification et TLS activés, seul `voltaneum-main` autorisé à publier sur `voltaneum/control/#`, le pont en lecture seule. Ne pas publier ces messages avec le drapeau « retained » (comportement actuel) : un abonné qui se connecte ne doit pas recevoir une vieille consigne.
+
+### 13.3 Mesures périmées : rien n'est publié
+
+Si aucun message n'est reçu de la passerelle depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s par défaut), la boucle de contrôle **ne publie rien** (un seul avertissement par panne, puis reprise automatique). Sans cette règle, la dernière température connue resterait figée dans le collecteur et serait publiée avec un horodatage récent, trompant l'automate. À augmenter seulement si la passerelle n'envoie ses valeurs que sur changement.
+
+### 13.4 Consigne PID (informative)
+
+Le PID calcule une suggestion entre 0 et 100 %, publiée sur `voltaneum/control/setpoint` tant que `PUBLISH_PID_SETPOINT=true` (suivi, comparaison avec la régulation de l'automate).
 
 - température critique : bypass de sécurité à 100 % ;
 - données `NaN` ou infinies : comportement sûr, sans contamination de l'état ;
-- météo indisponible : dernière valeur connue ou cycle reporté ;
+- **anti-windup** : l'intégrale est gelée quand la sortie est saturée **et** bornée dans `[0, 100 % / Ki]`. Le correctif « huile froide » évite qu'une longue période froide retarde la réaction (cas mesuré avant correction : huile à 10 °C puis 40 °C, 9 minutes à 0 % avant de réagir ; après correction : réaction dès le premier cycle chaud) ;
+- météo indisponible : seule l'anticipation météo est ignorée, le PID et le bypass continuent ;
 - modèle absent ou défaillant : fonctionnement PID dégradé ;
 - aucune fonction du projet n'écrit directement sur un actionneur.
 
 Les constantes `PID_KP`, `PID_KI`, `PID_KD`, `TARGET_TEMP` et `CRITICAL_TEMP` doivent être calibrées avec l'installation réelle et validées par l'exploitant industriel.
+
+### 13.5 Plages de validité des capteurs
+
+| Mesure | Plage valide (`SENSOR_VALID_RANGES`) |
+|---|---|
+| `pt01` à `pt04` | −20 … 150 °C |
+| `ht01` (débit du circuit bain d'huile) | 0 … 15 m³/h |
+| `freq_pompe` (fréquence pompe / ventilateur) | 0 … 50 Hz |
+| `temp_outdoor` | −20 … 55 °C |
+
+Toute valeur `NaN`, infinie ou hors plage est rejetée et journalisée. **Point de sécurité** : la borne haute des sondes de température reste volontairement au-dessus du seuil critique (55 °C). Une borne haute à 55 °C rejetterait toute mesure supérieure à 55 °C comme « hors plage » : l'alerte critique et le bypass du PID ne verraient jamais une surchauffe réelle. `validate_config()` refuse de démarrer si cette condition n'est pas respectée.
+
+### 13.6 Noms des points de la passerelle
+
+Deux catalogues réels ont été relevés (9 octobre 2026) ; `KEYNAME_TO_COLUMN` accepte les deux : `PT01-temperature`… et `Pump frequency` (passerelle 10.0.1.33), `PT01`… et `PUMP` (passerelle 10.0.1.34), `HT01` commun. Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass…) n'y figurent jamais. **À confirmer avec l'automaticien** : `PUMP` est supposé être la fréquence pompe / ventilateur (un point `DIAG Actual frequency VW12` existe aussi).
 
 ## 14. Tests et qualité
 
@@ -556,7 +633,7 @@ Audit des dépendances :
 python -m pip_audit -r requirements.txt
 ```
 
-Les tests couvrent la base SQLite, les trous de collecte, le collecteur, la météo, l'entraînement, la prédiction, le monitoring, le PID, les emails, le cycle de vie et le stockage automatique.
+Les tests couvrent la base SQLite, les trous de collecte, le collecteur (mapping des deux passerelles, mesures périmées), la météo, l'entraînement, la prédiction, le monitoring, le PID (dont l'anti-windup côté froid), les conditions de refroidissement, les plages de configuration, les emails (dont la règle pompe sans débit), le cycle de vie, le stockage automatique et la conservation des sauvegardes un an.
 
 ## 15. Exploitation recommandée
 
@@ -605,11 +682,10 @@ Les tests couvrent la base SQLite, les trous de collecte, le collecteur, la mét
 
 ### Contenu conservé dans le projet
 
-- `voltaneum.db` : base réelle fournie par le capteur ; elle est conservée comme donnée de référence et protégée en `0600` ;
-- `models/` : modèles actuellement entraînés ;
+- le code (`collectors/`, `control/`, `database/`, `messaging/`, `ml/`, `notifications/`), les scripts d'exploitation et les fichiers de déploiement (`deploy/`) ;
 - `tests/` : tests automatisés ;
-- `Voltaneum_Cahier_des_charges.pdf`, `mqtt_final.md` et `itnet_mqtt.md` : spécifications et documentation ;
-- les environnements virtuels et caches sont recréés localement et ne doivent pas être copiés sur le terrain.
+- `CAHIER_DES_CHARGES_FINAL.md`, `GUIDE_UTILISATION.md`, `SIMULATION.md`, `CHANGELOG.md` : spécifications et documentation ;
+- **ne sont pas livrés** : `.env` (secrets), `voltaneum.db` (données réelles), `models/` (modèles entraînés), `backups/` et les environnements virtuels. Ils se recréent sur chaque machine d'exploitation et ne doivent jamais être committés.
 
 Avant tout transfert, vérifier :
 

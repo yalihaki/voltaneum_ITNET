@@ -30,6 +30,70 @@ def _names(alerts: list[dict]) -> list[str]:
     return [a["rule_name"] for a in alerts]
 
 
+def _pump(frequency=30.0, flow=0.0, ts=1.0) -> dict:
+    return {"pt01": 40.0, "pt02": 38.0, "pt03": 30.0, "freq_pompe": frequency, "ht01": flow, "ts": ts}
+
+
+class TestPumpWithoutFlow:
+    """Règle : fréquence pompe/ventilateur non nulle SANS débit -> alerte CRITIQUE confirmée."""
+
+    def _feed(self, state, count, **kwargs):
+        alerts = []
+        for index in range(count):
+            alerts = evaluate_rules(_pump(ts=float(index + 1), **kwargs), None, state)
+        return alerts
+
+    def test_alert_after_n_distinct_samples(self):
+        state = _fresh_state()
+        assert self._feed(state, N - 1) == []
+        alerts = evaluate_rules(_pump(ts=float(N)), None, state)
+        assert _names(alerts) == ["pump_without_flow"]
+        assert alerts[0]["level"] == "CRITIQUE"
+        assert "30.0 Hz" in alerts[0]["message"] and "vérifier sur site" in alerts[0]["message"]
+
+    def test_no_alert_when_flow_is_normal(self):
+        assert self._feed(_fresh_state(), N + 2, flow=10.3) == []
+
+    def test_no_alert_when_pump_is_stopped(self):
+        assert self._feed(_fresh_state(), N + 2, frequency=0.0, flow=0.0) == []
+
+    def test_no_alert_at_the_thresholds(self):
+        """Seuils stricts : exactement PUMP_RUNNING_MIN_HZ ou FLOW_MIN_M3H n'est pas une anomalie."""
+        assert self._feed(_fresh_state(), N + 2, frequency=config.PUMP_RUNNING_MIN_HZ, flow=0.0) == []
+        assert self._feed(_fresh_state(), N + 2, frequency=30.0, flow=config.FLOW_MIN_M3H) == []
+
+    @pytest.mark.parametrize("missing", ["freq_pompe", "ht01"])
+    def test_missing_value_never_alerts(self, missing):
+        state = _fresh_state()
+        for index in range(N + 2):
+            sample = _pump(ts=float(index + 1))
+            sample[missing] = None
+            assert evaluate_rules(sample, None, state) == []
+
+    def test_same_sample_is_not_counted_twice(self):
+        state = _fresh_state()
+        for _ in range(N + 3):
+            alerts = evaluate_rules(_pump(ts=1.0), None, state)
+        assert alerts == []
+
+    def test_watchdog_without_telemetry_does_not_touch_the_counter(self):
+        state = _fresh_state()
+        self._feed(state, N - 1)
+        evaluate_rules(None, None, state)
+        assert _names(evaluate_rules(_pump(ts=float(N)), None, state)) == ["pump_without_flow"]
+
+    def test_counter_resets_when_flow_returns(self):
+        state = _fresh_state()
+        self._feed(state, N - 1)
+        evaluate_rules(_pump(flow=10.0, ts=100.0), None, state)       # le débit est revenu
+        assert evaluate_rules(_pump(ts=101.0), None, state) == []     # le décompte repart de zéro
+
+    def test_cooldown_blocks_a_second_alert(self):
+        state = _fresh_state()
+        assert _names(self._feed(state, N)) == ["pump_without_flow"]
+        assert evaluate_rules(_pump(ts=float(N + 1)), None, state) == []
+
+
 class TestNumberHelper:
     @pytest.mark.parametrize("bad", [None, "12.5", True, float("nan"), float("inf"), [1], {"a": 1}])
     def test_rejects_non_finite_or_non_numeric(self, bad):

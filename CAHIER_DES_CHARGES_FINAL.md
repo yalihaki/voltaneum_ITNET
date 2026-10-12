@@ -1,9 +1,9 @@
 # VOLTANEUM / ITNET
 ## Cahier des charges final unifié
 
-**Version :** 1.0  
-**Date :** 17 septembre 2026  
-**Statut :** logiciel prêt pour essais terrain, validation industrielle à réaliser  
+**Version :** 1.1  
+**Date :** 10 octobre 2026 (version 1.0 : 17 septembre 2026)  
+**Statut :** logiciel prêt pour essais terrain sur la passerelle réelle ; validation industrielle et calibration avec l'automaticien à réaliser  
 **Référence principale :** ce document, complété par `README.md` pour les commandes d'exploitation.
 
 ---
@@ -20,12 +20,13 @@ Le système doit :
 4. prédire l'évolution de la température `PT02` ;
 5. comparer les modèles ML à une baseline de persistance ;
 6. mesurer la qualité des prédictions après observation de la valeur réelle ;
-7. calculer une suggestion de consigne PID bornée ;
-8. publier cette suggestion sans jamais commander directement l'automate ;
-9. envoyer des alertes email contrôlées ;
-10. protéger automatiquement l'espace disque ;
-11. continuer en mode dégradé lorsqu'un service externe est indisponible ;
-12. fonctionner sur macOS, Linux et Windows.
+7. publier la température cible et les conditions de refroidissement à suivre (seuils de marche et d'arrêt du ventilateur selon la température extérieure) ;
+8. calculer une suggestion de consigne PID bornée, publiée à titre informatif ;
+9. ne jamais commander directement l'automate : il lit les messages et décide seul ;
+10. envoyer des alertes email contrôlées (dont « pompe en marche sans débit ») ;
+11. protéger automatiquement l'espace disque et conserver les données au moins un an ;
+12. continuer en mode dégradé lorsqu'un service externe est indisponible ;
+13. fonctionner sur macOS, Linux et Windows.
 
 Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supervision industrielle officielle.
 
@@ -52,6 +53,17 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
 | capteur extérieur physique | température extérieure (source active ; l'API météo ne sert plus qu'à une vérification de cohérence, voir §6.5) | `temp_outdoor` |
+
+Plages de validité (`config.SENSOR_VALID_RANGES`) :
+
+| Colonne | Plage valide |
+|---|---|
+| `pt01` à `pt04` | −20 … 150 °C |
+| `ht01` | 0 … 15 m³/h |
+| `freq_pompe` | 0 … 50 Hz |
+| `temp_outdoor` | −20 … 55 °C |
+
+La borne haute des sondes de température est **volontairement supérieure au seuil critique** (55 °C) : une borne à 55 °C rejetterait toute mesure supérieure comme « hors plage », et l'alerte critique comme le bypass du PID ne verraient jamais une surchauffe réelle. `validate_config()` refuse de démarrer si la borne haute de `pt02` ne dépasse pas `CRITICAL_TEMP`.
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
@@ -99,13 +111,15 @@ La passerelle est joignable uniquement depuis le réseau industriel ou le VPN of
 
 ### 3.3 Sécurité fonctionnelle
 
-Le logiciel publie uniquement une suggestion :
+Le logiciel publie uniquement des conditions et une suggestion :
 
 ```text
-Voltaneum -> MQTT control/setpoint -> supervision/automate -> décision finale
+Voltaneum -> MQTT control/cooling_conditions (conditions à suivre)
+          -> MQTT control/setpoint (consigne PID indicative)
+          -> automate ou son pont -> décision finale
 ```
 
-Voltaneum ne doit jamais écrire dans un registre de commande, un variateur ou un automate.
+Voltaneum ne doit jamais écrire dans un registre de commande, un variateur ou un automate. Il ne dit jamais « allume » ou « éteins » : il publie des seuils, l'automate compare lui-même la température d'huile à ces seuils.
 
 ---
 
@@ -141,11 +155,13 @@ main.py
 | `collectors/gateway_collector.py` | login, mapping, WebSocket, validation, snapshots |
 | `collectors/outdoor_sensor_collector.py` | température extérieure via capteur physique indépendant (MQTT ou HTTP) |
 | `database/sqlite_client.py` | schéma, écritures, lectures, purge temporelle, suivi ML |
-| `database/storage_manager.py` | seuil disque, avertissement, délai, purge automatique |
+| `database/storage_manager.py` | seuil disque, avertissement, délai, contrôle d'espace libre, sauvegarde, purge automatique |
+| `database/backup.py` | sauvegarde compressée vérifiée, conservation d'au moins un an |
 | `ml/train.py` | construction de cible, split temporel, entraînement, métriques |
 | `ml/predictor.py` | chargement et comparaison des modèles |
 | `ml/monitor.py` | complétion des prédictions et RMSE glissant |
-| `control/pid_controller.py` | PID, feedforward, bornage, bypass de sécurité |
+| `control/pid_controller.py` | PID, feedforward, bornage, bypass de sécurité, anti-windup |
+| `control/cooling_advice.py` | température cible et conditions de refroidissement selon la température extérieure (calcul pur) |
 | `notifications/email_notifier.py` | alertes MQTT, cooldown, SMTP, journalisation |
 | `main.py` | démarrage, supervision et arrêt des composants |
 | `collect_data.py` | campagne de collecte seule, sans PID ni suggestion de consigne |
@@ -169,6 +185,8 @@ main.py
 9. démarrer le superviseur des threads.
 
 Une absence de modèles ne bloque pas la collecte : le contrôle passe en mode PID sans feedforward ML.
+
+Si la passerelle est muette depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s), la boucle de contrôle ne publie rien (mesures périmées), avec un avertissement par panne et une reprise automatique.
 
 ### 5.2 Fonctionnement continu
 
@@ -199,7 +217,7 @@ Une absence de modèles ne bloque pas la collecte : le contrôle passe en mode P
 
 ### 6.2 Catalogue
 
-`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage.
+`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage. Deux catalogues réels ont été relevés le 9 octobre 2026 : `KEYNAME_TO_COLUMN` accepte les noms des deux passerelles (`PT01-temperature`, `Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Deux points alimentant la même colonne sont signalés par un avertissement. **À confirmer avec l'automaticien** : `PUMP` est supposé être la fréquence pompe / ventilateur.
 
 ### 6.3 WebSocket
 
@@ -242,14 +260,35 @@ Topics :
 |---|---|---|
 | `voltaneum/telemetry` | collecteur | télémétrie validée |
 | `voltaneum/prediction` | boucle de contrôle | prédictions comparées |
-| `voltaneum/control/setpoint` | PID | suggestion de consigne |
+| `voltaneum/control/cooling_conditions` | boucle de contrôle | température cible et conditions à suivre (contrat principal) |
+| `voltaneum/control/setpoint` | PID | consigne en % indicative (`PUBLISH_PID_SETPOINT`) |
 | `voltaneum/model_health` | monitoring ML | RMSE glissant |
 
 Le système accepte l'absence temporaire du broker et réessaie avec backoff. L'absence de MQTT ne doit pas empêcher l'écriture SQLite.
 
+#### Contrat `voltaneum/control/cooling_conditions`
+
+Publié à chaque cycle de contrôle (60 s), sans drapeau « retained » :
+
+| Champ | Sens |
+|---|---|
+| `target_temp` | température cible de l'huile (°C) |
+| `critical_temp` | seuil critique (°C) |
+| `outdoor_band` | `froid` (< 10 °C), `tempere` (10 à 25 °C), `chaud` (≥ 25 °C) ou `inconnue` |
+| `fan_on_above_temp` | seuil de marche du ventilateur = cible + décalage de la bande |
+| `fan_off_below_temp` | seuil d'arrêt = seuil de marche − `FAN_HYSTERESIS_CELSIUS` |
+| `fan_min_freq_hz` | fréquence minimale conseillée (`null` si bande inconnue) |
+| `t_oil`, `t_outdoor` | mesures utilisées, pour la traçabilité (`t_outdoor` = `null` si inconnue) |
+| `valid_for_seconds` | durée de validité (3 × intervalle de contrôle) |
+| `ts` | horodatage de publication |
+
+Règles : rien n'est publié si la température d'huile est invalide ou si les mesures sont périmées. Air froid : le dry cooler refroidit mieux, le ventilateur démarre plus tard (décalage +2 °C) ; air chaud : il démarre plus tôt (−2 °C). Les bandes, décalages, hystérésis et fréquences (`OUTDOOR_BANDS`, `FAN_HYSTERESIS_CELSIUS`) sont des **valeurs indicatives non calibrées**, à valider avec l'automaticien ; `validate_config()` refuse une table incohérente (bandes non ordonnées, seuil de marche ≥ seuil critique, fréquence hors de la plage du variateur).
+
+Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_for_seconds` et retomber sur sa propre régulation ; rester dans ses bornes de variateur ; respecter son mode manuel / automatique, ses arrêts d'urgence et ses temporisations ; limiter la vitesse de variation ; ne jamais être piloté en écriture par ce projet. À ma connaissance, le S7-200 SMART n'a pas de client MQTT natif : un pont est probablement nécessaire (à confirmer).
+
 ### 6.5 Capteur extérieur, météo et SMTP
 
-La température extérieure vient d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate ni de l'API météo. Une panne utilise la dernière valeur connue ou reporte le cycle. L'API météo reste appelée en tâche de fond, uniquement pour calculer un écart de vérification (`voltaneum/sensors/outdoor_consistency`) ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur (décision du 30 septembre 2026, voir CHANGELOG.md).
+La température extérieure vient d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate ni de l'API météo. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min) est ignorée : jamais de valeur périmée. Sans température extérieure, le PID et son bypass de sécurité continuent ; les conditions sont publiées avec la bande « inconnue ». L'API météo reste appelée en tâche de fond, uniquement pour calculer un écart de vérification (`voltaneum/sensors/outdoor_consistency`) ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur (décision du 30 septembre 2026, voir CHANGELOG.md).
 
 SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais la collecte.
 
@@ -335,7 +374,16 @@ Séquence obligatoire :
 
 Cette purge protège la disponibilité mais ne remplace pas une sauvegarde. Une sauvegarde et un test de restauration doivent précéder tout déploiement terrain.
 
-Avant une purge, `database/backup.py` crée une copie cohérente via l'API SQLite, la compresse en gzip, vérifie son intégrité et conserve les dernières versions selon `STORAGE_BACKUP_RETENTION_COUNT`. En cas d'échec, la purge est annulée et une alerte critique est journalisée.
+Avant une purge, `database/backup.py` crée une copie cohérente via l'API SQLite, la compresse en gzip, vérifie son intégrité. En cas d'échec, la purge est annulée et une alerte critique est journalisée.
+
+**Conservation d'un an (exigence).** Les données doivent rester récupérables au moins un an :
+
+- base vivante : `RETENTION_DAYS=365` interdit de supprimer une ligne de moins d'un an ;
+- archives compressées : une archive n'est supprimée que si elle est **à la fois** au-delà des `STORAGE_BACKUP_RETENTION_COUNT` plus récentes **et** plus vieille que `STORAGE_BACKUP_MIN_AGE_DAYS` (365 jours). Une archive de moins d'un an n'est jamais supprimée, même en grand nombre. L'âge est lu dans le nom de l'archive (horodatage UTC de création) ; un nom illisible est conservé.
+
+**Espace libre.** La sauvegarde crée une copie temporaire non compressée puis son archive : avant toute purge, le volume `STORAGE_BACKUP_DIR` doit offrir la taille de la base × `STORAGE_BACKUP_FREE_SPACE_FACTOR` (1,1) d'espace libre, sinon la purge est annulée, rien n'est supprimé et une alerte CRITIQUE est envoyée. Le volume de sauvegarde doit être distinct du volume de la base ; les archives doivent aussi être copiées sur un autre support (une archive sur le même disque ne protège pas d'une panne de disque).
+
+**Volume attendu.** À 15 s par mesure : environ 2,1 millions de lignes de télémétrie par an, soit quelques centaines de Mo. `STORAGE_LIMIT_BYTES` (1 Tio par défaut) doit être réglé sur la part de disque réellement disponible.
 
 ---
 
@@ -412,7 +460,11 @@ Modes :
 
 Si `t_oil > CRITICAL_TEMP`, la sortie est immédiatement 100 %. Les entrées non finies ne doivent jamais contaminer l'état PID.
 
-La suggestion est publiée sur `voltaneum/control/setpoint`. Aucun module ne dispose d'une primitive d'écriture directe sur le PLC ou le variateur.
+**Anti-windup.** L'intégrale est gelée tant que la sortie est saturée **et** bornée dans `[0, SETPOINT_MAX / Ki]`. Le correctif « huile froide » évite qu'une période froide crée une dette négative inutile : avant correction, huile à 10 °C puis 40 °C donnait 9 minutes à 0 % ; après, la consigne réagit dès le premier cycle chaud.
+
+**Rôle du PID.** Le contrat principal est la publication de la température cible et des conditions (§6.4) ; la consigne PID en % est publiée sur `voltaneum/control/setpoint` à titre informatif (suivi et comparaison avec la régulation de l'automate), désactivable par `PUBLISH_PID_SETPOINT=false`. Les gains par défaut (5 / 0,1 / 1) ne sont pas calibrés.
+
+Aucun module ne dispose d'une primitive d'écriture directe sur le PLC ou le variateur ; les points modifiables du catalogue de la passerelle ne sont jamais mappés.
 
 ---
 
@@ -420,12 +472,13 @@ La suggestion est publiée sur `voltaneum/control/setpoint`. Aucun module ne dis
 
 Règles prévues :
 
-- température huile critique ;
-- perte de télémétrie ;
+- température huile critique (`critical_temp`, CRITIQUE) ;
+- **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` (5 Hz) et débit < `FLOW_MIN_M3H` (0,5 m³/h) sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle (un capteur muet relève de la perte de télémétrie) ; seuils indicatifs à valider ;
+- perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - dérive d'efficacité ;
 - désaccord entre modèles ;
-- capacité de stockage presque pleine ;
-- purge automatique exécutée.
+- écart entre le capteur extérieur et la météo ;
+- capacité de stockage presque pleine, purge automatique exécutée, sauvegarde impossible (dont espace insuffisant).
 
 Les alertes `ATTENTION` nécessitent plusieurs cycles consécutifs. Toutes les alertes ont un cooldown. Chaque tentative email est journalisée avec `email_sent`.
 
@@ -435,7 +488,7 @@ Une panne SMTP ne doit jamais stopper la collecte, le PID ou le stockage.
 
 ## 11. Plateformes d'exploitation
 
-Le code est portable sur macOS, Linux et Windows 10/11 avec Python 3.12.
+Le code est portable sur macOS, Linux et Windows 10/11 avec Python 3.11 ou plus récent (3.12 recommandé : les versions épinglées, numpy 2.4 notamment, exigent Python ≥ 3.11).
 
 Les différences concernent seulement :
 
@@ -455,7 +508,7 @@ Les détails et commandes sont dans `README.md`.
 
 ### 12.1 Avant transfert
 
-- installer Python 3.12 sur la machine cible ;
+- installer Python 3.11 ou plus récent (3.12 recommandé) sur la machine cible ;
 - recréer le virtualenv ;
 - installer `requirements.txt` ;
 - transférer uniquement le code, les modèles approuvés et les données nécessaires ;
@@ -516,11 +569,13 @@ La recette logicielle est acceptée si :
 ```bash
 python -m ruff check .
 python -m mypy .
+python -m bandit -r . -x ./tests -q
 python -m pip_audit -r requirements.txt
 pytest -q
+python simulate.py
 ```
 
-sont tous verts.
+sont tous verts : 260 tests réussis (3 ignorés : tests réseau réels, `RUN_NETWORK_TESTS=1`), 0 alerte ruff / mypy / bandit, aucune vulnérabilité connue, `simulate.py` 24/24.
 
 ### 14.2 Tests de résilience
 
@@ -535,6 +590,8 @@ Les scénarios suivants doivent être exécutés :
 - `NaN` ou infini ;
 - thread métier arrêté ;
 - base proche de la limite de stockage ;
+- volume de sauvegarde sans espace libre (purge annulée, rien supprimé) ;
+- flux de la passerelle coupé (aucune consigne publiée sur des mesures périmées) ;
 - arrêt puis redémarrage propre.
 
 ### 14.3 Validation terrain
@@ -547,6 +604,10 @@ La recette industrielle n'est prononcée qu'après :
 - variation mesurable de `PT02` ;
 - modèle meilleur que la persistance sur une période représentative ;
 - validation des seuils par l'exploitant ;
+- confirmation de `PUMP` (ou `DIAG Actual frequency VW12`) comme fréquence pompe / ventilateur ;
+- validation des bandes de température extérieure, décalages, hystérésis et fréquences conseillées ;
+- validation des seuils de la règle pompe sans débit ;
+- définition et test du pont MQTT vers l'automate (âge du message, bornes du variateur, mode manuel / automatique) ;
 - confirmation qu'aucune écriture directe PLC n'existe ;
 - plan de sauvegarde et restauration testé.
 
@@ -554,20 +615,25 @@ La recette industrielle n'est prononcée qu'après :
 
 ## 15. État actuel et limites connues
 
-Le logiciel, ses tests, sa gestion des erreurs, sa supervision, sa sécurité MQTT et sa gestion de stockage sont implémentés.
+Le logiciel, ses tests, sa gestion des erreurs, sa supervision, sa sécurité MQTT, sa gestion de stockage et la publication des conditions de refroidissement sont implémentés.
 
-La base disponible a montré des périodes avec pompe à zéro, `HT01` constant, faible variation de `PT02` et des trous importants. Elle permet de tester le pipeline, mais ne suffit pas seule à valider la performance industrielle du modèle.
+Le 9 octobre 2026, la passerelle 10.0.1.34 a été jointe depuis le réseau industriel : login réussi, catalogue et WebSocket opérationnels, six colonnes remplies (pompe à 30 Hz, débit ≈ 10,4 m³/h, `PT01` à `PT04` entre 31 et 34 °C).
 
-La connexion à `10.0.1.33` et au broker d'entreprise ne peut pas être testée depuis une machine hors réseau ou sans VPN autorisé. Cette limite est réseau, pas un défaut à contourner dans le code.
+Les premières données réelles ne contiennent encore aucune variation de fréquence de pompe : `freq_pompe` à 30 Hz constant ne permet pas d'entraîner un modèle (garde-fou `no_actionable_signal`). Une collecte avec des fréquences variées est nécessaire. La base de test précédente a montré des périodes avec pompe à zéro, `HT01` constant, faible variation de `PT02` et des trous importants. Elle permet de tester le pipeline, mais ne suffit pas seule à valider la performance industrielle du modèle.
+
+La connexion aux passerelles (`10.0.1.33`, `10.0.1.34`) et au broker d'entreprise ne peut pas être testée depuis une machine hors réseau ou sans VPN autorisé. Cette limite est réseau, pas un défaut à contourner dans le code.
 
 Les paramètres suivants restent à confirmer sur le terrain :
 
-- noms réels des `KeyName` de la passerelle ;
-- seuils PID ;
+- `PUMP` comme fréquence pompe / ventilateur ;
+- gains PID ;
 - seuil critique ;
+- bandes de température extérieure, décalages, hystérésis et fréquences conseillées (`OUTDOOR_BANDS`) ;
+- seuils de la règle pompe sans débit ;
 - plage d'efficacité ;
 - fréquence et dynamique réelles de la pompe ;
-- politique de rétention et d'archivage.
+- pont MQTT vers l'automate ;
+- politique d'archivage hors site.
 
 ---
 
@@ -580,6 +646,8 @@ Les paramètres suivants restent à confirmer sur le terrain :
 - `requirements.txt` épinglé ;
 - tests automatisés ;
 - scripts de diagnostic et de génération de données ;
-- modèles ML validés selon le rapport de formation ;
-- base réelle uniquement si sa conservation est autorisée ;
+- modèles ML validés selon le rapport de formation (non livrés tant qu'aucune collecte avec cycles de pompe n'a abouti) ;
+- base réelle uniquement si sa conservation est autorisée (non livrée) ;
+- `CHANGELOG.md`, `GUIDE_UTILISATION.md`, `SIMULATION.md` ;
+- présentation technique (`Voltaneum_Presentation_Technique.pptx`) ;
 - procédure de sauvegarde et de restauration à établir pour le site.

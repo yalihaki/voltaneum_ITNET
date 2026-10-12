@@ -248,6 +248,52 @@ class TestSetpointAlwaysBounded:
         assert state["last_error"] == 0.0
 
 
+class TestColdSideWindup:
+    """Correctif « huile froide » : l'intégrale ne doit jamais devenir négative ni démesurée.
+
+    Cas réel mesuré avant correction : huile à 10 °C pendant 3 cycles de 60 s, puis 40 °C ->
+    la consigne restait à 0 % pendant 9 minutes (intégrale à -1500) alors que l'huile était
+    5 °C au-dessus de la cible.
+    """
+
+    def test_integral_never_negative_when_oil_is_cold(self):
+        state = {}
+        for _ in range(20):
+            _, state, _ = compute_setpoint(
+                t_oil=10.0, t_target=config.TARGET_TEMP, t_oil_predicted=10.0,
+                t_outdoor=15.0, dt=60.0, pid_state=state,
+            )
+            assert state["integral"] >= 0.0
+
+    def test_integral_is_capped_at_equivalent_of_full_output(self):
+        state = {}
+        cap = config.SETPOINT_MAX / config.PID_KI
+        for _ in range(500):
+            _, state, _ = compute_setpoint(
+                t_oil=config.CRITICAL_TEMP - 0.5, t_target=config.TARGET_TEMP,
+                t_oil_predicted=config.TARGET_TEMP, t_outdoor=15.0, dt=60.0, pid_state=state,
+            )
+            assert state["integral"] <= cap + 1e-9
+
+    def test_reacts_within_three_cycles_after_a_long_cold_period(self):
+        state = {}
+        for _ in range(3):  # huile très froide
+            _, state, _ = compute_setpoint(
+                t_oil=10.0, t_target=config.TARGET_TEMP, t_oil_predicted=10.0,
+                t_outdoor=None, dt=60.0, pid_state=state,
+            )
+        # puis l'huile monte à 40 °C (5 °C au-dessus de la cible)
+        setpoints = []
+        for _ in range(3):
+            setpoint, state, _ = compute_setpoint(
+                t_oil=40.0, t_target=config.TARGET_TEMP, t_oil_predicted=40.0,
+                t_outdoor=None, dt=60.0, pid_state=state,
+            )
+            setpoints.append(setpoint)
+        assert setpoints[0] > 0.0, "la consigne doit réagir dès le premier cycle chaud"
+        assert setpoints[-1] >= 90.0
+
+
 class TestFeedforward:
     def test_feedforward_triggers_on_predicted_overshoot(self):
         _, _, mode = compute_setpoint(

@@ -20,8 +20,8 @@ Régulation à deux étages :
 1. PID classique : proportionnel à l'écart actuel (e = t_oil - t_target ;
    positif quand l'huile est plus CHAUDE que la cible, donc appelle PLUS de
    refroidissement), intégral (erreur cumulée dans le temps, pour éliminer
-   une erreur résiduelle persistante, avec anti-windup par clamping
-   conditionnel — voir plus bas), dérivé (vitesse de variation de l'erreur,
+   une erreur résiduelle persistante, avec anti-windup : gel conditionnel quand la
+   sortie est saturée ET intégrale bornée dans [0, 100 % / Ki] — voir plus bas), dérivé (vitesse de variation de l'erreur,
    pour anticiper et amortir les oscillations).
 2. Feedforward : un "coup de pouce" préventif quand on sait déjà, par la
    prédiction ML ou par la météo, qu'une hausse de température est probable
@@ -130,6 +130,15 @@ def compute_setpoint(
         integral = previous_integral  # gelée : la sortie était déjà à 0%
     else:
         integral = integral_candidate
+
+    # --- Bornes de l'intégrale (correctif « huile froide »). ---
+    # En clair : ce régulateur ne sait que REFROIDIR, sa sortie ne peut jamais être négative.
+    # Une « dette » négative de l'intégrale (accumulée quand l'huile est froide) n'aurait donc
+    # aucun effet utile, mais retarderait longtemps la réaction dès que l'huile se réchauffe
+    # (cas mesuré : huile à 10 °C puis 40 °C -> 9 minutes à 0 % avant de réagir). On la
+    # maintient donc dans [0, SETPOINT_MAX / Ki] : au plus l'équivalent de 100 % de sortie.
+    if config.PID_KI > 0.0:
+        integral = max(0.0, min(integral, config.SETPOINT_MAX / config.PID_KI))
 
     derivative = (error - previous_error) / dt if dt > 0 else 0.0
 

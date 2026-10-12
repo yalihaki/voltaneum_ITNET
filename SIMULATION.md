@@ -7,7 +7,7 @@ en quelques secondes, sans passerelle réelle, sans broker MQTT, sans serveur
 SMTP — uniquement avec des données synthétiques et une base SQLite temporaire.
 
 Deux usages principaux :
-- **Vérification rapide** après une modification de code : si les 13 vérifications
+- **Vérification rapide** après une modification de code : si les 24 vérifications
   passent, les briques principales du projet fonctionnent toujours ensemble.
 - **Démonstration** (soutenance, présentation à un tuteur) : chaque étape
   s'affiche sur la console avec son résultat, dans l'ordre logique du pipeline
@@ -31,7 +31,7 @@ supprimé à la fin de l'exécution (`tempfile.TemporaryDirectory`).
 
 | Étape | Module exercé | Ce qui est prouvé |
 |---|---|---|
-| 1 | `generate_test_data.py`, `database/sqlite_client.py` | Génération de données réalistes (pompe variant réellement entre 0 et 15 Hz) et écriture en base |
+| 1 | `generate_test_data.py`, `database/sqlite_client.py` | Génération de données réalistes (pompe variant réellement entre 0 et 50 Hz, débit 0-15 m³/h) et écriture en base |
 | 2 | `database/storage_manager.py` | Comportement normal (sous seuil) **et** déclenchement réel démontré (seuil artificiellement abaissé, délai de grâce nul) : avertissement + tentative de purge, planchers de rétention respectés |
 | 3a | `ml/train.py` | **Le garde-fou `no_actionable_signal`** : reproduit exactement la collecte réelle du 9-10 septembre 2026 (pompe figée à 0 Hz) et vérifie qu'aucun modèle trompeur n'est sauvegardé |
 | 3b | `ml/train.py` | Sur des données avec une vraie variation de la pompe, l'entraînement aboutit à un statut `"ok"` et bat la persistance |
@@ -40,6 +40,10 @@ supprimé à la fin de l'exécution (`tempfile.TemporaryDirectory`).
 | 5 | `control/pid_controller.py` | **Le sens correct du PID** (huile chaude → consigne plus haute que huile froide) et **l'anti-windup** (récupération immédiate après 500 cycles de saturation, pas de dette cachée) |
 | 6 | `notifications/email_notifier.py` | Détection d'une alerte CRITIQUE (seuil dépassé) et respect du cooldown (pas de doublon immédiat) |
 | 7 | `database/backup.py` | Un cycle complet sauvegarde → suppression réelle du fichier → restauration → vérification que les données sont identiques |
+| 8 | `control/cooling_advice.py` | Conditions de refroidissement : air froid → démarrage plus tardif que par air chaud, hystérésis (arrêt < marche < critique), température extérieure inconnue → seuils neutres et aucune fréquence imposée, température d'huile invalide → rien n'est publié |
+| 9 | `notifications/email_notifier.py` | Règle `pump_without_flow` : alerte CRITIQUE après la confirmation multi-mesures (30 Hz sans débit), aucune alerte avec un débit normal |
+| 10 | `database/backup.py` | Conservation d'un an : archives de moins de 365 jours toutes conservées, archives de plus d'un an et hors des plus récentes supprimées |
+| 11 | `config.py` | Invariant de sécurité : la borne haute valide de la température d'huile dépasse le seuil critique (une surchauffe n'est jamais rejetée comme « hors plage ») |
 
 ## Interpréter un échec
 

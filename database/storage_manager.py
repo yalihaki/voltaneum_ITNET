@@ -5,7 +5,9 @@ base, jamais par une échéance calendaire. Séquence quand la base atteint
 `STORAGE_WARNING_RATIO` de `STORAGE_LIMIT_BYTES` :
 
   1. e-mail d'avertissement, puis délai de grâce (`STORAGE_GRACE_PERIOD_SECONDS`) ;
-  2. sauvegarde vérifiée de la base (si elle échoue : AUCUNE donnée supprimée, alerte critique) ;
+  2. sauvegarde compressée et vérifiée de la base, conservée AU MOINS `STORAGE_BACKUP_MIN_AGE_DAYS`
+     jours (365 par défaut) ; si le volume de sauvegarde manque d'espace ou si la sauvegarde
+     échoue : AUCUNE donnée supprimée, alerte critique ;
   3. suppression des lignes les plus anciennes, par lots, jusqu'à ce que les données
      vivantes repassent sous `STORAGE_PURGE_TARGET_RATIO` — pas plus ;
   4. compactage (checkpoint WAL + VACUUM) pour rendre réellement l'espace au disque.
@@ -18,6 +20,7 @@ La taille mesurée inclut les fichiers annexes `-wal` et `-shm`.
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -191,11 +194,37 @@ class StorageManager:
         self._alert_sent_at[event_type] = now
         return self.alert_sender(f"[Voltaneum][{level}] {subject}", message, level)
 
+    def _backup_space_missing(self) -> str | None:
+        """Retourne une description si le volume de sauvegarde n'a pas assez d'espace libre
+        (taille de la base × STORAGE_BACKUP_FREE_SPACE_FACTOR), sinon None.
+
+        La sauvegarde crée d'abord une copie temporaire NON compressée de la base, puis son
+        archive : sans cette marge elle échouerait en cours de route. Vérifier avant évite de
+        saturer le volume et garantit qu'aucune suppression n'a lieu sans sauvegarde valide.
+        """
+        backup_dir = Path(config.STORAGE_BACKUP_DIR)
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(backup_dir).free
+        except OSError as exc:
+            return f"volume de sauvegarde inaccessible ({exc})"
+        needed = int(database_size_bytes(self.db_path) * config.STORAGE_BACKUP_FREE_SPACE_FACTOR)
+        if free < needed:
+            return (f"espace libre insuffisant sur {backup_dir} : {free / 1024**3:.2f} Gio disponibles, "
+                    f"{needed / 1024**3:.2f} Gio nécessaires")
+        return None
+
     def _backup_before_purge(self) -> bool:
         """Crée et vérifie la sauvegarde exigée avant toute suppression ; alerte en cas d'échec."""
+        missing_space = self._backup_space_missing()
+        if missing_space is not None:
+            self._alert("storage_backup_failed", "Sauvegarde stockage impossible",
+                        f"Purge annulée, aucune donnée supprimée : {missing_space}.", "CRITIQUE")
+            return False
         try:
             backup_path = create_backup(
-                self.db_path, config.STORAGE_BACKUP_DIR, config.STORAGE_BACKUP_RETENTION_COUNT
+                self.db_path, config.STORAGE_BACKUP_DIR, config.STORAGE_BACKUP_RETENTION_COUNT,
+                config.STORAGE_BACKUP_MIN_AGE_DAYS,
             )
             if verify_backup(str(backup_path)):
                 return True
