@@ -288,6 +288,8 @@ class VoltaneumApp:
         jamais comparer la météo à elle-même) ; le repli météo est fait par
         `collectors.outdoor_temperature.OutdoorTemperatureSource`.
         """
+        if config.OUTDOOR_SENSOR_MODE == "none":
+            return None  # aucun capteur installé
         if config.OUTDOOR_SENSOR_MODE == "mqtt":
             return None if self.outdoor_sensor is None else self.outdoor_sensor.get_last_value()
         try:

@@ -10,12 +10,17 @@ from __future__ import annotations
 import logging
 import ssl
 import threading
+import time
 
 import paho.mqtt.client as mqtt
 
 import config
 
 logger = logging.getLogger(__name__)
+
+# Broker absent durablement : après la première erreur, un simple rappel à cet intervalle
+# (secondes) au lieu d'une ligne d'erreur à chaque nouvel essai — le log reste lisible.
+UNREACHABLE_REMINDER_SECONDS = 600.0
 
 
 def create_client(client_id: str) -> mqtt.Client:
@@ -45,15 +50,34 @@ def connect_with_retry(client: mqtt.Client, stop_event: threading.Event, max_bac
     le broker est injoignable. Retourne False si l'arrêt est demandé avant la connexion.
 
     Sans cela, un broker indisponible au démarrage ferait mourir le thread définitivement.
+    Journalisation : une erreur au premier échec, puis un rappel toutes les
+    UNREACHABLE_REMINDER_SECONDS (les essais intermédiaires sont en DEBUG).
     """
     backoff = 1.0
+    failures = 0
+    last_reported = 0.0
     while not stop_event.is_set():
         try:
             client.connect(config.MQTT_HOST, config.MQTT_PORT, keepalive=config.MQTT_KEEPALIVE_SECONDS)
+            if failures:
+                logger.info("Broker MQTT %s:%s joignable après %d essai(s) infructueux.",
+                            config.MQTT_HOST, config.MQTT_PORT, failures)
             return True
         except OSError as exc:
-            logger.error("Broker MQTT %s:%s injoignable (%s), nouvel essai dans %.0f s",
-                         config.MQTT_HOST, config.MQTT_PORT, exc, backoff)
+            failures += 1
+            now = time.monotonic()
+            if failures == 1:
+                logger.error("Broker MQTT %s:%s injoignable (%s) : nouvel essai en arrière-plan "
+                             "(rappel toutes les %.0f min tant qu'il reste injoignable).",
+                             config.MQTT_HOST, config.MQTT_PORT, exc, UNREACHABLE_REMINDER_SECONDS / 60)
+                last_reported = now
+            elif now - last_reported >= UNREACHABLE_REMINDER_SECONDS:
+                logger.warning("Broker MQTT %s:%s toujours injoignable (%s), %d essais.",
+                               config.MQTT_HOST, config.MQTT_PORT, exc, failures)
+                last_reported = now
+            else:
+                logger.debug("Broker MQTT %s:%s injoignable (%s), nouvel essai dans %.0f s",
+                             config.MQTT_HOST, config.MQTT_PORT, exc, backoff)
             if stop_event.wait(backoff):
                 return False
             backoff = min(backoff * 2, max_backoff)

@@ -51,7 +51,7 @@ Ouvrir `.env` et renseigner au minimum :
 | `VOLTANEUM_USER`, `VOLTANEUM_PASSWORD` | oui | compte (lecture seule) de la passerelle |
 | `MQTT_HOST` / `MQTT_PORT` | oui | broker MQTT (`localhost:1883` par défaut) |
 | `SMTP_*`, `ALERT_EMAIL_FROM/TO` | non | alertes e-mail : **tout renseigner, ou rien** |
-| `OUTDOOR_SENSOR_MODE` | non | `mqtt` (capteur publie) ou `http` (repli) |
+| `OUTDOOR_SENSOR_MODE` | non | `mqtt` (capteur publie), `http` (repli) ou `none` (pas encore de capteur : API météo seule, aucune connexion MQTT pour le capteur) |
 
 Toutes les variables sont commentées dans `.env.example`. Au démarrage, une configuration absente
 ou incohérente est **refusée avec un message explicite** (ex. `CRITICAL_TEMP` ≤ `TARGET_TEMP`).

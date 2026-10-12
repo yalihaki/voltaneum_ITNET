@@ -56,6 +56,8 @@ def make_sensor_reader(listener: OutdoorSensorListener | None):
     """Lecture du capteur extérieur physique seul (None si absent, muet ou en panne)."""
 
     def read() -> float | None:
+        if config.OUTDOOR_SENSOR_MODE == "none":
+            return None  # aucun capteur installé
         if config.OUTDOOR_SENSOR_MODE == "mqtt":
             return None if listener is None else listener.get_last_value()
         try:

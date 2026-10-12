@@ -43,3 +43,19 @@ def test_sensor_reader_http_failure_returns_none(monkeypatch):
 
     monkeypatch.setattr(collect_data, "get_outdoor_temperature_http", broken)
     assert collect_data.make_sensor_reader(None)() is None
+
+
+def test_sensor_reader_none_mode_never_calls_a_sensor(monkeypatch):
+    monkeypatch.setattr(config, "OUTDOOR_SENSOR_MODE", "none")
+
+    def must_not_be_called():
+        raise AssertionError("aucun capteur ne doit être interrogé en mode none")
+
+    monkeypatch.setattr(collect_data, "get_outdoor_temperature_http", must_not_be_called)
+    assert collect_data.make_sensor_reader(FakeListener(17.5))() is None
+
+
+def test_none_mode_is_a_valid_configuration(monkeypatch):
+    for name, value in {"OUTDOOR_SENSOR_MODE": "none", "VOLTANEUM_USER": "u", "VOLTANEUM_PASSWORD": "p"}.items():
+        monkeypatch.setattr(config, name, value)
+    config.validate_config()

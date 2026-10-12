@@ -208,7 +208,9 @@ FEEDFORWARD_OUTDOOR_BOOST: float = 10.0
 # ---------------------------------------------------------------------------
 # Température extérieure : capteur physique indépendant
 #   "mqtt" (recommandé) : le capteur publie sur OUTDOOR_SENSOR_MQTT_TOPIC ;
-#   "http" (repli)      : le capteur expose une petite API HTTP (OUTDOOR_SENSOR_HTTP_URL).
+#   "http" (repli)      : le capteur expose une petite API HTTP (OUTDOOR_SENSOR_HTTP_URL) ;
+#   "none"              : aucun capteur installé (rien n'est écouté ni interrogé : la
+#                         température vient de l'API météo, si le repli est activé).
 # ---------------------------------------------------------------------------
 OUTDOOR_SENSOR_MODE: str = _env_str("OUTDOOR_SENSOR_MODE", "mqtt").lower()
 OUTDOOR_SENSOR_MQTT_TOPIC: str = _env_str("OUTDOOR_SENSOR_MQTT_TOPIC", "voltaneum/sensors/outdoor_temperature")
@@ -379,8 +381,8 @@ def validate_config() -> None:
             _require(not path or os.path.isfile(path), f"{name} introuvable : {path!r}.")
 
     # Capteur extérieur
-    _require(OUTDOOR_SENSOR_MODE in ("mqtt", "http"),
-             f"OUTDOOR_SENSOR_MODE doit être 'mqtt' ou 'http', reçu {OUTDOOR_SENSOR_MODE!r}.")
+    _require(OUTDOOR_SENSOR_MODE in ("mqtt", "http", "none"),
+             f"OUTDOOR_SENSOR_MODE doit être 'mqtt', 'http' ou 'none', reçu {OUTDOOR_SENSOR_MODE!r}.")
     _require(OUTDOOR_SENSOR_MODE != "http" or bool(OUTDOOR_SENSOR_HTTP_URL),
              "OUTDOOR_SENSOR_MODE='http' exige OUTDOOR_SENSOR_HTTP_URL.")
     _require(-90.0 <= LATITUDE <= 90.0, f"VOLTANEUM_LAT hors de [-90, 90] : {LATITUDE}.")

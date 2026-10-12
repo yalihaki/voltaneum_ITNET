@@ -185,7 +185,7 @@ VOLTANEUM_LAT=48.8566
 VOLTANEUM_LON=2.3522
 ```
 
-La température extérieure vient d'un capteur physique indépendant (pas Open-Meteo, pas un point de l'automate) : soit il publie lui-même sur MQTT (`OUTDOOR_SENSOR_MODE=mqtt`, recommandé), soit il expose une petite API HTTP interrogée à chaque cycle (`OUTDOOR_SENSOR_MODE=http`). Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min par défaut) est ignorée : aucune valeur périmée n'est jamais utilisée. Sans température extérieure, le PID et son bypass de sécurité continuent de fonctionner ; les conditions de refroidissement sont alors publiées avec la bande « inconnue » (seuils neutres, aucune fréquence imposée). Voir `collectors/outdoor_sensor_collector.py`.
+La température extérieure vient d'un capteur physique indépendant (pas Open-Meteo, pas un point de l'automate) : soit il publie lui-même sur MQTT (`OUTDOOR_SENSOR_MODE=mqtt`, recommandé), soit il expose une petite API HTTP interrogée à chaque cycle (`OUTDOOR_SENSOR_MODE=http`). Tant qu'aucun capteur n'est installé, `OUTDOOR_SENSOR_MODE=none` évite toute tentative de connexion pour le capteur ; la température vient alors de l'API météo. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min par défaut) est ignorée : aucune valeur périmée n'est jamais utilisée. Sans température extérieure, le PID et son bypass de sécurité continuent de fonctionner ; les conditions de refroidissement sont alors publiées avec la bande « inconnue » (seuils neutres, aucune fréquence imposée). Voir `collectors/outdoor_sensor_collector.py`.
 
 ### 4.4 Email SMTP
 
