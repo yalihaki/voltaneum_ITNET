@@ -52,7 +52,7 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 | `PT04` | température circuit dry cooler | `pt04` |
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
-| capteur extérieur physique | température extérieure (source active ; l'API météo ne sert plus qu'à une vérification de cohérence, voir §6.5) | `temp_outdoor` |
+| capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
 
 Plages de validité (`config.SENSOR_VALID_RANGES`) :
 
@@ -186,7 +186,7 @@ main.py
 
 Une absence de modèles ne bloque pas la collecte : le contrôle passe en mode PID sans feedforward ML.
 
-Si la passerelle est muette depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s), la boucle de contrôle ne publie rien (mesures périmées), avec un avertissement par panne et une reprise automatique.
+Si la passerelle est muette depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s), la boucle de contrôle ne publie rien (mesures périmées), avec un avertissement par panne et une reprise automatique. En plus, chaque capteur est suivi individuellement : une valeur sans mise à jour depuis plus de `SENSOR_MAX_AGE_SECONDS` (300 s), ou rejetée comme invalide, est considérée comme absente — jamais enregistrée, publiée ni utilisée comme actuelle ; sans `PT02` valide, rien n'est publié.
 
 ### 5.2 Fonctionnement continu
 
@@ -279,6 +279,7 @@ Publié à chaque cycle de contrôle (60 s), sans drapeau « retained » :
 | `fan_off_below_temp` | seuil d'arrêt = seuil de marche − `FAN_HYSTERESIS_CELSIUS` |
 | `fan_min_freq_hz` | fréquence minimale conseillée (`null` si bande inconnue) |
 | `t_oil`, `t_outdoor` | mesures utilisées, pour la traçabilité (`t_outdoor` = `null` si inconnue) |
+| `t_outdoor_source` | origine de `t_outdoor` : `sensor` (capteur, prioritaire), `weather` (repli API météo) ou `null` |
 | `valid_for_seconds` | durée de validité (3 × intervalle de contrôle) |
 | `ts` | horodatage de publication |
 
@@ -288,7 +289,7 @@ Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_f
 
 ### 6.5 Capteur extérieur, météo et SMTP
 
-La température extérieure vient d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate ni de l'API météo. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min) est ignorée : jamais de valeur périmée. Sans température extérieure, le PID et son bypass de sécurité continuent ; les conditions sont publiées avec la bande « inconnue ». L'API météo reste appelée en tâche de fond, uniquement pour calculer un écart de vérification (`voltaneum/sensors/outdoor_consistency`) ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur (décision du 30 septembre 2026, voir CHANGELOG.md).
+La température extérieure vient en priorité d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate. Si le capteur n'a pas de valeur actuelle (non installé, muet, défaillant), la température de l'API météo est utilisée à sa place, relue au même rythme que le capteur (boucle de contrôle) ; la source (`sensor` / `weather`) est enregistrée dans `temp_outdoor_source`. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min), du capteur comme de la météo, est ignorée : jamais de valeur périmée. Sans aucune des deux, le PID et son bypass de sécurité continuent ; les conditions sont publiées avec la bande « inconnue ». Quand le capteur fournit une valeur, l'API météo sert aussi à calculer un écart de vérification (`voltaneum/sensors/outdoor_consistency`) ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur (décisions du 30 septembre et du 12 octobre 2026, voir CHANGELOG.md).
 
 SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais la collecte.
 
@@ -300,7 +301,7 @@ SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais l
 
 #### `telemetry`
 
-`id`, `timestamp`, `pt01`, `pt02`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`.
+`id`, `timestamp`, `pt01`, `pt02`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`, `temp_outdoor_source` (`sensor` / `weather`, ajoutée automatiquement aux bases existantes).
 
 #### `predictions_log`
 
@@ -575,7 +576,7 @@ pytest -q
 python simulate.py
 ```
 
-sont tous verts : 260 tests réussis (3 ignorés : tests réseau réels, `RUN_NETWORK_TESTS=1`), 0 alerte ruff / mypy / bandit, aucune vulnérabilité connue, `simulate.py` 24/24.
+sont tous verts : 282 tests réussis (3 ignorés : tests réseau réels, `RUN_NETWORK_TESTS=1`), 0 alerte ruff / mypy / bandit, aucune vulnérabilité connue, `simulate.py` 24/24.
 
 ### 14.2 Tests de résilience
 

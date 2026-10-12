@@ -1,13 +1,13 @@
 """
 collectors/weather_collector.py — Température extérieure via une API météo publique.
 
-NOTE (30 septembre 2026) : n'est plus la source de la valeur injectée dans
-last_known/SQLite/le PID — voir collectors/outdoor_sensor_collector.py, qui
-a remplacé ce rôle. Ce module reste néanmoins activement utilisé, mais
-uniquement comme référence de COMPARAISON par
-collectors/outdoor_consistency_checker.py, pour détecter un écart anormal
-entre le capteur physique et la météo régionale. Ne jamais réutiliser
-get_outdoor_temperature() comme valeur active du pipeline.
+NOTE (12 octobre 2026) : deux usages.
+  1. REPLI : quand le capteur physique (collectors/outdoor_sensor_collector.py)
+     n'a pas de valeur actuelle, main.py utilise cette température à sa place
+     (le capteur reste toujours prioritaire ; la source "weather" est
+     enregistrée dans la colonne `temp_outdoor_source`).
+  2. COMPARAISON : collectors/outdoor_consistency_checker.py la compare au
+     capteur, quand celui-ci fournit une valeur, pour détecter un écart anormal.
 
 Rappel du contexte (section 4 du brief) : aucun capteur physique de
 température de pièce ou de baie n'existe sur l'installation. La seule

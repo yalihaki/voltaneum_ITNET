@@ -127,12 +127,18 @@ Température extérieure inconnue → seuils neutres, aucune fréquence imposée
 
 ## 7. Capteur de température extérieure
 
-Le **capteur physique** est la seule valeur utilisée par le PID et enregistrée en base. Mode `mqtt`
-recommandé : le capteur publie un nombre (`18.4`) ou un JSON (`{"temperature": 18.4}`) sur
-`voltaneum/sensors/outdoor_temperature`. Une mesure plus ancienne que
-`OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min) est ignorée : le PID continue sans l'anticipation météo.
-L'API météo ne sert qu'à **comparer** : un écart > 8 °C sur 3 vérifications déclenche une alerte de
-vérification, jamais un remplacement de la mesure.
+Le **capteur physique** est prioritaire. Mode `mqtt` recommandé : le capteur publie un nombre
+(`18.4`) ou un JSON (`{"temperature": 18.4}`) sur `voltaneum/sensors/outdoor_temperature`. Une
+mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min) est ignorée.
+
+**Repli météo** : tant que le capteur n'a pas de valeur (non installé, muet, défaillant), la
+température de l'API Open-Meteo (position `VOLTANEUM_LAT` / `VOLTANEUM_LON`) est utilisée à sa
+place, relue toutes les `OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS` (60 s). Dès que le capteur
+répond, il reprend la main. La colonne `temp_outdoor_source` indique pour chaque ligne la source
+(`sensor` ou `weather`). Désactivable avec `OUTDOOR_WEATHER_FALLBACK_ENABLED=false`.
+
+Quand le capteur fournit une valeur, l'API météo sert aussi à **comparer** : un écart > 8 °C sur
+3 vérifications déclenche une alerte de vérification, jamais un remplacement de la mesure.
 
 Test sans capteur : `mosquitto_pub -t voltaneum/sensors/outdoor_temperature -m 18.4`
 

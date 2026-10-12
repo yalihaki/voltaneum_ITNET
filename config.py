@@ -217,8 +217,18 @@ OUTDOOR_SENSOR_HTTP_TIMEOUT: float = _env_float("OUTDOOR_SENSOR_HTTP_TIMEOUT", 5
 # Une mesure plus ancienne que ce délai est considérée comme absente (capteur muet).
 OUTDOOR_SENSOR_MAX_AGE_SECONDS: int = _env_int("OUTDOOR_SENSOR_MAX_AGE_SECONDS", 1800)
 
-# Vérification de cohérence capteur / météo (surveillance uniquement : la météo ne
-# remplace JAMAIS le capteur). Seuil large : un capteur local et une moyenne régionale
+# Repli sur l'API météo quand le capteur ne fournit pas de valeur (absent, muet ou
+# défaillant). Le capteur reste TOUJOURS prioritaire dès qu'il a une valeur actuelle ;
+# la source utilisée est enregistrée en base (colonne `temp_outdoor_source`).
+OUTDOOR_WEATHER_FALLBACK_ENABLED: bool = _env_bool("OUTDOOR_WEATHER_FALLBACK_ENABLED", True)
+# Intervalle minimal entre deux appels à l'API météo (secondes) : par défaut, le rythme
+# auquel la valeur du capteur est relue (boucle de contrôle).
+OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS: int = _env_int(
+    "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", int(CONTROL_LOOP_INTERVAL_SECONDS)
+)
+
+# Vérification de cohérence capteur / météo (n'a lieu que si le capteur fournit une
+# valeur : la météo n'est jamais comparée à elle-même). Seuil large : un capteur local et une moyenne régionale
 # peuvent légitimement diverger de plusieurs degrés.
 OUTDOOR_CONSISTENCY_CHECK_INTERVAL_SECONDS: int = _env_int("OUTDOOR_CONSISTENCY_CHECK_INTERVAL_SECONDS", 900)
 OUTDOOR_CONSISTENCY_MAX_GAP_CELSIUS: float = _env_float("OUTDOOR_CONSISTENCY_MAX_GAP_CELSIUS", 8.0)
@@ -323,6 +333,7 @@ def validate_config() -> None:
         "TELEMETRY_TIMEOUT_SECONDS": TELEMETRY_TIMEOUT_SECONDS, "ALERT_CONFIRMATION_CYCLES": ALERT_CONFIRMATION_CYCLES,
         "OUTDOOR_SENSOR_HTTP_TIMEOUT": OUTDOOR_SENSOR_HTTP_TIMEOUT,
         "OUTDOOR_SENSOR_MAX_AGE_SECONDS": OUTDOOR_SENSOR_MAX_AGE_SECONDS,
+        "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS": OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS,
         "OUTDOOR_CONSISTENCY_CHECK_INTERVAL_SECONDS": OUTDOOR_CONSISTENCY_CHECK_INTERVAL_SECONDS,
         "OUTDOOR_CONSISTENCY_MAX_GAP_CELSIUS": OUTDOOR_CONSISTENCY_MAX_GAP_CELSIUS,
         "STORAGE_LIMIT_BYTES": STORAGE_LIMIT_BYTES, "STORAGE_CHECK_INTERVAL_SECONDS": STORAGE_CHECK_INTERVAL_SECONDS,

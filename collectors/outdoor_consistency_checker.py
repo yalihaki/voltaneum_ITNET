@@ -2,22 +2,21 @@
 collectors/outdoor_consistency_checker.py — Compare le capteur extérieur
 physique à l'API météo, à titre de VÉRIFICATION uniquement.
 
-Contexte (30 septembre 2026, suite discussion avec Taher) : plutôt que de
-choisir entre le capteur physique et l'API météo, on garde les deux — mais
-avec des rôles strictement différents :
-  - le capteur physique reste la SEULE valeur injectée dans last_known /
-    SQLite / le PID (voir collectors/outdoor_sensor_collector.py) ;
-  - l'API météo (collectors/weather_collector.py) ne sert plus qu'à calculer
-    un écart de référence, publié sur MQTT pour que
-    notifications/email_notifier.py puisse alerter en cas de divergence
-    importante et persistante.
+Contexte (30 septembre 2026, suite discussion avec Taher ; repli ajouté le
+12 octobre 2026) : le capteur physique est la valeur prioritaire injectée dans
+last_known / SQLite / le PID ; l'API météo ne la remplace que lorsque le
+capteur n'a aucune valeur actuelle (voir main.py). Ce module compare les deux
+quand le capteur fournit une valeur, et publie l'écart sur MQTT pour que
+notifications/email_notifier.py puisse alerter en cas de divergence
+importante et persistante. Sans valeur capteur, il ne compare rien (jamais
+la météo à elle-même).
 
 Ce module ne décide jamais d'une alerte lui-même (séparation des
 responsabilités déjà en place pour ml/monitor.py) : il publie un fait mesuré
 (l'écart), c'est email_notifier.py qui décide d'alerter, avec son propre
 cooldown et sa confirmation multi-cycles.
 
-Important : ce module ne rejette et ne remplace JAMAIS la valeur du capteur.
+Important : ce module ne rejette et ne remplace JAMAIS une valeur du capteur.
 Un grand écart est un signal à vérifier humainement, pas une preuve que le
 capteur a tort — les deux mesurent des choses légitimement différentes
 (micro-climat local vs moyenne régionale).

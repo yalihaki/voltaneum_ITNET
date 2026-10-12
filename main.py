@@ -39,6 +39,7 @@ import config
 from collectors.gateway_collector import GatewayCollector
 from collectors.outdoor_consistency_checker import OutdoorConsistencyChecker
 from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
+from collectors.weather_collector import get_outdoor_temperature
 from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint
 from database import sqlite_client
@@ -75,6 +76,13 @@ class VoltaneumApp:
         self._stale_data_reported = False
         # Idem quand seule la mesure d'huile est périmée (capteur muet alors que les autres émettent).
         self._target_stale_reported = False
+
+        # Repli météo de la température extérieure (cache : l'API n'est pas appelée à
+        # chaque cycle si OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS est plus long).
+        self._weather_value: float | None = None
+        self._weather_value_at: float | None = None
+        self._weather_attempted_at: float | None = None
+        self._outdoor_source: str | None = None
 
     # ------------------------------------------------------------------
     # Cycle de vie
@@ -239,9 +247,9 @@ class VoltaneumApp:
             logger.info("Mesure %s de nouveau disponible : reprise des consignes.", config.TARGET_COLUMN)
             self._target_stale_reported = False
 
-        # None si le capteur est absent ou muet : on n'utilise jamais une valeur périmée.
-        t_outdoor = self._read_outdoor_temperature()
-        collector.set_value("temp_outdoor", t_outdoor)
+        # Capteur prioritaire, API météo en repli ; None si aucune des deux n'est disponible.
+        t_outdoor, outdoor_source = self._outdoor_temperature_with_fallback()
+        collector.set_value("temp_outdoor", t_outdoor, source=outdoor_source)
         last_known["temp_outdoor"] = t_outdoor
 
         t_oil_predicted = self._predict_if_possible(last_known, t_oil)
@@ -257,20 +265,63 @@ class VoltaneumApp:
         #    température extérieure. Rien n'est publié si la température d'huile est invalide.
         conditions = compute_cooling_conditions(t_oil, t_outdoor)
         if conditions is not None:
-            self._publish(config.MQTT_TOPIC_COOLING_CONDITIONS, conditions)
+            # La source dit si la bande extérieure vient du capteur ou de l'API météo (repli).
+            self._publish(config.MQTT_TOPIC_COOLING_CONDITIONS, {**conditions, "t_outdoor_source": outdoor_source})
         # 2) Consigne PID en % : INFORMATIVE (suivi, comparaison avec la régulation de l'automate).
         if config.PUBLISH_PID_SETPOINT:
             self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
         logger.info(
             "Consigne suggérée : %.1f %% (mode=%s, huile=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
             setpoint, mode, t_oil, config.TARGET_TEMP, t_oil_predicted,
-            "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C",
+            "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C ({outdoor_source})",
         )
+
+    def _outdoor_temperature_with_fallback(self) -> tuple[float | None, str | None]:
+        """Température extérieure et sa source : "sensor" (prioritaire), sinon "weather".
+
+        Le capteur est utilisé dès qu'il a une valeur actuelle ; l'API météo ne sert que
+        lorsqu'il n'en a pas (non installé, muet ou défaillant).
+        """
+        value = self._read_outdoor_temperature()
+        source: str | None = "sensor" if value is not None else None
+        if value is None and config.OUTDOOR_WEATHER_FALLBACK_ENABLED:
+            value = self._read_weather_temperature()
+            source = "weather" if value is not None else None
+
+        if source != self._outdoor_source:
+            if source == "sensor":
+                logger.info("Température extérieure : capteur utilisé.")
+            elif source == "weather":
+                logger.warning("Température extérieure : capteur sans valeur, repli sur l'API météo.")
+            else:
+                logger.warning("Température extérieure indisponible (ni capteur, ni météo).")
+            self._outdoor_source = source
+        return value, source
+
+    def _read_weather_temperature(self) -> float | None:
+        """Température de l'API météo, appelée au plus toutes les
+        OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS. Une valeur plus ancienne que
+        OUTDOOR_SENSOR_MAX_AGE_SECONDS (API injoignable depuis longtemps) vaut None.
+        """
+        now = time.monotonic()
+        if (self._weather_attempted_at is None
+                or now - self._weather_attempted_at >= config.OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS):
+            self._weather_attempted_at = now  # même en cas d'échec : pas de rafale d'appels
+            try:
+                self._weather_value = get_outdoor_temperature()
+                self._weather_value_at = now
+            except Exception as exc:
+                logger.warning("API météo indisponible pour le repli de température extérieure : %s", exc)
+        if self._weather_value_at is None or now - self._weather_value_at > config.OUTDOOR_SENSOR_MAX_AGE_SECONDS:
+            return None
+        return self._weather_value
 
     def _read_outdoor_temperature(self) -> float | None:
         """Température extérieure ACTUELLE du capteur indépendant, ou None si indisponible.
 
-        Aucune valeur de repli : une mesure périmée ne doit pas passer pour actuelle.
+        Capteur seul (sert aussi à la vérification de cohérence capteur/météo, qui ne doit
+        jamais comparer la météo à elle-même) ; le repli météo est fait par
+        `_outdoor_temperature_with_fallback`.
         """
         if config.OUTDOOR_SENSOR_MODE == "mqtt":
             return None if self.outdoor_sensor is None else self.outdoor_sensor.get_last_value()

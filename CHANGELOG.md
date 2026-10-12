@@ -397,6 +397,27 @@ production, voir point 9) — mais uniquement comme référence de comparaison,
 jamais comme source de la valeur injectée. La note de dépréciation en tête
 de ce fichier reste donc légèrement obsolète et pourrait être clarifiée.
 
+## 11. Repli sur l'API météo quand le capteur extérieur n'a pas de valeur (12 octobre 2026)
+
+**Problème** : sans capteur extérieur installé (ou capteur muet), `temp_outdoor`
+était enregistrée à NULL, ce qui privait aussi le modèle ML d'une variable
+d'entrée (aucune prédiction possible).
+
+**Décision** : le capteur reste prioritaire ; quand il n'a pas de valeur
+actuelle, la température d'Open-Meteo est utilisée à sa place (révise le
+point 10, où la météo ne servait qu'à comparer). Relue au rythme de la boucle
+de contrôle (`OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS`, 60 s), jamais
+utilisée si elle date de plus de `OUTDOOR_SENSOR_MAX_AGE_SECONDS`. La source
+est enregistrée dans la nouvelle colonne `telemetry.temp_outdoor_source`
+(`sensor` / `weather`, migration automatique des bases existantes) et publiée
+sur `voltaneum/telemetry`. La vérification de cohérence ne compare jamais la
+météo à elle-même. Désactivable : `OUTDOOR_WEATHER_FALLBACK_ENABLED=false`.
+
+**Vérification** : `tests/test_main.py::TestOutdoorWeatherFallback` (priorité
+du capteur, retour au capteur, cache, expiration, désactivation),
+`tests/test_gateway_collector.py::TestOutdoorSourceRecorded`, migration dans
+`tests/test_sqlite_client.py`.
+
 ## Points déjà conformes (vérifiés, non modifiés)
 
 Les décisions d'architecture des addenda A et B (purge déclenchée uniquement

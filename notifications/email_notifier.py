@@ -54,7 +54,9 @@ def send_email(subject: str, body: str, level: str) -> bool:
     smtp_host, smtp_user, smtp_password = config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD
     sender, recipient = config.ALERT_EMAIL_FROM, config.ALERT_EMAIL_TO
 
-    if not smtp_configured():
+    # Test explicite (et non `smtp_configured()`) : il permet à mypy de savoir que les
+    # valeurs ne sont plus None dans la suite de la fonction.
+    if not (smtp_host and smtp_user and smtp_password and sender and recipient):
         logger.error(
             "Configuration SMTP incomplète (SMTP_HOST/SMTP_USER/SMTP_PASSWORD/"
             "ALERT_EMAIL_FROM/ALERT_EMAIL_TO) — email non envoyé."

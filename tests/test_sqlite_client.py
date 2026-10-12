@@ -213,3 +213,22 @@ def test_log_alert_persists_the_alert(temp_db_path):
     with sqlite_client.connect(temp_db_path) as conn:
         assert conn.execute("SELECT level, rule_name, email_sent FROM alerts_log").fetchone() == (
             "CRITIQUE", "critical_temp", 1)
+
+
+def test_init_db_migrates_old_schema_without_losing_rows(tmp_path):
+    """Une base créée avant la colonne temp_outdoor_source est migrée sans perte."""
+    import sqlite3
+
+    from database import sqlite_client
+
+    path = str(tmp_path / "old.db")
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE telemetry (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                     "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, pt01 REAL, pt02 REAL, pt03 REAL, "
+                     "pt04 REAL, ht01 REAL, freq_pompe REAL, temp_outdoor REAL)")
+        conn.execute("INSERT INTO telemetry (pt02) VALUES (30.0)")
+    sqlite_client.init_db(path)
+    sqlite_client.init_db(path)  # idempotent
+    with sqlite_client.connect(path) as conn:
+        rows = conn.execute("SELECT pt02, temp_outdoor_source FROM telemetry").fetchall()
+    assert rows == [(30.0, None)]

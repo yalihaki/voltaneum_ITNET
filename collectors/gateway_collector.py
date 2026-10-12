@@ -117,6 +117,9 @@ class GatewayCollector:
         # Horodatage (monotonic) de la dernière valeur VALIDE reçue, par colonne : un
         # capteur qui se tait pendant que les autres continuent doit être détecté.
         self._updated_at: dict[str, float] = {}
+        # Origine des valeurs qui ne viennent pas de la passerelle (ex. temp_outdoor :
+        # "sensor" ou "weather"), enregistrée avec chaque instantané.
+        self._sources: dict[str, str] = {}
         self._clock = time.monotonic
 
         # État interne de la boucle run_forever (thread d'arrêt, app WebSocket
@@ -372,15 +375,26 @@ class GatewayCollector:
                 if value is not None and max_age and now - self._updated_at.get(column, now) > max_age
             ]
 
-    def set_value(self, column: str, value: float | None) -> None:
+    def set_value(self, column: str, value: float | None, source: str | None = None) -> None:
         """Enregistre une valeur et son heure de réception (sert aussi aux valeurs qui ne
-        viennent pas de la passerelle, ex. température extérieure). `None` efface la valeur."""
+        viennent pas de la passerelle, ex. température extérieure, avec leur `source`).
+        `None` efface la valeur."""
         with self._lock:
             self.last_known[column] = value
             if value is None:
                 self._updated_at.pop(column, None)
+                self._sources.pop(column, None)
             else:
                 self._updated_at[column] = self._clock()
+                if source is None:
+                    self._sources.pop(column, None)
+                else:
+                    self._sources[column] = source
+
+    def source_of(self, column: str) -> str | None:
+        """Origine déclarée de la valeur actuelle de `column` (None si inconnue)."""
+        with self._lock:
+            return self._sources.get(column)
 
     def _ws_on_message(self, ws, message) -> None:
         """Callback compatible websocket-client : délègue à _on_ws_message(raw)."""
@@ -420,6 +434,7 @@ class GatewayCollector:
             return False
         self._stale_reported = False
 
+        outdoor_source = self.source_of("temp_outdoor") if snapshot.get("temp_outdoor") is not None else None
         sqlite_client.insert_reading(
             pt01=snapshot.get("pt01"),
             pt02=snapshot.get("pt02"),
@@ -428,12 +443,13 @@ class GatewayCollector:
             ht01=snapshot.get("ht01"),
             freq_pompe=snapshot.get("freq_pompe"),
             temp_outdoor=snapshot.get("temp_outdoor"),
+            temp_outdoor_source=outdoor_source,
             db_path=self.db_path,
         )
 
         if self.mqtt_client is not None:
             try:
-                payload = json.dumps({**snapshot, "ts": time.time()})
+                payload = json.dumps({**snapshot, "temp_outdoor_source": outdoor_source, "ts": time.time()})
                 self.mqtt_client.publish(config.MQTT_TOPIC_TELEMETRY, payload)
             except Exception as exc:
                 # Une panne MQTT ne doit jamais faire perdre la donnée déjà

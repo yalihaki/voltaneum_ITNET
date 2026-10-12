@@ -562,3 +562,39 @@ class TestSensorFreshness:
         df = sqlite_client.get_dataframe("2000-01-01", "2100-01-01", db_path=temp_db_path)
         assert df.iloc[0]["pt01"] == pytest.approx(25.0)
         assert df.iloc[0]["pt02"] is None or df.iloc[0]["pt02"] != df.iloc[0]["pt02"]  # NULL -> None/NaN
+
+
+class TestOutdoorSourceRecorded:
+    """La source de temp_outdoor ("sensor" / "weather") est enregistrée avec chaque instantané."""
+
+    def test_source_written_to_database_and_mqtt(self, temp_db_path):
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+        mock_mqtt = MagicMock()
+        collector = _make_collector()
+        collector.db_path = temp_db_path
+        collector.mqtt_client = mock_mqtt
+        collector.set_value("pt02", 30.0)
+        collector.set_value("temp_outdoor", 12.0, source="weather")
+
+        assert collector._snapshot_once() is True
+        with sqlite_client.connect(temp_db_path) as conn:
+            row = conn.execute("SELECT temp_outdoor, temp_outdoor_source FROM telemetry").fetchone()
+        assert row == (12.0, "weather")
+        payload = json.loads(mock_mqtt.publish.call_args[0][1])
+        assert payload["temp_outdoor_source"] == "weather"
+
+    def test_no_source_when_outdoor_temperature_is_missing(self, temp_db_path):
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+        collector = _make_collector()
+        collector.db_path = temp_db_path
+        collector.set_value("pt02", 30.0)
+        collector.set_value("temp_outdoor", None, source="weather")
+
+        collector._snapshot_once()
+        with sqlite_client.connect(temp_db_path) as conn:
+            row = conn.execute("SELECT temp_outdoor, temp_outdoor_source FROM telemetry").fetchone()
+        assert row == (None, None)

@@ -49,6 +49,7 @@ class FakeCollector(_Stoppable):
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.last_known = {column: None for column in config.FEATURE_COLUMNS + [config.TARGET_COLUMN]}
+        self.sources = {}
 
     # Âge simulé du dernier message de la passerelle (None = aucun message encore attendu).
     message_age: float | None = 1.0
@@ -56,8 +57,9 @@ class FakeCollector(_Stoppable):
     def snapshot(self):
         return dict(self.last_known)
 
-    def set_value(self, column, value):
+    def set_value(self, column, value, source=None):
         self.last_known[column] = value
+        self.sources[column] = source
 
     def seconds_since_last_message(self):
         return self.message_age
@@ -134,6 +136,19 @@ class FakePredictor:
         }
 
 
+class FakeWeather:
+    """Remplace l'API météo : retourne `value`, ou lève si elle vaut None."""
+
+    value = None
+    calls = 0
+
+    def __call__(self):
+        type(self).calls += 1
+        if type(self).value is None:
+            raise ConnectionError("API météo injoignable")
+        return type(self).value
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     for name, value in {
@@ -152,6 +167,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "OutdoorConsistencyChecker", FakeChecker)
     monkeypatch.setattr(main_module, "DualModelPredictor", FakePredictor)
     monkeypatch.setattr(main_module, "create_client", lambda client_id: client)
+    FakeWeather.value, FakeWeather.calls = None, 0   # météo injoignable par défaut (jamais de vrai appel réseau)
+    monkeypatch.setattr(main_module, "get_outdoor_temperature", FakeWeather())
     application = main_module.VoltaneumApp()
     application.fake_client = client
     yield application
@@ -409,6 +426,7 @@ class TestControlTick:
         assert app.collector.last_known["temp_outdoor"] is None
         assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 2
 
+
     def test_mqtt_publish_failure_does_not_break_the_cycle(self, app):
         app.start()
         feed_measurements(app)
@@ -431,6 +449,86 @@ class TestControlTick:
         app.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+class TestOutdoorWeatherFallback:
+    """Capteur prioritaire ; API météo utilisée seulement quand le capteur n'a pas de valeur."""
+
+    def test_weather_used_when_sensor_absent(self, app):
+        app.start()
+        feed_measurements(app)
+        FakeOutdoorSensor.value, FakeWeather.value = None, 12.0
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] == 12.0
+        assert app.collector.sources["temp_outdoor"] == "weather"
+
+    def test_sensor_has_priority_over_weather(self, app):
+        app.start()
+        feed_measurements(app)
+        FakeOutdoorSensor.value, FakeWeather.value = 18.0, 12.0
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] == 18.0
+        assert app.collector.sources["temp_outdoor"] == "sensor"
+        assert FakeWeather.calls == 0                        # API pas appelée quand le capteur répond
+
+    def test_switches_back_to_sensor_when_it_returns(self, app):
+        app.start()
+        feed_measurements(app)
+        FakeOutdoorSensor.value, FakeWeather.value = None, 12.0
+        app._control_tick(1.0)
+        FakeOutdoorSensor.value = 18.0                       # capteur installé / revenu
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] == 18.0
+        assert app.collector.sources["temp_outdoor"] == "sensor"
+
+    def test_api_called_at_most_once_per_refresh_interval(self, app, monkeypatch):
+        monkeypatch.setattr(config, "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", 3600)
+        app.start()
+        feed_measurements(app)
+        FakeWeather.value = 12.0
+        for _ in range(5):
+            app._control_tick(1.0)
+        assert FakeWeather.calls == 1
+        assert app.collector.last_known["temp_outdoor"] == 12.0   # valeur en cache réutilisée
+
+    def test_api_failure_keeps_recent_value_then_expires(self, app, monkeypatch):
+        monkeypatch.setattr(config, "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", 1)
+        monkeypatch.setattr(config, "OUTDOOR_SENSOR_MAX_AGE_SECONDS", 1800)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(main_module.time, "monotonic", lambda: clock["t"])
+        app.start()
+        feed_measurements(app)
+        FakeWeather.value = 12.0
+        app._control_tick(1.0)
+        FakeWeather.value = None                             # API injoignable
+        clock["t"] += 60
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] == 12.0   # encore récente
+        clock["t"] += 1800
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] is None   # trop ancienne : jamais inventée
+
+    def test_cooling_conditions_report_the_outdoor_source(self, app):
+        app.start()
+        feed_measurements(app)
+        app.collector.message_age = 1.0
+        FakeOutdoorSensor.value, FakeWeather.value = None, 12.0
+        app._control_tick(1.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["t_outdoor"] == 12.0 and message["t_outdoor_source"] == "weather"
+
+    def test_fallback_can_be_disabled(self, app, monkeypatch):
+        monkeypatch.setattr(config, "OUTDOOR_WEATHER_FALLBACK_ENABLED", False)
+        app.start()
+        feed_measurements(app)
+        FakeWeather.value = 12.0
+        app._control_tick(1.0)
+        assert app.collector.last_known["temp_outdoor"] is None and FakeWeather.calls == 0
+
+    def test_consistency_check_never_compares_weather_with_itself(self, app):
+        app.start()
+        FakeOutdoorSensor.value, FakeWeather.value = None, 12.0
+        assert app._read_outdoor_temperature() is None
 
 
 class TestPredictions:
