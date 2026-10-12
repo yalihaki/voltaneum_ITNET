@@ -185,14 +185,19 @@ class StorageManager:
 
     def _alert(self, event_type: str, subject: str, message: str, level: str) -> bool:
         """Journalise l'événement puis envoie l'e-mail, au plus une fois par type et par
-        `STORAGE_ALERT_COOLDOWN_MINUTES` (un problème qui persiste ne doit pas spammer)."""
+        `STORAGE_ALERT_COOLDOWN_MINUTES` après un envoi réussi (un problème qui persiste
+        ne doit pas spammer, mais un e-mail qui n'est pas parti doit être retenté)."""
         sqlite_client.log_alert(level, event_type, message, email_sent=False, db_path=self.db_path)
         now = self.time_fn()
         last_sent = self._alert_sent_at.get(event_type)
         if last_sent is not None and now - last_sent < config.STORAGE_ALERT_COOLDOWN_MINUTES * 60:
             return False
-        self._alert_sent_at[event_type] = now
-        return self.alert_sender(f"[Voltaneum][{level}] {subject}", message, level)
+        sent = self.alert_sender(f"[Voltaneum][{level}] {subject}", message, level)
+        if sent:
+            # Le cooldown ne démarre qu'après un envoi RÉUSSI : un échec SMTP est retenté
+            # au contrôle suivant (STORAGE_CHECK_INTERVAL_SECONDS) au lieu d'être perdu.
+            self._alert_sent_at[event_type] = now
+        return sent
 
     def _backup_space_missing(self) -> str | None:
         """Retourne une description si le volume de sauvegarde n'a pas assez d'espace libre

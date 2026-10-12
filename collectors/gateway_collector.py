@@ -114,6 +114,10 @@ class GatewayCollector:
         self.last_known: dict[str, float | None] = {
             column: None for column in config.FEATURE_COLUMNS + [config.TARGET_COLUMN]
         }
+        # Horodatage (monotonic) de la dernière valeur VALIDE reçue, par colonne : un
+        # capteur qui se tait pendant que les autres continuent doit être détecté.
+        self._updated_at: dict[str, float] = {}
+        self._clock = time.monotonic
 
         # État interne de la boucle run_forever (thread d'arrêt, app WebSocket
         # active) — permet un arrêt propre depuis stop() (contrat 6.8).
@@ -310,12 +314,15 @@ class GatewayCollector:
                 )
                 continue
 
+            # Une valeur rejetée EFFACE la précédente : le capteur est jugé défaillant,
+            # son ancienne mesure ne doit pas continuer à passer pour actuelle.
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 logger.warning(
                     "Valeur hors format pour %s ignorée : %r (attendu nombre fini).",
                     column,
                     value,
                 )
+                self.set_value(column, None)
                 continue
             if not math.isfinite(float(value)):
                 logger.warning(
@@ -323,6 +330,7 @@ class GatewayCollector:
                     column,
                     value,
                 )
+                self.set_value(column, None)
                 continue
 
             lower, upper = config.SENSOR_VALID_RANGES.get(column, (-float("inf"), float("inf")))
@@ -334,21 +342,45 @@ class GatewayCollector:
                     lower,
                     upper,
                 )
+                self.set_value(column, None)
                 continue
 
-            with self._lock:
-                self.last_known[column] = float(value)
+            self.set_value(column, float(value))
 
     def snapshot(self) -> dict[str, float | None]:
-        """Copie cohérente (sous verrou) des dernières valeurs connues."""
+        """Copie cohérente (sous verrou) des dernières valeurs connues ET actuelles.
+
+        Une valeur plus ancienne que `SENSOR_MAX_AGE_SECONDS` vaut None : elle n'est
+        jamais réécrite en base, publiée ni utilisée par la régulation comme si elle
+        venait d'être mesurée.
+        """
+        max_age = config.SENSOR_MAX_AGE_SECONDS
+        now = self._clock()
         with self._lock:
-            return dict(self.last_known)
+            return {
+                column: None if max_age and now - self._updated_at.get(column, now) > max_age else value
+                for column, value in self.last_known.items()
+            }
+
+    def stale_columns(self) -> list[str]:
+        """Colonnes ayant déjà reçu une valeur, mais devenue trop ancienne pour être utilisée."""
+        max_age = config.SENSOR_MAX_AGE_SECONDS
+        now = self._clock()
+        with self._lock:
+            return [
+                column for column, value in self.last_known.items()
+                if value is not None and max_age and now - self._updated_at.get(column, now) > max_age
+            ]
 
     def set_value(self, column: str, value: float | None) -> None:
-        """Renseigne une valeur qui ne vient pas de la passerelle (ex. température
-        extérieure du capteur indépendant). `None` efface la valeur."""
+        """Enregistre une valeur et son heure de réception (sert aussi aux valeurs qui ne
+        viennent pas de la passerelle, ex. température extérieure). `None` efface la valeur."""
         with self._lock:
             self.last_known[column] = value
+            if value is None:
+                self._updated_at.pop(column, None)
+            else:
+                self._updated_at[column] = self._clock()
 
     def _ws_on_message(self, ws, message) -> None:
         """Callback compatible websocket-client : délègue à _on_ws_message(raw)."""

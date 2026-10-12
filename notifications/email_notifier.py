@@ -33,6 +33,16 @@ from database import sqlite_client
 
 logger = logging.getLogger("voltaneum.email_notifier")
 
+# Délai avant de retenter une alerte dont l'envoi a échoué (secondes). Sans lui, un
+# échec SMTP serait « couvert » par le cooldown et l'alerte perdue pendant 30 min.
+SEND_RETRY_SECONDS = 60
+
+
+def smtp_configured() -> bool:
+    """Vrai si la configuration e-mail est complète (sinon les alertes sont désactivées)."""
+    return all((config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD,
+                config.ALERT_EMAIL_FROM, config.ALERT_EMAIL_TO))
+
 
 # ---------------------------------------------------------------------------
 # Envoi SMTP — contrat 5.5
@@ -44,7 +54,7 @@ def send_email(subject: str, body: str, level: str) -> bool:
     smtp_host, smtp_user, smtp_password = config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD
     sender, recipient = config.ALERT_EMAIL_FROM, config.ALERT_EMAIL_TO
 
-    if not (smtp_host and smtp_user and smtp_password and sender and recipient):
+    if not smtp_configured():
         logger.error(
             "Configuration SMTP incomplète (SMTP_HOST/SMTP_USER/SMTP_PASSWORD/"
             "ALERT_EMAIL_FROM/ALERT_EMAIL_TO) — email non envoyé."
@@ -371,11 +381,22 @@ class EmailNotifier:
         for alert in alerts:
             subject = f"[Voltaneum][{alert['level']}] {alert['rule_name']}"
             try:
-                send_email(subject, alert["message"], alert["level"])
+                sent = send_email(subject, alert["message"], alert["level"])
             except Exception:
                 # send_email ne devrait déjà rien lever, mais on double la
                 # protection ici : ce thread ne doit jamais mourir (règle 6).
                 logger.exception("send_email a levé une exception inattendue pour %s", alert["rule_name"])
+                sent = False
+            if not sent and smtp_configured():
+                # `evaluate_rules` a déjà démarré le cooldown : on le raccourcit pour que
+                # l'alerte soit retentée dans SEND_RETRY_SECONDS au lieu d'être perdue.
+                # (E-mail non configuré : alertes désactivées, inutile de retenter.)
+                with self._lock:
+                    self._state["last_sent_at"][alert["rule_name"]] = (
+                        time.time() - config.ALERT_COOLDOWN_MINUTES * 60 + SEND_RETRY_SECONDS
+                    )
+                logger.warning("Alerte %s non envoyée : nouvel essai dans %d s.",
+                               alert["rule_name"], SEND_RETRY_SECONDS)
 
     # -- cycle de vie --------------------------------------------------------
 

@@ -307,7 +307,7 @@ class TestOnWsMessage:
         collector._on_ws_message(self._message("K4", 10.4))
         assert collector.last_known["ht01"] == 10.4
         collector._on_ws_message(self._message("K4", 15.5))
-        assert collector.last_known["ht01"] == 10.4          # valeur hors plage ignorée
+        assert collector.last_known["ht01"] is None          # hors plage : rejetée, et l'ancienne valeur effacée
 
     def test_oil_overheating_is_not_discarded_as_out_of_range(self):
         """Régression de sécurité : 58 °C (> seuil critique) doit être MESURÉ, pas rejeté."""
@@ -489,3 +489,76 @@ class TestMessageAge:
         assert collector.stream_is_silent() is False
         collector._last_message_at = time.monotonic() - 20
         assert collector.stream_is_silent() is True
+
+
+class TestSensorFreshness:
+    """Une mesure trop ancienne ou rejetée ne doit jamais passer pour actuelle."""
+
+    @staticmethod
+    def _collector_with_clock(monkeypatch, max_age=300):
+        import config
+
+        monkeypatch.setattr(config, "SENSOR_MAX_AGE_SECONDS", max_age)
+        collector = _make_collector()
+        collector.keynode_to_column = {"K0": "pt01", "K1": "pt02"}
+        clock = {"t": 1000.0}
+        collector._clock = lambda: clock["t"]
+        return collector, clock
+
+    @staticmethod
+    def _message(*points):
+        return json.dumps({"Code": "IotData", "Data": {
+            "Node": "idospV1_1", "Point": [{"K": k, "V": v} for k, v in points]}})
+
+    def test_value_expires_after_max_age(self, monkeypatch):
+        collector, clock = self._collector_with_clock(monkeypatch)
+        collector._on_ws_message(self._message(("K1", 30.0)))
+        clock["t"] += 299
+        assert collector.snapshot()["pt02"] == 30.0
+        clock["t"] += 2
+        assert collector.snapshot()["pt02"] is None
+        assert collector.stale_columns() == ["pt02"]
+
+    def test_one_silent_sensor_is_detected_while_others_keep_reporting(self, monkeypatch):
+        collector, clock = self._collector_with_clock(monkeypatch)
+        collector._on_ws_message(self._message(("K0", 25.0), ("K1", 30.0)))
+        for _ in range(5):  # seul pt01 continue d'émettre
+            clock["t"] += 100
+            collector._on_ws_message(self._message(("K0", 25.0)))
+        snapshot = collector.snapshot()
+        assert snapshot["pt01"] == 25.0 and snapshot["pt02"] is None
+
+    def test_rejected_value_clears_the_previous_one(self, monkeypatch):
+        collector, _ = self._collector_with_clock(monkeypatch)
+        collector._on_ws_message(self._message(("K1", 30.0)))
+        collector._on_ws_message(self._message(("K1", 999.0)))  # hors plage : capteur défaillant
+        assert collector.snapshot()["pt02"] is None
+        assert collector.stale_columns() == []
+
+    def test_fresh_value_after_staleness_is_used_again(self, monkeypatch):
+        collector, clock = self._collector_with_clock(monkeypatch)
+        collector._on_ws_message(self._message(("K1", 30.0)))
+        clock["t"] += 1000
+        collector._on_ws_message(self._message(("K1", 31.0)))
+        assert collector.snapshot()["pt02"] == 31.0
+
+    def test_zero_disables_expiry(self, monkeypatch):
+        collector, clock = self._collector_with_clock(monkeypatch, max_age=0)
+        collector._on_ws_message(self._message(("K1", 30.0)))
+        clock["t"] += 10**6
+        assert collector.snapshot()["pt02"] == 30.0
+
+    def test_stale_values_are_not_written_to_database(self, monkeypatch, temp_db_path):
+        from database import sqlite_client
+
+        sqlite_client.init_db(temp_db_path)
+        collector, clock = self._collector_with_clock(monkeypatch)
+        collector.db_path = temp_db_path
+        collector._on_ws_message(self._message(("K0", 25.0), ("K1", 30.0)))
+        clock["t"] += 200
+        collector._on_ws_message(self._message(("K0", 25.0)))
+        clock["t"] += 200  # pt02 a 400 s, pt01 200 s
+        assert collector._snapshot_once() is True
+        df = sqlite_client.get_dataframe("2000-01-01", "2100-01-01", db_path=temp_db_path)
+        assert df.iloc[0]["pt01"] == pytest.approx(25.0)
+        assert df.iloc[0]["pt02"] is None or df.iloc[0]["pt02"] != df.iloc[0]["pt02"]  # NULL -> None/NaN

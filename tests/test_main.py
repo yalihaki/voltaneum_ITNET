@@ -62,6 +62,9 @@ class FakeCollector(_Stoppable):
     def seconds_since_last_message(self):
         return self.message_age
 
+    def stale_columns(self):
+        return []
+
 
 class FakeOutdoorSensor(_Stoppable):
     value = None
@@ -249,6 +252,35 @@ class TestControlTick:
         app.start()
         app._control_tick(1.0)
         assert app.fake_client.messages(config.MQTT_TOPIC_SETPOINT) == []
+
+    def test_nothing_published_when_oil_temperature_is_stale(self, app, monkeypatch):
+        """Régression : une mesure PT02 périmée ne doit jamais produire de consigne."""
+        from collectors.gateway_collector import GatewayCollector
+
+        monkeypatch.setattr(config, "SENSOR_MAX_AGE_SECONDS", 300)
+        app.start()
+        collector = GatewayCollector(username="u", password="p")
+        collector._last_message_at = time.monotonic()   # la passerelle émet (seul PT02 va se taire)
+        clock = {"t": 0.0}
+        collector._clock = lambda: clock["t"]
+        for column in config.FEATURE_COLUMNS:
+            collector.set_value(column, 25.0)
+        collector.set_value(config.TARGET_COLUMN, 40.0)
+        app.collector = collector
+        FakeOutdoorSensor.value = 15.0
+
+        app._control_tick(1.0)
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 1
+
+        clock["t"] += 301  # la passerelle s'est tue
+        app._control_tick(1.0)
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 1
+        assert app._target_stale_reported
+
+        collector.set_value(config.TARGET_COLUMN, 41.0)  # mesure revenue
+        app._control_tick(1.0)
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 2
+        assert not app._target_stale_reported
 
     def test_publishes_a_setpoint_suggestion(self, app):
         app.start()

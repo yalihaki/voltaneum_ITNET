@@ -91,6 +91,9 @@ WS_RECONNECT_BACKOFF_MAX_SECONDS: float = 30.0
 # (0 = surveillance désactivée).
 WS_SILENCE_TIMEOUT_SECONDS: int = _env_int("WS_SILENCE_TIMEOUT_SECONDS", 300)
 POINT_MAPPING_REFRESH_SECONDS: int = _env_int("POINT_MAPPING_REFRESH_SECONDS", 3600)
+# Âge maximal d'une mesure capteur : au-delà, elle est considérée comme ABSENTE (capteur muet
+# ou défaillant) au lieu d'être réutilisée comme si elle était actuelle (0 = jamais périmée).
+SENSOR_MAX_AGE_SECONDS: int = _env_int("SENSOR_MAX_AGE_SECONDS", 300)
 
 # ---------------------------------------------------------------------------
 # MQTT — bus de messages interne entre les modules
@@ -333,6 +336,7 @@ def validate_config() -> None:
     for name, value in {
         "ALERT_COOLDOWN_MINUTES": ALERT_COOLDOWN_MINUTES, "STORAGE_ALERT_COOLDOWN_MINUTES": STORAGE_ALERT_COOLDOWN_MINUTES,
         "STORAGE_GRACE_PERIOD_SECONDS": STORAGE_GRACE_PERIOD_SECONDS, "WS_SILENCE_TIMEOUT_SECONDS": WS_SILENCE_TIMEOUT_SECONDS,
+        "SENSOR_MAX_AGE_SECONDS": SENSOR_MAX_AGE_SECONDS,
         "RETENTION_DAYS": RETENTION_DAYS, "PREDICTIONS_RETENTION_DAYS": PREDICTIONS_RETENTION_DAYS,
         "ALERTS_RETENTION_DAYS": ALERTS_RETENTION_DAYS,
         "PID_KP": PID_KP, "PID_KI": PID_KI, "PID_KD": PID_KD,

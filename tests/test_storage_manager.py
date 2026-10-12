@@ -230,6 +230,21 @@ class TestManager:
             logged = conn.execute("SELECT COUNT(*) FROM alerts_log WHERE rule_name='storage_backup_failed'").fetchone()[0]
         assert logged >= 6
 
+    def test_failed_email_is_retried_at_next_check(self, db, monkeypatch):
+        """Régression : un e-mail qui n'est pas parti ne doit pas déclencher le cooldown."""
+        results = [False, True]
+        sent: list[str] = []
+
+        def flaky_sender(subject, body, level):
+            sent.append(subject)
+            return results.pop(0)
+
+        manager = StorageManager(db, alert_sender=flaky_sender)
+        assert manager._alert("storage_backup_failed", "s", "m", "CRITIQUE") is False
+        assert manager._alert("storage_backup_failed", "s", "m", "CRITIQUE") is True
+        assert manager._alert("storage_backup_failed", "s", "m", "CRITIQUE") is False  # cooldown actif
+        assert len(sent) == 2
+
     def test_stop_ends_the_loop(self, db):
         manager = StorageManager(db, alert_sender=FakeAlerts())
         manager.stop()

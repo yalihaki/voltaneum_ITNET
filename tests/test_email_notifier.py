@@ -4,6 +4,7 @@ Couvre toutes les règles de `evaluate_rules`, la sécurité de `send_email`
 (TLS vérifié, en-têtes sûrs) et le chien de garde de l'`EmailNotifier`.
 """
 
+import json
 import ssl
 import threading
 import time
@@ -324,3 +325,55 @@ class TestNotifierWatchdog:
         message = MagicMock(topic=config.MQTT_TOPIC_TELEMETRY, payload=b"[1, 2, 3]")
         notifier._on_message(None, None, message)  # ne doit pas lever
         assert "last_telemetry_ts" not in notifier._state
+
+
+class TestFailedSendIsRetried:
+    """Régression : un échec SMTP ne doit pas « consommer » le cooldown de l'alerte."""
+
+    @staticmethod
+    def _notifier(monkeypatch, tmp_path, send_results):
+        monkeypatch.setattr(config, "SQLITE_DB_PATH", str(tmp_path / "t.db"))
+        for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
+            monkeypatch.setattr(config, name, "x")
+        attempts: list[str] = []
+
+        def fake_send(subject, body, level):
+            attempts.append(subject)
+            return send_results.pop(0)
+
+        monkeypatch.setattr(email_notifier, "send_email", fake_send)
+        return email_notifier.EmailNotifier(), attempts
+
+    @staticmethod
+    def _critical(notifier, ts):
+        message = MagicMock(topic=config.MQTT_TOPIC_TELEMETRY,
+                            payload=json.dumps(_telemetry(pt01=config.CRITICAL_TEMP + 15, pt02=config.CRITICAL_TEMP + 5,
+                                                       pt03=30.0, ts=ts)).encode())
+        notifier._on_message(None, None, message)
+
+    def test_failed_critical_alert_is_retried_after_short_delay(self, monkeypatch, tmp_path):
+        notifier, attempts = self._notifier(monkeypatch, tmp_path, [False, True])
+        self._critical(notifier, ts=1.0)
+        assert len(attempts) == 1
+
+        self._critical(notifier, ts=2.0)  # immédiatement : pas de rafale de tentatives
+        assert len(attempts) == 1
+
+        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
+        self._critical(notifier, ts=3.0)
+        assert len(attempts) == 2
+
+    def test_successful_alert_keeps_full_cooldown(self, monkeypatch, tmp_path):
+        notifier, attempts = self._notifier(monkeypatch, tmp_path, [True, True])
+        self._critical(notifier, ts=1.0)
+        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
+        self._critical(notifier, ts=2.0)
+        assert len(attempts) == 1
+
+    def test_no_retry_when_email_is_not_configured(self, monkeypatch, tmp_path):
+        notifier, attempts = self._notifier(monkeypatch, tmp_path, [False, False])
+        monkeypatch.setattr(config, "SMTP_HOST", None)
+        self._critical(notifier, ts=1.0)
+        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
+        self._critical(notifier, ts=2.0)
+        assert len(attempts) == 1

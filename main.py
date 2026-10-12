@@ -73,6 +73,8 @@ class VoltaneumApp:
         self._pid_state: dict = {}
         # Vrai tant que la boucle de contrôle est suspendue pour mesures périmées (un seul avertissement par panne).
         self._stale_data_reported = False
+        # Idem quand seule la mesure d'huile est périmée (capteur muet alors que les autres émettent).
+        self._target_stale_reported = False
 
     # ------------------------------------------------------------------
     # Cycle de vie
@@ -192,7 +194,9 @@ class VoltaneumApp:
 
         Dégradation gracieuse : sans température extérieure, ou sans modèle ML, le
         PID et son bypass de sécurité (température critique) continuent de fonctionner.
-        Seule l'absence de la température d'huile suspend le cycle.
+        Seule l'absence de la température d'huile suspend le cycle : aucune consigne
+        n'est alors publiée (jamais de consigne calculée sur une mesure périmée),
+        l'automate reste sur sa propre logique.
         """
         collector = self.collector
         if collector is None:
@@ -217,11 +221,23 @@ class VoltaneumApp:
             logger.info("Messages de la passerelle de nouveau reçus : publication reprise.")
             self._stale_data_reported = False
 
-        last_known = collector.snapshot()
+        last_known = collector.snapshot()   # valeurs périmées capteur par capteur déjà remplacées par None
         t_oil = last_known.get(config.TARGET_COLUMN)
         if t_oil is None:
-            logger.debug("Pas encore de mesure %s : cycle de contrôle suspendu.", config.TARGET_COLUMN)
+            if config.TARGET_COLUMN in collector.stale_columns():
+                if not self._target_stale_reported:
+                    logger.error(
+                        "Mesure %s périmée (aucune valeur valide depuis plus de %d s) : "
+                        "aucune consigne publiée tant qu'elle n'est pas revenue.",
+                        config.TARGET_COLUMN, config.SENSOR_MAX_AGE_SECONDS,
+                    )
+                    self._target_stale_reported = True
+            else:
+                logger.debug("Pas de mesure %s valide : cycle de contrôle suspendu.", config.TARGET_COLUMN)
             return
+        if self._target_stale_reported:
+            logger.info("Mesure %s de nouveau disponible : reprise des consignes.", config.TARGET_COLUMN)
+            self._target_stale_reported = False
 
         # None si le capteur est absent ou muet : on n'utilise jamais une valeur périmée.
         t_outdoor = self._read_outdoor_temperature()
