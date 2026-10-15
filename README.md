@@ -115,7 +115,8 @@ l'échangeur est désactivée tant que sa formule n'est pas validée (`EFFICIENC
 
 ## 6. Prédiction et ré-entraînement
 
-Chaque nuit, les modèles sont ré-entraînés sur les 90 derniers jours pour plusieurs horizons
+Sans modèle installé, un premier ré-entraînement a lieu 5 min après le démarrage (pas plus d'une
+fois par 24 h). Ensuite, chaque nuit, les modèles sont ré-entraînés sur les 90 derniers jours pour plusieurs horizons
 (10 min à 24 h). L'horizon **le plus long qui reste fiable** est **proposé**, jamais installé seul :
 il faut que l'erreur soit au moins 20 % plus faible que la persistance (« la température ne bouge
 pas »), sous 0,5 °C, et mesurée sur une période de test d'au moins 3 fois l'horizon.
@@ -166,7 +167,7 @@ Après modification : `./voltaneum restart`.
 | bandeau rouge « Mesures périmées » | passerelle injoignable : réseau / VPN (`./voltaneum diagnose`) |
 | alerte `oil_sensor_frozen` | vérifier le point PT02 sur la passerelle avec l'automaticien |
 | aucune consigne PID | PT02 absente ou mesures périmées (voir l'onglet PID) |
-| aucune prédiction | aucun modèle validé : attendre une proposition (`./voltaneum model`) |
+| aucune prédiction | aucun modèle validé : `./voltaneum watch` donne la cause du refus (souvent : PT02 ou la pompe constantes, rien à apprendre) |
 | interface injoignable | port `DASHBOARD_PORT` déjà utilisé (voir le journal) ; tunnel SSH |
 | base corrompue ou fausse manœuvre | `./voltaneum stop`, `./voltaneum restore`, `./voltaneum restore <nom>`, `./voltaneum` |
 

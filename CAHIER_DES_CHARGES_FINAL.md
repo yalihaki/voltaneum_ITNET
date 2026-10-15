@@ -436,7 +436,7 @@ Les modèles synthétiques servent à tester le pipeline, jamais à justifier un
 
 ### 8.3 bis Ré-entraînement automatique
 
-`ml/auto_retrain.py` (lancé chaque nuit, un seul à la fois grâce à un verrou) entraîne les horizons de `AUTO_RETRAIN_HORIZONS` sur les `AUTO_RETRAIN_MAX_DAYS` derniers jours et **propose** l'horizon le plus long jugé fiable (garde-fous de §8.3, erreur au moins `AUTO_RETRAIN_MIN_GAIN` sous la persistance, sous `AUTO_RETRAIN_MAX_RMSE_CELSIUS`, période de test d'au moins 3 fois l'horizon). Le remplacement du modèle de production exige une validation humaine (`./voltaneum model accept`), avec sauvegarde de l'ancien modèle et retour arrière (`./voltaneum model rollback`). Le monitoring (§8.4) suit tous les horizons présents dans `predictions_log`.
+`ml/auto_retrain.py` (lancé chaque nuit, et 5 min après le démarrage tant qu'aucun modèle n'est installé et qu'aucun ré-entraînement n'a eu lieu depuis 24 h ; un seul à la fois grâce à un verrou) entraîne les horizons de `AUTO_RETRAIN_HORIZONS` sur les `AUTO_RETRAIN_MAX_DAYS` derniers jours et **propose** l'horizon le plus long jugé fiable (garde-fous de §8.3, erreur au moins `AUTO_RETRAIN_MIN_GAIN` sous la persistance, sous `AUTO_RETRAIN_MAX_RMSE_CELSIUS`, période de test d'au moins 3 fois l'horizon). Le remplacement du modèle de production exige une validation humaine (`./voltaneum model accept`), avec sauvegarde de l'ancien modèle et retour arrière (`./voltaneum model rollback`). Le monitoring (§8.4) suit tous les horizons présents dans `predictions_log`.
 
 ### 8.4 Monitoring
 

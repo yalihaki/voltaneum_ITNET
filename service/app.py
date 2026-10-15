@@ -57,6 +57,12 @@ logger = logging.getLogger("voltaneum.app")
 _DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 # Période de contrôle des threads par le superviseur (secondes).
 _SUPERVISOR_INTERVAL_SECONDS = 5.0
+# Premier calcul de régulation peu après le démarrage (le temps de recevoir des mesures),
+# au lieu d'attendre un cycle complet.
+_FIRST_CONTROL_DELAY_SECONDS = 20.0
+# Sans modèle installé, un ré-entraînement est lancé ce délai après le démarrage (s), au lieu
+# d'attendre la nuit — sauf si un ré-entraînement a déjà eu lieu dans les dernières 24 h.
+STARTUP_RETRAIN_DELAY_SECONDS = 300.0
 
 
 class VoltaneumApp:
@@ -219,9 +225,12 @@ class VoltaneumApp:
     # Boucle de contrôle
     # ------------------------------------------------------------------
     def _control_loop(self) -> None:
-        """Appelle `_control_tick` toutes les CONTROL_LOOP_INTERVAL_SECONDS."""
+        """Appelle `_control_tick` toutes les CONTROL_LOOP_INTERVAL_SECONDS (le premier peu après
+        le démarrage)."""
         last_time = time.monotonic()
-        while not self._stop_event.wait(config.CONTROL_LOOP_INTERVAL_SECONDS):
+        delay = min(_FIRST_CONTROL_DELAY_SECONDS, config.CONTROL_LOOP_INTERVAL_SECONDS)
+        while not self._stop_event.wait(delay):
+            delay = config.CONTROL_LOOP_INTERVAL_SECONDS
             now = time.monotonic()
             dt, last_time = now - last_time, now
             try:
@@ -360,6 +369,12 @@ class VoltaneumApp:
         """Lance le ré-entraînement chaque jour à RETRAIN_AT (heure locale), dans un processus
         séparé à basse priorité : un entraînement long ne ralentit jamais la régulation."""
         hour, minute = (int(part) for part in config.RETRAIN_AT.split(":"))
+        if self._startup_retrain_needed():
+            logger.info("Aucun modèle de prédiction installé : ré-entraînement dans %.0f min (puis chaque "
+                        "jour à %s).", STARTUP_RETRAIN_DELAY_SECONDS / 60, config.RETRAIN_AT)
+            if self._stop_event.wait(STARTUP_RETRAIN_DELAY_SECONDS):
+                return
+            self.run_retrain_subprocess()
         while not self._stop_event.is_set():
             now = datetime.now()
             next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -368,6 +383,24 @@ class VoltaneumApp:
             if self._stop_event.wait((next_run - now).total_seconds()):
                 return
             self.run_retrain_subprocess()
+
+    @staticmethod
+    def _startup_retrain_needed() -> bool:
+        """Vrai si aucun modèle validé n'est installé et qu'aucun ré-entraînement n'a eu lieu
+        depuis 24 h (un redémarrage répété ne relance pas un entraînement à chaque fois)."""
+        from ml import auto_retrain
+
+        if auto_retrain.installed_model(config.MODEL_DIR) is not None:
+            return False
+        for event in auto_retrain.read_history(config.MODEL_DIR, limit=50):
+            if event.get("event") == "run" and event.get("started_at"):
+                try:
+                    started = datetime.fromisoformat(event["started_at"])
+                except ValueError:
+                    continue
+                if datetime.now(timezone.utc) - started < timedelta(hours=24):
+                    return False
+        return True
 
     def run_retrain_subprocess(self) -> int | None:
         """Exécute `voltaneum.py retrain` en sous-processus « nice » ; retourne son code de sortie."""

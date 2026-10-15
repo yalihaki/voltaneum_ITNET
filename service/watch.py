@@ -12,7 +12,9 @@ import shutil
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
+import config
 from dashboard import data
 
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -89,6 +91,54 @@ def sparkline(values: list[float | None], width: int) -> tuple[str, float | None
     return line, lo, hi
 
 
+def voltaneum_running() -> bool | None:
+    """Vrai si le processus Voltaneum tient son verrou (logs/voltaneum.lock), Faux sinon,
+    None si on ne peut pas le savoir (système sans fcntl)."""
+    lock = Path(config.PROJECT_ROOT) / "logs" / "voltaneum.lock"
+    if not lock.exists():
+        return False
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    with open(lock) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+
+
+def _ml_status(s: "_Style") -> list[str]:
+    """État du modèle de prédiction et du dernier ré-entraînement (une information par ligne)."""
+    from ml import auto_retrain
+
+    installed = auto_retrain.installed_model(config.MODEL_DIR)
+    parts = [f"modèle installé : prédiction à {auto_retrain.format_horizon(installed['horizon_seconds'])}"
+             if installed else "aucun modèle installé"]
+    try:
+        proposal = auto_retrain.pending_proposal(config.MODEL_DIR)
+        parts.append(s.pred(f"NOUVEAU MODÈLE PROPOSÉ ({auto_retrain.format_horizon(proposal['proposed']['horizon_seconds'])})"
+                            " -> ./voltaneum model"))
+    except auto_retrain.ProposalError:
+        pass
+    runs = [e for e in auto_retrain.read_history(config.MODEL_DIR, limit=50) if e.get("event") == "run"]
+    if runs:
+        last = runs[0]
+        when = datetime.fromisoformat(last["started_at"]).astimezone().strftime("%d/%m %H:%M")
+        parts.append(f"dernier ré-entraînement {when} : {last.get('reason', '?')}")
+        refused = {c.get("reason") for c in last.get("candidates", []) if not c.get("eligible")}
+        if len(refused) == 1:
+            parts.append(f"cause : {refused.pop()}")
+    elif config.RETRAIN_AT:
+        parts.append("aucun ré-entraînement encore (lancé 5 min après le démarrage sans modèle, puis chaque "
+                     f"jour à {config.RETRAIN_AT}) ; à la main : ./voltaneum retrain")
+    else:
+        parts.append("ré-entraînement automatique désactivé (RETRAIN_AT vide)")
+    return parts
+
+
 def _bar(percent: float, width: int = 30) -> str:
     filled = max(0, min(width, round(percent / 100 * width)))
     return "█" * filled + "░" * (width - filled)
@@ -114,7 +164,12 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     age = snap["age_seconds"]
     fresh = (s.ok("OK") if age <= th["snapshot_interval_seconds"] * 3
              else s.warn("EN RETARD") if age <= th["stale_after_seconds"] else s.crit("MESURES PÉRIMÉES"))
-    lines.append(f"{s.bold('VOLTANEUM')} · {now} · dernière mesure il y a {_ago(age)} · {fresh}")
+    running = voltaneum_running()
+    process = {True: s.ok("Voltaneum en cours"), False: s.crit("Voltaneum ARRÊTÉ"), None: ""}[running]
+    lines.append(f"{s.bold('VOLTANEUM')} · {now} · {process} · dernière mesure il y a {_ago(age)} · {fresh}")
+    if running is False and age <= th["stale_after_seconds"]:
+        lines.append(s.crit("Des mesures arrivent mais Voltaneum n'est pas démarré : une ANCIENNE collecte écrit "
+                            "encore en base (pas de PID, pas d'alertes, pas de ML). Corriger : ./voltaneum restart"))
     lines.append(rule)
 
     v = snap["values"]
@@ -134,7 +189,15 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
 
     c = snap.get("control")
     if not c:
-        row("Régulation PID", s.warn("aucun calcul enregistré (PT02 absente ou régulation pas encore démarrée)"))
+        if running is False:
+            reason = "Voltaneum n'est pas démarré (./voltaneum restart)"
+        elif pt02 is None:
+            reason = "PT02 absente : aucune consigne n'est calculée sans la grandeur régulée"
+        elif age > th["stale_after_seconds"]:
+            reason = "mesures périmées : la régulation est suspendue"
+        else:
+            reason = "premier calcul dans moins d'une minute après le démarrage"
+        row("Régulation PID", s.warn(f"aucun calcul enregistré — {reason}"))
     else:
         mode = MODE_LABELS.get(c["mode"], c["mode"])
         mode = s.crit(mode) if c["mode"] == "safety_bypass" else mode
@@ -152,7 +215,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
 
     p = snap.get("predictions")
     if not p:
-        row("Prédiction ML", s.dim("aucune prédiction récente (aucun modèle validé installé)"))
+        row("Prédiction ML", s.dim("aucune prédiction récente"))
     else:
         parts = []
         for name, m in p["models"].items():
@@ -163,6 +226,9 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         dis_txt = "" if dis is None else (s.warn(f"  désaccord {_num(dis, 2)} °C") if dis > p["disagreement_threshold"]
                                          else f"  écart {_num(dis, 2)} °C")
         row("Prédiction ML", s.pred(f"PT02 dans {horizon // 60} min : " + "   ".join(parts)) + dis_txt)
+
+    for i, part in enumerate(_ml_status(s)):
+        row("Modèle ML" if i == 0 else "", part)
 
     cool = snap.get("cooling")
     if cool:
@@ -182,7 +248,14 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         (f"Consigne · {minutes} min", control["setpoint"], "%", 0),
     ):
         line, lo, hi = sparkline(values, graph_w)
-        scale = f" {_num(lo, digits)}–{_num(hi, digits)} {unit}" if lo is not None else " pas de données"
+        if lo is None:
+            scale = " pas de données"
+        elif hi == lo:  # valeur strictement constante : ligne médiane, signalée comme telle
+            line = "".join("▄" if ch != " " else " " for ch in line)
+            scale = f" {_num(lo, digits)} {unit} CONSTANTE"
+            scale = s.warn(scale) if label.startswith("PT02") else scale
+        else:
+            scale = f" {_num(lo, digits)}–{_num(hi, digits)} {unit}"
         row(label, line + s.dim(scale))
     lines.append(rule)
 

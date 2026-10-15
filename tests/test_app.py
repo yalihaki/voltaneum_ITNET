@@ -743,3 +743,14 @@ class TestSingleProcessServices:
     def test_collector_snapshots_reach_the_alert_engine(self, app):
         app.start()
         assert app.collector.kwargs["on_snapshot"] == app.alerts.on_telemetry
+
+
+class TestStartupRetrain:
+    def test_needed_when_no_model_and_no_recent_run(self, app):
+        assert app._startup_retrain_needed() is True
+
+    def test_not_needed_after_a_recent_run(self, app):
+        from ml import auto_retrain
+        from datetime import datetime, timezone
+        auto_retrain._append_history(config.MODEL_DIR, {"event": "run", "started_at": datetime.now(timezone.utc).isoformat()})
+        assert app._startup_retrain_needed() is False
