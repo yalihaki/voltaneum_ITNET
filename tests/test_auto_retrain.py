@@ -152,3 +152,11 @@ def test_two_retrains_never_run_at_the_same_time(setup):
     with auto_retrain._exclusive(auto_retrain.retrain_root(model_dir)):
         with pytest.raises(auto_retrain.RetrainBusy):
             auto_retrain.run_auto_retrain(db, model_dir, horizons=(60,), now=now)
+
+
+def test_model_folders_are_private(setup):
+    import stat
+    db, model_dir, now = setup
+    auto_retrain.run_auto_retrain(db, model_dir, horizons=(60,), now=now)
+    for folder in (auto_retrain.Path(model_dir), auto_retrain.retrain_root(model_dir)):
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700

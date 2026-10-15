@@ -293,6 +293,9 @@ def _exclusive(root: Path) -> Iterator[None]:
     """Un seul ré-entraînement à la fois : deux exécutions concurrentes écriraient la même
     proposition. Sans fcntl (Windows), pas de verrou."""
     root.mkdir(parents=True, exist_ok=True)
+    # Les modèles sont des pickles : seul le propriétaire doit pouvoir écrire dans ces dossiers.
+    for folder in (root.parent, root):
+        os.chmod(folder, 0o700)
     with open(root / ".lock", "w") as handle:
         try:
             import fcntl
