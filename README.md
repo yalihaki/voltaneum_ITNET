@@ -37,7 +37,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum watch` | **supervision en direct dans le terminal** (sans navigateur) |
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
-| `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) |
+| `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) et 10 dernières lignes (remplace `check_data.py`) ; options `--rows 50`, `--hours 24`, `--csv export.csv` |
 | `./voltaneum model` | modèle proposé : `accept`, `reject --note "…"`, `rollback` |
 | `./voltaneum restore` | lister les sauvegardes ; `restore <nom>` pour en restaurer une (après `stop`) |
 | `./voltaneum retrain` | ré-entraîner maintenant (proposition seulement) |

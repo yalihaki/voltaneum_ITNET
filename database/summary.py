@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
-
-from database import sqlite_client
 
 # Mesures résumées en bas de l'affichage : colonne -> (libellé, unité).
 MEASURES: dict[str, tuple[str, str]] = {
@@ -62,17 +63,54 @@ def summarize(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def print_summary(db_path: str) -> int:
-    """Affiche le résumé de la base ; retourne un code de sortie (0 = OK)."""
+def load_telemetry(db_path: str, hours: float | None = None) -> pd.DataFrame:
+    """Mesures de la base (toutes, ou les `hours` dernières heures), en LECTURE SEULE : une base
+    absente n'est jamais créée par erreur."""
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"base introuvable : {path}")
+    query = "SELECT * FROM telemetry"
+    params: tuple[str, ...] = ()
+    if hours:
+        query += " WHERE timestamp >= datetime('now', ?)"
+        params = (f"-{hours} hours",)
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as connection:
+        return pd.read_sql_query(query + " ORDER BY timestamp", connection, params=params)
+
+
+def latest_rows(df: pd.DataFrame, count: int) -> str:
+    """Les `count` dernières mesures, heure LOCALE, une ligne par instantané."""
+    columns = ["timestamp", *[c for c in MEASURES if c in df], *(["temp_outdoor_source"] if "temp_outdoor_source" in df else [])]
+    tail = df[columns].tail(count).copy()
+    tail["timestamp"] = (pd.to_datetime(tail["timestamp"], utc=True).dt.tz_convert(_local_tz())
+                         .dt.strftime("%d/%m %H:%M:%S"))
+    tail = tail.rename(columns={"timestamp": "heure locale", "temp_outdoor": "ext", "freq_pompe": "freq_Hz",
+                                "ht01": "ht01_m3h", "temp_outdoor_source": "source ext"})
+    return tail.to_string(index=False, na_rep="—", float_format=lambda v: f"{v:.2f}")
+
+
+def _local_tz():
+    return datetime.now().astimezone().tzinfo
+
+
+def print_summary(db_path: str, rows: int = 10, hours: float | None = None, csv_path: str | None = None) -> int:
+    """Affiche le résumé de la base et ses dernières mesures ; exporte en CSV si demandé.
+    Retourne un code de sortie (0 = OK)."""
     try:
-        with sqlite_client.connect(db_path) as connection:
-            df = pd.read_sql_query("SELECT * FROM telemetry", connection)
+        df = load_telemetry(db_path, hours)
     except (sqlite3.Error, FileNotFoundError) as exc:
         print(f"Base de données indisponible ({db_path}) : {exc}")
         return 1
     if df.empty:
-        print(f"La base {db_path} ne contient encore aucune mesure.")
+        period = f" sur les {hours:g} dernières heures" if hours else ""
+        print(f"La base {db_path} ne contient aucune mesure{period}.")
         return 0
-    print(f"Base : {db_path}")
+    print(f"Base : {db_path}" + (f"  (dernières {hours:g} h)" if hours else ""))
     print(summarize(df))
+    if rows > 0:
+        print(f"\nDernières mesures ({min(rows, len(df))} sur {len(df)}) :")
+        print(latest_rows(df, rows))
+    if csv_path:
+        df.to_csv(csv_path, sep=";", index=False)
+        print(f"\nExport CSV : {csv_path} ({len(df)} lignes, horodatage UTC, séparateur « ; »)")
     return 0

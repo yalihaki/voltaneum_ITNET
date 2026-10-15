@@ -35,3 +35,24 @@ def test_missing_values_and_outdoor_sources():
     text = summarize(_df())
     assert "aucune valeur" in _line(text, "HT01")
     assert "1 mesure(s) du capteur, 1 de l'API météo, 1 absente(s)" in text
+
+
+def test_print_summary_shows_latest_rows_and_exports_csv(tmp_path, capsys):
+    from database import sqlite_client
+    from database.summary import print_summary
+    db = str(tmp_path / "v.db")
+    sqlite_client.init_db(db)
+    for i in range(3):
+        sqlite_client.insert_reading(40.0, 34.0 + i, 39.0, 30.0, 2.5, 30.0, 15.0, db_path=db)
+    csv_path = tmp_path / "export.csv"
+    assert print_summary(db, rows=2, csv_path=str(csv_path)) == 0
+    out = capsys.readouterr().out
+    assert "Dernières mesures (2 sur 3)" in out and "36.00" in out
+    assert len(csv_path.read_text().splitlines()) == 4          # en-tête + 3 lignes
+
+
+def test_missing_database_is_never_created(tmp_path, capsys):
+    from database.summary import print_summary
+    missing = tmp_path / "absente.db"
+    assert print_summary(str(missing)) == 1
+    assert not missing.exists()

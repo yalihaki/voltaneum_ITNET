@@ -158,7 +158,7 @@ def cmd_model(args: argparse.Namespace) -> int:
 def cmd_data(args: argparse.Namespace) -> int:
     from database.summary import print_summary
 
-    return print_summary(args.db)
+    return print_summary(args.db, rows=args.rows, hours=args.hours, csv_path=args.csv)
 
 
 def cmd_diagnose(_args: argparse.Namespace) -> int:
@@ -254,8 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--model-dir", default=config.MODEL_DIR)
     model.set_defaults(func=cmd_model)
 
-    data = sub.add_parser("data", help="résumé des mesures enregistrées")
+    data = sub.add_parser("data", help="résumé et dernières mesures de la base (remplace check_data.py)")
     data.add_argument("--db", default=config.SQLITE_DB_PATH)
+    data.add_argument("--rows", type=int, default=10, help="nombre de dernières mesures affichées (0 = aucune)")
+    data.add_argument("--hours", type=float, help="limiter aux N dernières heures")
+    data.add_argument("--csv", help="exporter les mesures (de la période) dans ce fichier CSV")
     data.set_defaults(func=cmd_data)
 
     sub.add_parser("diagnose", help="vérifier réseau, services, base et modèle").set_defaults(func=cmd_diagnose)
