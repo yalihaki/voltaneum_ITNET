@@ -83,6 +83,44 @@ CREATE TABLE IF NOT EXISTS alerts_log (
 """
 
 
+# Journal de la boucle de contrôle (service/app.py) : à chaque cycle, ce que le PID a calculé, terme
+# par terme, et les conditions de refroidissement publiées. Sert à l'interface de supervision :
+# la consigne n'existait jusque-là que dans un message MQTT éphémère.
+_CREATE_CONTROL_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS control_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    t_oil REAL,
+    t_target REAL,
+    t_predicted REAL,
+    t_outdoor REAL,
+    t_outdoor_source TEXT,
+    setpoint REAL NOT NULL,
+    mode TEXT NOT NULL,
+    error REAL,
+    p_term REAL,
+    i_term REAL,
+    d_term REAL,
+    feedforward_prediction REAL,
+    feedforward_outdoor REAL,
+    raw_output REAL,
+    outdoor_band TEXT,
+    fan_on_above REAL,
+    fan_off_below REAL,
+    fan_min_freq_hz REAL,
+    -- Messages JSON EXACTS transmis au client MQTT (NULL : non transmis), et résultat de l'envoi
+    -- de la consigne : 1 transmis, 0 échec (broker injoignable...), NULL publication désactivée.
+    mqtt_setpoint TEXT,
+    mqtt_conditions TEXT,
+    mqtt_sent INTEGER
+);
+"""
+
+_CREATE_CONTROL_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_control_ts ON control_log (timestamp);
+"""
+
+
 @contextmanager
 def connect(db_path: str = SQLITE_DB_PATH) -> Iterator[sqlite3.Connection]:
     """Ouvre une connexion SQLite, la valide (commit) ou l'annule (rollback), puis la FERME.
@@ -118,6 +156,8 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
         conn.execute(_CREATE_PREDICTIONS_TABLE_SQL)
         conn.execute(_CREATE_PREDICTIONS_INDEX_SQL)
         conn.execute(_CREATE_ALERTS_TABLE_SQL)
+        conn.execute(_CREATE_CONTROL_TABLE_SQL)
+        conn.execute(_CREATE_CONTROL_INDEX_SQL)
 
     try:
         os.chmod(db_path, 0o600)
@@ -278,6 +318,14 @@ def get_rolling_rmse_stats(
     return math.sqrt(sum(err * err for err in errors) / len(errors)), len(errors)
 
 
+def prediction_horizons(db_path: str = SQLITE_DB_PATH) -> list[int]:
+    """Horizons (secondes) réellement présents dans `predictions_log` : un modèle installé par le
+    ré-entraînement automatique peut prédire à un horizon absent de PREDICTION_HORIZONS_SECONDS."""
+    with connect(db_path) as conn:
+        return [int(row[0]) for row in conn.execute(
+            "SELECT DISTINCT horizon_seconds FROM predictions_log ORDER BY horizon_seconds")]
+
+
 def get_rolling_rmse(
     horizon_seconds: int,
     model_name: str,
@@ -309,3 +357,28 @@ def log_alert(
             )
     except sqlite3.Error:
         logger.exception("Échec d'écriture dans alerts_log (règle=%s)", rule_name)
+
+
+_CONTROL_COLUMNS = (
+    "t_oil", "t_target", "t_predicted", "t_outdoor", "t_outdoor_source", "setpoint", "mode", "error",
+    "p_term", "i_term", "d_term", "feedforward_prediction", "feedforward_outdoor", "raw_output",
+    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz",
+    "mqtt_setpoint", "mqtt_conditions", "mqtt_sent",
+)
+_INSERT_CONTROL_SQL = (
+    f"INSERT INTO control_log ({', '.join(_CONTROL_COLUMNS)}) "  # nosec B608
+    f"VALUES ({', '.join('?' for _ in _CONTROL_COLUMNS)})"
+)
+
+
+def log_control(record: dict, db_path: str = SQLITE_DB_PATH) -> None:
+    """Journalise un cycle de contrôle dans `control_log`. Ne lève jamais d'exception.
+
+    Les clés absentes de `record` sont enregistrées à NULL. Une base indisponible ne doit
+    jamais interrompre la boucle de contrôle : l'erreur est journalisée et le cycle continue.
+    """
+    try:
+        with connect(db_path) as conn:
+            conn.execute(_INSERT_CONTROL_SQL, tuple(record.get(column) for column in _CONTROL_COLUMNS))
+    except sqlite3.Error:
+        logger.exception("Échec d'écriture dans control_log")

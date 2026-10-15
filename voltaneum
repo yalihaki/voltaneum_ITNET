@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# Voltaneum / ITNET — commande unique.
+#
+#   ./voltaneum              démarre tout en arrière-plan (= ./voltaneum start)
+#   ./voltaneum status       état : processus, dernières mesures, interface, modèle proposé
+#   ./voltaneum stop         arrête tout (et la relance automatique)
+#   ./voltaneum restart      redémarre (après un git pull, par exemple)
+#   ./voltaneum logs         journal en direct
+#   ./voltaneum run          tout au premier plan (Ctrl+C pour arrêter)
+#   ./voltaneum diagnose     réseau, services, base, modèle (lecture seule)
+#   ./voltaneum data         résumé des mesures enregistrées
+#   ./voltaneum model        modèle proposé par le ré-entraînement : accept | reject | rollback
+#   ./voltaneum retrain      lancer un ré-entraînement maintenant (proposition seulement)
+#   ./voltaneum restore      lister les sauvegardes, ou en restaurer une (après ./voltaneum stop)
+#   ./voltaneum demo         interface sur données fictives, sans passerelle
+#   ./voltaneum test         tests et contrôles qualité (développement)
+#
+# Aucun droit root : la relance automatique (après un plantage ou un redémarrage du serveur)
+# passe par la crontab de l'utilisateur, qui vérifie chaque minute que Voltaneum tourne.
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
+CRON_MARKER="# voltaneum"
+LEGACY_MARKERS=("# voltaneum-collect" "# voltaneum-dashboard" "# voltaneum-auto-retrain")
+LOG="logs/voltaneum.log"
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
+fail() { printf '\nERREUR : %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- environnement Python
+python_bin() {
+    if [ -x venv/bin/python ]; then echo "$PROJECT_DIR/venv/bin/python"
+    elif [ -x .venv/bin/python ]; then echo "$PROJECT_DIR/.venv/bin/python"
+    fi
+}
+
+ensure_env() {
+    local py stamp req_hash
+    py="$(python_bin)"
+    if [ -z "$py" ]; then
+        command -v python3 > /dev/null || fail "python3 introuvable (Python 3.11 ou plus récent requis)."
+        python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || fail "Python 3.11 ou plus récent requis."
+        say "Création de l'environnement Python (venv/)..."
+        python3 -m venv venv
+        py="$PROJECT_DIR/venv/bin/python"
+    fi
+    PY="$py"
+    # Dépendances réinstallées seulement si requirements.txt a changé.
+    stamp="$(dirname "$(dirname "$PY")")/.requirements.sha"
+    req_hash="$(cksum requirements.txt | cut -d' ' -f1)"
+    if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$req_hash" ]; then
+        say "Installation des dépendances..."
+        "$PY" -m pip install --quiet --disable-pip-version-check -r requirements.txt
+        echo "$req_hash" > "$stamp"
+    fi
+}
+
+ensure_dotenv() {
+    if [ ! -f .env ]; then
+        cp .env.example .env
+        chmod 600 .env
+        fail "fichier .env créé depuis .env.example : renseignez VOLTANEUM_USER et VOLTANEUM_PASSWORD (et l'e-mail des alertes), puis relancez ./voltaneum"
+    fi
+    chmod 600 .env
+    local error
+    error="$("$PY" -c 'import config
+try:
+    config.validate_config()
+except ValueError as exc:
+    print(exc); raise SystemExit(1)' 2>&1)" || fail "${error} -> corrigez .env puis relancez."
+}
+
+# ---------------------------------------------------------------- processus et relance automatique
+# Seuls les processus lancés DEPUIS ce dossier sont concernés (jamais ceux d'un autre projet).
+process_cwd() {
+    if [ -e "/proc/$1/cwd" ]; then readlink "/proc/$1/cwd"
+    else lsof -a -p "$1" -d cwd -Fn 2> /dev/null | sed -n 's/^n//p'
+    fi
+}
+
+project_pids() {
+    local pid
+    for pid in $(pgrep -u "$(id -un)" -f "$1" || true); do
+        [ "$pid" = "$$" ] && continue
+        [ "$(process_cwd "$pid")" = "$PROJECT_DIR" ] && echo "$pid"
+    done
+    return 0
+}
+
+voltaneum_pids() { project_pids 'voltaneum\.py run'; }
+
+# Anciennes installations (avant la commande unique) : collecte, interface et entraînement
+# lancés séparément. Les laisser tourner doublerait la collecte : on les arrête.
+legacy_pids() { project_pids '(collect_data|run_dashboard|run_auto_retrain|run_model_monitor|main)\.py|notifications\.email_notifier'; }
+
+has_cron() { command -v crontab > /dev/null; }
+
+cron_without_ours() {
+    local current line keep
+    current="$(crontab -l 2> /dev/null || true)"
+    while IFS= read -r line; do
+        keep=1
+        case "$line" in *"$CRON_MARKER") keep=0 ;; esac
+        for marker in "${LEGACY_MARKERS[@]}"; do
+            case "$line" in *"$marker"*) keep=0 ;; esac
+        done
+        [ "$keep" -eq 1 ] && [ -n "$line" ] && printf '%s\n' "$line"
+    done <<< "$current"
+    return 0
+}
+
+install_cron() {
+    has_cron || { say "crontab absente : pas de relance automatique (Voltaneum tourne tant que la machine reste allumée)."; return; }
+    local job="* * * * * cd '$PROJECT_DIR' && '$PY' voltaneum.py run --quiet-if-running --log-file $LOG >> logs/voltaneum.err 2>&1 $CRON_MARKER"
+    local others
+    others="$(cron_without_ours)"          # lu EN ENTIER avant de réécrire la table
+    { [ -n "$others" ] && printf '%s\n' "$others"; echo "$job"; } | crontab -
+}
+
+# Retire nos lignes (et celles des anciennes installations) ; les autres tâches sont conservées.
+remove_cron() {
+    has_cron || return 0
+    local others
+    others="$(cron_without_ours)"
+    if [ -n "$others" ]; then printf '%s\n' "$others" | crontab -; else crontab -r 2> /dev/null || true; fi
+}
+
+stop_pids() {
+    local pids="$1" label="$2"
+    [ -n "$pids" ] || return 0
+    say "Arrêt $label (PID $(echo $pids))..."
+    kill -TERM $pids 2> /dev/null || true
+    for _ in $(seq 1 30); do
+        local alive=""
+        for pid in $pids; do kill -0 "$pid" 2> /dev/null && alive="$alive $pid"; done
+        [ -z "$alive" ] && return 0
+        sleep 1
+    done
+    kill -KILL $pids 2> /dev/null || true
+}
+
+dashboard_port() { "$PY" -c 'import config; print(config.DASHBOARD_PORT)' 2> /dev/null || echo 8080; }
+
+# ---------------------------------------------------------------- commandes
+cmd_start() {
+    step "Préparation"
+    ensure_env
+    ensure_dotenv
+    mkdir -p logs
+    : > logs/voltaneum.err
+    step "Arrêt des anciennes versions"
+    remove_cron
+    stop_pids "$(legacy_pids)" "d'une ancienne installation"
+    stop_pids "$(voltaneum_pids)" "de Voltaneum"
+    step "Démarrage"
+    install_cron
+    nohup "$PY" voltaneum.py run --quiet-if-running --log-file "$LOG" >> logs/voltaneum.err 2>&1 < /dev/null &
+    for _ in $(seq 1 10); do
+        sleep 1
+        [ -n "$(voltaneum_pids)" ] && break
+    done
+    [ -n "$(voltaneum_pids)" ] || { tail -n 20 logs/voltaneum.err "$LOG" 2> /dev/null; fail "Voltaneum ne s'est pas lancé (voir ci-dessus)."; }
+    sleep 3
+    cmd_status
+    local port; port="$(dashboard_port)"
+    cat <<EOF
+
+Voltaneum tourne en arrière-plan et redémarre seul (plantage, redémarrage du serveur).
+  Interface   : http://localhost:$port
+                depuis un autre poste : ssh -N -L $port:localhost:$port $(id -un)@$(hostname)
+  État        : ./voltaneum status        Journal : ./voltaneum logs
+  Arrêter     : ./voltaneum stop          Mise à jour : git pull && ./voltaneum restart
+EOF
+}
+
+cmd_stop() {
+    ensure_env
+    remove_cron
+    stop_pids "$(voltaneum_pids)" "de Voltaneum"
+    stop_pids "$(legacy_pids)" "d'une ancienne installation"
+    say "Voltaneum est arrêté (relance automatique retirée)."
+}
+
+cmd_status() {
+    ensure_env
+    local pids port
+    pids="$(voltaneum_pids)"
+    port="$(dashboard_port)"
+    if [ -n "$pids" ]; then
+        say "Voltaneum            : EN COURS (PID $(echo $pids), depuis $(ps -o etime= -p "${pids%%$'\n'*}" | tr -d ' '))"
+    else
+        say "Voltaneum            : ARRÊTÉ"
+    fi
+    if has_cron && crontab -l 2> /dev/null | grep -qF "$CRON_MARKER"; then
+        say "Relance automatique  : active (vérification chaque minute)"
+    else
+        say "Relance automatique  : inactive"
+    fi
+    [ -n "$(legacy_pids)" ] && say "ATTENTION            : une ancienne installation tourne encore -> ./voltaneum restart"
+    "$PY" - "$port" <<'PY'
+import sqlite3, sys, time
+from pathlib import Path
+import config
+from ml import auto_retrain
+db = Path(config.SQLITE_DB_PATH)
+if db.exists():
+    with sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        total, last = conn.execute("SELECT COUNT(*), MAX(timestamp) FROM telemetry").fetchone()
+        recent = conn.execute("SELECT COUNT(*) FROM telemetry WHERE timestamp >= datetime('now', '-5 minutes')").fetchone()[0]
+        alerts = conn.execute("SELECT COUNT(*) FROM alerts_log WHERE timestamp >= datetime('now', '-1 day')").fetchone()[0]
+    print(f"Mesures               : {total} en base, dernière {last} UTC, {recent} sur les 5 dernières minutes")
+    print(f"Alertes (24 h)        : {alerts}")
+else:
+    print("Mesures               : base pas encore créée")
+installed = auto_retrain.installed_model(config.MODEL_DIR)
+print("Modèle de prédiction  :", f"installé ({auto_retrain.format_horizon(installed['horizon_seconds'])})" if installed else "aucun (PID sans anticipation)")
+try:
+    auto_retrain.pending_proposal(config.MODEL_DIR)
+    print("Nouveau modèle        : PROPOSÉ -> ./voltaneum model")
+except auto_retrain.ProposalError:
+    pass
+print(f"Interface             : http://localhost:{sys.argv[1]}")
+PY
+    if [ -f "$LOG" ]; then
+        say ""; say "Dernières lignes du journal ($LOG) :"; tail -n 8 "$LOG"
+    fi
+    if [ -s logs/voltaneum.err ]; then
+        say ""; say "Erreurs de démarrage (logs/voltaneum.err) :"; tail -n 8 logs/voltaneum.err
+    fi
+}
+
+cmd_test() {
+    ensure_env
+    "$PY" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+    step "Tests";       "$PY" -m pytest -q
+    step "Style";       "$PY" -m ruff check .
+    step "Types";       "$PY" -m mypy .
+    step "Sécurité";    "$PY" -m bandit -q -r collectors control dashboard database messaging ml notifications service config.py voltaneum.py 2> /dev/null
+    say ""; say "Tous les contrôles sont passés."
+}
+
+command="${1:-start}"
+[ $# -gt 0 ] && shift
+case "$command" in
+    start)    cmd_start ;;
+    stop)     cmd_stop ;;
+    restart)  cmd_stop; cmd_start ;;
+    status)   cmd_status ;;
+    logs)     mkdir -p logs; touch "$LOG"; tail -n 50 -f "$LOG" ;;
+    run)      ensure_env; ensure_dotenv; exec "$PY" voltaneum.py run "$@" ;;
+    diagnose|data|model|retrain|demo|restore) ensure_env; exec "$PY" voltaneum.py "$command" "$@" ;;
+    test)     cmd_test ;;
+    help|-h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)        say "Commande inconnue : $command"; sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

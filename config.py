@@ -115,7 +115,6 @@ MQTT_TOPIC_PREDICTION = "voltaneum/prediction"
 MQTT_TOPIC_SETPOINT = "voltaneum/control/setpoint"
 MQTT_TOPIC_COOLING_CONDITIONS = "voltaneum/control/cooling_conditions"
 MQTT_TOPIC_MODEL_HEALTH = "voltaneum/model_health"
-MQTT_TOPIC_OUTDOOR_CONSISTENCY = "voltaneum/sensors/outdoor_consistency"
 
 # ---------------------------------------------------------------------------
 # Base de données SQLite et conservation des données
@@ -153,14 +152,35 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
 # Machine learning
 # ---------------------------------------------------------------------------
 MODEL_DIR: str = _env_path("MODEL_DIR", "models")
-FEATURE_COLUMNS: list[str] = ["pt01", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor"]
+# Variables d'entrée des modèles. PT02 ACTUELLE en fait partie : prédire PT02 dans 10 min sans
+# connaître sa valeur actuelle obligeait le modèle à la deviner, et la persistance (qui, elle,
+# la connaît) le battait d'office aux horizons courts. Les modèles enregistrent cette liste ;
+# un modèle entraîné avec une autre liste est refusé au chargement.
+FEATURE_COLUMNS: list[str] = ["pt02", "pt01", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor"]
 TARGET_COLUMN: str = "pt02"
-# Horizons analysés par train_all_horizons.py ; la production n'utilise que le dernier (600 s).
+# Horizons dont l'erreur en production est suivie ; 600 s = horizon par défaut d'un entraînement.
 PREDICTION_HORIZONS_SECONDS: list[int] = [30, 60, 120, 300, 600]
 # Tolérance du rapprochement d'horodatage entre une mesure et sa valeur future (secondes).
 TARGET_MERGE_TOLERANCE_SECONDS: int = 15
 # Écart entre les deux modèles au-delà duquel le désaccord est signalé (°C).
 DISAGREEMENT_THRESHOLD_CELSIUS: float = 1.0
+
+# Ré-entraînement automatique (chaque nuit à RETRAIN_AT) : il entraîne une série
+# d'horizons, garde le plus LONG qui reste fiable, et le PROPOSE (validation humaine par
+# ./voltaneum model accept) ; il ne remplace jamais seul le modèle utilisé par la régulation.
+AUTO_RETRAIN_HORIZONS_SECONDS: tuple[int, ...] = tuple(
+    int(h) for h in _env_str(
+        "AUTO_RETRAIN_HORIZONS", "600,900,1800,3600,7200,21600,43200,86400"
+    ).split(",") if h.strip()
+)
+# Fiable = bat la persistance d'au moins ce gain relatif sur le RMSE (0.2 = 20 % d'erreur en moins)...
+AUTO_RETRAIN_MIN_GAIN: float = _env_float("AUTO_RETRAIN_MIN_GAIN", 0.2)
+# ... ET reste sous ce plafond d'erreur absolue (°C), quel que soit l'horizon.
+AUTO_RETRAIN_MAX_RMSE_CELSIUS: float = _env_float("AUTO_RETRAIN_MAX_RMSE_CELSIUS", 0.5)
+# Données utilisées : les N derniers jours (borne le temps de calcul nocturne).
+AUTO_RETRAIN_MAX_DAYS: int = _env_int("AUTO_RETRAIN_MAX_DAYS", 90)
+# Horizon pour lequel les seuils d'anticipation du PID ont été pensés (signalé si on s'en écarte).
+PID_FEEDFORWARD_REFERENCE_HORIZON_SECONDS: int = 600
 
 # ---------------------------------------------------------------------------
 # Régulation PID (valeurs par défaut NON calibrées sur le système réel)
@@ -168,9 +188,14 @@ DISAGREEMENT_THRESHOLD_CELSIUS: float = 1.0
 CONTROL_LOOP_INTERVAL_SECONDS: float = _env_float("CONTROL_LOOP_INTERVAL_SECONDS", 60.0)
 TARGET_TEMP: float = _env_float("TARGET_TEMP", 35.0)
 CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
-PID_KP: float = _env_float("PID_KP", 5.0)
-PID_KI: float = _env_float("PID_KI", 0.1)
-PID_KD: float = _env_float("PID_KD", 1.0)
+# Point de départ prudent pour un procédé thermique lent échantillonné toutes les 60 s :
+# Kp = 10 %/°C, temps d'intégration Ti = Kp/Ki = 500 s (≈ 8 cycles), pas de dérivée (sur une
+# mesure à 0,1 °C de résolution échantillonnée à 60 s, elle n'amplifie que le bruit).
+# Les anciennes valeurs (5 / 0,1 / 1) donnaient Ti = 50 s, plus court qu'un cycle de calcul :
+# intégrale dominante, consigne vite saturée à 100 % pour 1 °C d'écart. À régler sur site.
+PID_KP: float = _env_float("PID_KP", 10.0)
+PID_KI: float = _env_float("PID_KI", 0.02)
+PID_KD: float = _env_float("PID_KD", 0.0)
 # Âge maximal (secondes) du dernier message reçu de la passerelle pour que la boucle de
 # contrôle publie : au-delà, les mesures sont considérées périmées et RIEN n'est publié
 # (l'automate retombe sur sa propre régulation). À augmenter seulement si la passerelle
@@ -212,7 +237,8 @@ FEEDFORWARD_OUTDOOR_BOOST: float = 10.0
 #   "none"              : aucun capteur installé (rien n'est écouté ni interrogé : la
 #                         température vient de l'API météo, si le repli est activé).
 # ---------------------------------------------------------------------------
-OUTDOOR_SENSOR_MODE: str = _env_str("OUTDOOR_SENSOR_MODE", "mqtt").lower()
+# Défaut "none" : aucun capteur extérieur n'est installé à ce jour (repli météo).
+OUTDOOR_SENSOR_MODE: str = _env_str("OUTDOOR_SENSOR_MODE", "none").lower()
 OUTDOOR_SENSOR_MQTT_TOPIC: str = _env_str("OUTDOOR_SENSOR_MQTT_TOPIC", "voltaneum/sensors/outdoor_temperature")
 OUTDOOR_SENSOR_HTTP_URL: str = _env_str("OUTDOOR_SENSOR_HTTP_URL")
 OUTDOOR_SENSOR_HTTP_TIMEOUT: float = _env_float("OUTDOOR_SENSOR_HTTP_TIMEOUT", 5.0)
@@ -223,11 +249,12 @@ OUTDOOR_SENSOR_MAX_AGE_SECONDS: int = _env_int("OUTDOOR_SENSOR_MAX_AGE_SECONDS",
 # défaillant). Le capteur reste TOUJOURS prioritaire dès qu'il a une valeur actuelle ;
 # la source utilisée est enregistrée en base (colonne `temp_outdoor_source`).
 OUTDOOR_WEATHER_FALLBACK_ENABLED: bool = _env_bool("OUTDOOR_WEATHER_FALLBACK_ENABLED", True)
-# Intervalle minimal entre deux appels à l'API météo (secondes) : par défaut, le rythme
-# des instantanés (une valeur à jour pour chaque ligne enregistrée).
-OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS: int = _env_int(
-    "OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", SNAPSHOT_INTERVAL_SECONDS
-)
+# Intervalle minimal entre deux appels à l'API météo (secondes). L'API ne met à jour sa valeur
+# « actuelle » que toutes les 15 min : l'interroger plus souvent n'apporte rien (5 760 appels
+# par jour à 15 s) et inonde le journal d'erreurs dès que le réseau tombe. Chaque instantané
+# reste renseigné avec la dernière valeur obtenue (tant qu'elle a moins de
+# OUTDOOR_SENSOR_MAX_AGE_SECONDS).
+OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS: int = _env_int("OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS", 600)
 
 # Vérification de cohérence capteur / météo (n'a lieu que si le capteur fournit une
 # valeur : la météo n'est jamais comparée à elle-même). Seuil large : un capteur local et une moyenne régionale
@@ -255,14 +282,24 @@ TELEMETRY_TIMEOUT_SECONDS: int = _env_int("TELEMETRY_TIMEOUT_SECONDS", 300)
 # marche (Hz), et débit en dessous duquel il n'y a « pas de débit » (m³/h).
 PUMP_RUNNING_MIN_HZ: float = _env_float("PUMP_RUNNING_MIN_HZ", 5.0)
 FLOW_MIN_M3H: float = _env_float("FLOW_MIN_M3H", 0.5)
-# Plage d'efficacité attendue de l'échangeur (provisoire, à resserrer avec des données réelles).
+# Règle « dérive d'efficacité » : formule et bornes NON validées sur l'installation, donc
+# désactivée par défaut (une alerte sans fondement fait ignorer les vraies).
+EFFICIENCY_ALERT_ENABLED: bool = _env_bool("EFFICIENCY_ALERT_ENABLED", False)
 EFFICIENCY_MIN_EXPECTED: float = _env_float("EFFICIENCY_MIN_EXPECTED", 0.0)
 EFFICIENCY_MAX_EXPECTED: float = _env_float("EFFICIENCY_MAX_EXPECTED", 1.0)
+# PT02 (grandeur régulée) sans valeur alors que la passerelle émet : alerte après ce délai (s).
+OIL_SENSOR_MISSING_ALERT_SECONDS: int = _env_int("OIL_SENSOR_MISSING_ALERT_SECONDS", 120)
+# PT02 strictement constante pendant ce délai (min) : valeur suspecte (0 = règle désactivée).
+SENSOR_FROZEN_ALERT_MINUTES: int = _env_int("SENSOR_FROZEN_ALERT_MINUTES", 60)
 
 # ---------------------------------------------------------------------------
 # Protection automatique du stockage (purge pilotée par la TAILLE de la base)
 # ---------------------------------------------------------------------------
 STORAGE_LIMIT_BYTES: int = _env_int("STORAGE_LIMIT_BYTES", 1024**4)          # 1 Tio
+# La limite EFFECTIVE ne dépasse jamais cette part du disque réellement disponible pour la base
+# (taille actuelle + espace libre) : une limite de 1 Tio sur un disque de 64 Go ne protégeait
+# rien, le disque se remplissait avant le premier avertissement.
+STORAGE_DISK_MAX_SHARE: float = _env_float("STORAGE_DISK_MAX_SHARE", 0.8)
 STORAGE_WARNING_RATIO: float = _env_float("STORAGE_WARNING_RATIO", 0.90)
 STORAGE_PURGE_TARGET_RATIO: float = _env_float("STORAGE_PURGE_TARGET_RATIO", 0.75)
 STORAGE_GRACE_PERIOD_SECONDS: int = _env_int("STORAGE_GRACE_PERIOD_SECONDS", 3600)
@@ -279,6 +316,28 @@ STORAGE_BACKUP_MIN_AGE_DAYS: int = _env_int("STORAGE_BACKUP_MIN_AGE_DAYS", 365)
 # (copie temporaire non compressée + archive). En dessous : sauvegarde refusée, RIEN supprimé.
 STORAGE_BACKUP_FREE_SPACE_FACTOR: float = _env_float("STORAGE_BACKUP_FREE_SPACE_FACTOR", 1.1)
 STORAGE_ALERT_COOLDOWN_MINUTES: int = _env_int("STORAGE_ALERT_COOLDOWN_MINUTES", 60)
+# Sauvegarde QUOTIDIENNE de la base (protection contre la corruption ou une fausse manœuvre),
+# indépendante des archives faites avant purge : les N plus récentes sont gardées dans
+# STORAGE_BACKUP_DIR/daily (0 = désactivée).
+STORAGE_DAILY_BACKUP_COUNT: int = _env_int("STORAGE_DAILY_BACKUP_COUNT", 7)
+
+# ---------------------------------------------------------------------------
+# Interface web de supervision (dans le processus principal) — LECTURE SEULE
+# ---------------------------------------------------------------------------
+# Par défaut, écoute sur la machine locale uniquement : depuis un autre poste, passer par un
+# tunnel SSH (voir README). L'interface n'a pas d'authentification : ne l'ouvrir au réseau
+# (DASHBOARD_HOST=0.0.0.0) que sur un réseau de confiance.
+DASHBOARD_HOST: str = _env_str("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT: int = _env_int("DASHBOARD_PORT", 8080)
+# Noms d'hôte supplémentaires acceptés dans l'en-tête Host (ex. "controller,supervision.local").
+DASHBOARD_ALLOWED_HOSTS: tuple[str, ...] = tuple(
+    h.strip().lower() for h in _env_str("DASHBOARD_ALLOWED_HOSTS").split(",") if h.strip()
+)
+
+DASHBOARD_ENABLED: bool = _env_bool("DASHBOARD_ENABLED", True)
+
+# Heure (locale, "HH:MM") du ré-entraînement automatique quotidien ; vide = désactivé.
+RETRAIN_AT: str = _env_str("RETRAIN_AT", "03:15")
 
 # ---------------------------------------------------------------------------
 # Journalisation
@@ -286,6 +345,12 @@ STORAGE_ALERT_COOLDOWN_MINUTES: int = _env_int("STORAGE_ALERT_COOLDOWN_MINUTES",
 LOG_LEVEL: str = _env_str("LOG_LEVEL", "INFO").upper()
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _valid_hhmm(value: str) -> bool:
+    parts = value.split(":")
+    return (len(parts) == 2 and all(p.isdigit() for p in parts)
+            and 0 <= int(parts[0]) <= 23 and 0 <= int(parts[1]) <= 59)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -326,7 +391,7 @@ def validate_config() -> None:
     _require(not missing, "variables obligatoires absentes ou vides : " + ", ".join(missing))
 
     # Ports et délais
-    for name, port in (("MQTT_PORT", MQTT_PORT), ("SMTP_PORT", SMTP_PORT)):
+    for name, port in (("MQTT_PORT", MQTT_PORT), ("SMTP_PORT", SMTP_PORT), ("DASHBOARD_PORT", DASHBOARD_PORT)):
         _require(1 <= port <= 65535, f"{name} doit être compris entre 1 et 65535, reçu {port}.")
     for name, value in {
         "MQTT_KEEPALIVE_SECONDS": MQTT_KEEPALIVE_SECONDS, "SNAPSHOT_INTERVAL_SECONDS": SNAPSHOT_INTERVAL_SECONDS,
@@ -354,10 +419,16 @@ def validate_config() -> None:
         "ALERTS_RETENTION_DAYS": ALERTS_RETENTION_DAYS,
         "PID_KP": PID_KP, "PID_KI": PID_KI, "PID_KD": PID_KD,
         "STORAGE_BACKUP_MIN_AGE_DAYS": STORAGE_BACKUP_MIN_AGE_DAYS, "PUMP_RUNNING_MIN_HZ": PUMP_RUNNING_MIN_HZ,
+        "STORAGE_DAILY_BACKUP_COUNT": STORAGE_DAILY_BACKUP_COUNT,
     }.items():
         _require(value >= 0, f"{name} ne peut pas être négatif, reçu {value}.")
 
     # Sécurité process
+    _require(len(AUTO_RETRAIN_HORIZONS_SECONDS) > 0 and all(h > 0 for h in AUTO_RETRAIN_HORIZONS_SECONDS),
+             "AUTO_RETRAIN_HORIZONS doit lister des durées positives en secondes (ex. 600,1800,3600).")
+    _require(0.0 <= AUTO_RETRAIN_MIN_GAIN < 1.0, "AUTO_RETRAIN_MIN_GAIN doit être compris entre 0 et 1.")
+    _require(AUTO_RETRAIN_MAX_RMSE_CELSIUS > 0 and AUTO_RETRAIN_MAX_DAYS > 0,
+             "AUTO_RETRAIN_MAX_RMSE_CELSIUS et AUTO_RETRAIN_MAX_DAYS doivent être positifs.")
     _require(CRITICAL_TEMP > TARGET_TEMP, f"CRITICAL_TEMP ({CRITICAL_TEMP}) doit dépasser TARGET_TEMP ({TARGET_TEMP}).")
     _require(SETPOINT_MIN < SETPOINT_MAX, "SETPOINT_MIN doit être inférieur à SETPOINT_MAX.")
     _require(EFFICIENCY_MIN_EXPECTED < EFFICIENCY_MAX_EXPECTED,
@@ -381,6 +452,10 @@ def validate_config() -> None:
             _require(not path or os.path.isfile(path), f"{name} introuvable : {path!r}.")
 
     # Capteur extérieur
+    _require(0.0 < STORAGE_DISK_MAX_SHARE <= 1.0, "STORAGE_DISK_MAX_SHARE doit être compris entre 0 et 1.")
+    _require(not RETRAIN_AT or _valid_hhmm(RETRAIN_AT), f"RETRAIN_AT doit être au format HH:MM, reçu {RETRAIN_AT!r}.")
+    _require(OIL_SENSOR_MISSING_ALERT_SECONDS > 0 and SENSOR_FROZEN_ALERT_MINUTES >= 0,
+             "OIL_SENSOR_MISSING_ALERT_SECONDS doit être positif et SENSOR_FROZEN_ALERT_MINUTES >= 0.")
     _require(OUTDOOR_SENSOR_MODE in ("mqtt", "http", "none"),
              f"OUTDOOR_SENSOR_MODE doit être 'mqtt', 'http' ou 'none', reçu {OUTDOOR_SENSOR_MODE!r}.")
     _require(OUTDOOR_SENSOR_MODE != "http" or bool(OUTDOOR_SENSOR_HTTP_URL),

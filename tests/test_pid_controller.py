@@ -14,7 +14,7 @@ import random
 import pytest
 
 import config
-from control.pid_controller import compute_setpoint
+from control.pid_controller import compute_setpoint, compute_setpoint_detailed
 
 
 class TestSafetyBypass:
@@ -275,7 +275,11 @@ class TestColdSideWindup:
             )
             assert state["integral"] <= cap + 1e-9
 
-    def test_reacts_within_three_cycles_after_a_long_cold_period(self):
+    def test_reacts_within_three_cycles_after_a_long_cold_period(self, monkeypatch):
+        # Gains du cas réel mesuré (5 / 0,1 / 1) : le test vérifie l'anti-emballement, pas le
+        # réglage ; il ne doit pas dépendre du .env de la machine qui lance les tests.
+        for name, value in (("PID_KP", 5.0), ("PID_KI", 0.1), ("PID_KD", 1.0)):
+            monkeypatch.setattr(config, name, value)
         state = {}
         for _ in range(3):  # huile très froide
             _, state, _ = compute_setpoint(
@@ -372,3 +376,29 @@ class TestNoNetworkOrActuatorAccess:
         ]
         for token in forbidden_tokens:
             assert token not in source, f"Import interdit trouvé dans pid_controller.py : {token}"
+
+class TestSetpointDetail:
+    """Décomposition terme par terme (journal et interface de supervision)."""
+
+    def test_terms_add_up_to_the_setpoint(self):
+        state: dict = {}
+        for t_oil, predicted, outdoor in ((36.0, 36.0, 15.0), (38.0, 39.0, 32.0), (33.0, 33.0, 10.0)):
+            detail = compute_setpoint_detailed(t_oil, config.TARGET_TEMP, predicted, outdoor, 60.0, state)
+            total = detail.p_term + detail.i_term + detail.d_term + detail.feedforward
+            assert detail.raw_output == pytest.approx(total)
+            assert detail.setpoint == pytest.approx(max(config.SETPOINT_MIN, min(config.SETPOINT_MAX, total)))
+            assert detail.error == pytest.approx(t_oil - config.TARGET_TEMP)
+            state = detail.state
+
+    def test_same_result_as_compute_setpoint(self):
+        args = (37.0, config.TARGET_TEMP, 38.0, 31.0, 30.0, {"integral": 3.0, "last_error": 1.0})
+        detail = compute_setpoint_detailed(*args)
+        assert compute_setpoint(*args) == (detail.setpoint, detail.state, detail.mode)
+        assert detail.mode == "feedforward"
+        assert detail.feedforward_prediction == config.FEEDFORWARD_PREDICTED_BOOST
+        assert detail.feedforward_outdoor == config.FEEDFORWARD_OUTDOOR_BOOST
+
+    def test_safety_bypass_has_no_pid_terms(self):
+        detail = compute_setpoint_detailed(config.CRITICAL_TEMP + 1, config.TARGET_TEMP, 0.0, None, 1.0, {})
+        assert (detail.setpoint, detail.mode) == (100.0, "safety_bypass")
+        assert detail.p_term is detail.i_term is detail.d_term is detail.raw_output is None

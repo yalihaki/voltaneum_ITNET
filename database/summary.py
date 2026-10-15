@@ -1,15 +1,11 @@
-"""Inspect a telemetry SQLite database.
+"""database/summary.py — Résumé lisible des mesures en base (`./voltaneum data`)."""
 
-Usage:
-    python check_data.py [database_path]
-"""
+from __future__ import annotations
 
-import argparse
 import sqlite3
 
 import pandas as pd
 
-from config import SQLITE_DB_PATH
 from database import sqlite_client
 
 # Mesures résumées en bas de l'affichage : colonne -> (libellé, unité).
@@ -66,49 +62,17 @@ def summarize(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "database",
-        nargs="?",
-        default=SQLITE_DB_PATH,
-        help=f"SQLite database path (default: {SQLITE_DB_PATH})",
-    )
-    args = parser.parse_args()
-
+def print_summary(db_path: str) -> int:
+    """Affiche le résumé de la base ; retourne un code de sortie (0 = OK)."""
     try:
-        with sqlite_client.connect(args.database) as connection:
+        with sqlite_client.connect(db_path) as connection:
             df = pd.read_sql_query("SELECT * FROM telemetry", connection)
-
-            if df.empty:
-                print(f"La table telemetry de {args.database} est vide.")
-                return
-
-            pd.set_option("display.max_columns", None)
-            pd.set_option("display.width", 1000)
-
-            print(f"Base : {args.database}")
-            print(f"Lignes : {len(df)}")
-            print(df.head())
-            if len(df) > 5:
-                print("...")
-                print(df.tail())
-
-            numeric_columns = [
-                column
-                for column in ("pt02", "freq_pompe", "temp_outdoor")
-                if column in df
-            ]
-            if numeric_columns:
-                print("\nStatistiques de simulation/capteurs :")
-                print(df[numeric_columns].describe().round(3).to_string())
-
-            print()
-            print(summarize(df))
-
     except (sqlite3.Error, FileNotFoundError) as exc:
-        print(f"Base de données indisponible ({args.database}) : {exc}")
-
-
-if __name__ == "__main__":
-    main()
+        print(f"Base de données indisponible ({db_path}) : {exc}")
+        return 1
+    if df.empty:
+        print(f"La base {db_path} ne contient encore aucune mesure.")
+        return 0
+    print(f"Base : {db_path}")
+    print(summarize(df))
+    return 0

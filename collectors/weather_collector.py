@@ -3,7 +3,7 @@ collectors/weather_collector.py — Température extérieure via une API météo
 
 NOTE (12 octobre 2026) : deux usages.
   1. REPLI : quand le capteur physique (collectors/outdoor_sensor_collector.py)
-     n'a pas de valeur actuelle, main.py utilise cette température à sa place
+     n'a pas de valeur actuelle, le processus principal utilise cette température à sa place
      (le capteur reste toujours prioritaire ; la source "weather" est
      enregistrée dans la colonne `temp_outdoor_source`).
   2. COMPARAISON : collectors/outdoor_consistency_checker.py la compare au

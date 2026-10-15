@@ -1,7 +1,7 @@
 """Température extérieure à enregistrer : capteur physique en priorité, API météo en repli.
 
 Utilisé à chaque instantané du collecteur (toutes les `SNAPSHOT_INTERVAL_SECONDS`) et par
-la boucle de contrôle, aussi bien par `main.py` que par `collect_data.py` : la colonne
+la boucle de contrôle, dans le processus principal : la colonne
 `temp_outdoor` est ainsi remplie dès que l'une des deux sources a une valeur actuelle,
 et `temp_outdoor_source` dit laquelle ("sensor" ou "weather").
 

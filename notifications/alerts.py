@@ -1,41 +1,42 @@
-"""
-notifications/email_notifier.py — Moteur d'alertes par email.
+"""notifications/alerts.py — Moteur d'alertes, DANS le processus principal.
 
-Contrat : spec §6.9. Ce module est volontairement DÉCOUPLÉ du reste du
-pipeline : il ne connaît rien de collectors/ ni de ml/, il ne fait que
-s'abonner à trois topics MQTT (voltaneum/telemetry, voltaneum/prediction,
-voltaneum/sensors/outdoor_consistency) et réagir à ce qu'il y voit passer. En clair :
-si demain on retire ce module entièrement, rien d'autre dans le projet ne
-casse — c'est le but recherché (isolation par bus de messages plutôt que par
-import direct).
+Les règles (`evaluate_rules`) sont des fonctions pures, évaluées à chaque instantané de mesures
+(15 s) et toutes les 30 s par un chien de garde (perte de télémétrie). Le moteur ne dépend
+d'AUCUN broker MQTT : une alerte critique (huile au-delà du seuil, pompe sans débit, passerelle
+muette) part même si le broker est absent ou en panne.
 
-Règles non négociables respectées ici (voir spec §1) :
-  - règle 6 : toute panne réseau (MQTT ou SMTP) est journalisée et n'interrompt
-    jamais la boucle principale (aucun try/except: pass silencieux).
-  - règle 7 : cooldown + confirmation multi-cycles pour ne jamais spammer.
+Toute alerte passe par `deliver_alert` : une ligne dans `alerts_log` (visible dans l'interface)
+et un e-mail si SMTP est configuré. Confirmation sur plusieurs échantillons et délai entre
+deux e-mails d'une même règle évitent le spam ; un e-mail en échec est retenté sous 60 s.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import math
+import queue
 import smtplib
 import ssl
 import threading
 import time
+from collections.abc import Callable
 from email.mime.text import MIMEText
-
-import paho.mqtt.client as mqtt
 
 import config
 from database import sqlite_client
 
-logger = logging.getLogger("voltaneum.email_notifier")
+logger = logging.getLogger("voltaneum.alerts")
 
 # Délai avant de retenter une alerte dont l'envoi a échoué (secondes). Sans lui, un
-# échec SMTP serait « couvert » par le cooldown et l'alerte perdue pendant 30 min.
+# échec SMTP serait « couvert » par le délai entre e-mails et l'alerte perdue 30 min.
 SEND_RETRY_SECONDS = 60
+# Délai entre deux e-mails propre à certaines règles (minutes). Un défaut DURABLE (PT02 figée,
+# cas actuel sur l'installation) n'a pas à être rappelé toutes les 30 min : une fois par jour.
+RULE_COOLDOWN_MINUTES: dict[str, int] = {"oil_sensor_frozen": 24 * 60}
+
+
+def cooldown_seconds(rule_name: str) -> float:
+    return RULE_COOLDOWN_MINUTES.get(rule_name, config.ALERT_COOLDOWN_MINUTES) * 60
 
 
 def smtp_configured() -> bool:
@@ -48,20 +49,12 @@ def smtp_configured() -> bool:
 # Envoi SMTP — contrat 5.5
 # ---------------------------------------------------------------------------
 
-def send_email(subject: str, body: str, level: str) -> bool:
-    """Envoie l'email, journalise le résultat dans alerts_log, ne lève jamais
-    d'exception vers l'appelant (règle 6)."""
+def send_email(subject: str, body: str) -> bool:
+    """Envoie un e-mail (STARTTLS vérifié). Ne lève jamais d'exception : retourne False en cas
+    d'échec ou de configuration incomplète (une panne SMTP n'interrompt jamais le système)."""
     smtp_host, smtp_user, smtp_password = config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD
     sender, recipient = config.ALERT_EMAIL_FROM, config.ALERT_EMAIL_TO
-
-    # Test explicite (et non `smtp_configured()`) : il permet à mypy de savoir que les
-    # valeurs ne sont plus None dans la suite de la fonction.
     if not (smtp_host and smtp_user and smtp_password and sender and recipient):
-        logger.error(
-            "Configuration SMTP incomplète (SMTP_HOST/SMTP_USER/SMTP_PASSWORD/"
-            "ALERT_EMAIL_FROM/ALERT_EMAIL_TO) — email non envoyé."
-        )
-        sqlite_client.log_alert(level, "smtp_config_missing", body, email_sent=False)
         return False
 
     msg = MIMEText(body)
@@ -69,34 +62,48 @@ def send_email(subject: str, body: str, level: str) -> bool:
     msg["Subject"] = " ".join(subject.split())
     msg["From"] = sender
     msg["To"] = recipient
-
     try:
         with smtplib.SMTP(smtp_host, config.SMTP_PORT, timeout=15) as server:
-            # Contexte par défaut : certificat ET nom d'hôte du serveur sont vérifiés.
-            # (sans `context=`, smtplib ne vérifie PAS le certificat.)
+            # Contexte par défaut : certificat ET nom d'hôte du serveur vérifiés.
             server.starttls(context=ssl.create_default_context())
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
-        logger.info("Email envoyé : %s", subject)
-        sqlite_client.log_alert(level, subject, body, email_sent=True)
+        logger.info("E-mail envoyé : %s", msg["Subject"])
         return True
     except (smtplib.SMTPException, OSError) as exc:
-        # Panne SMTP = journalisée, jamais propagée (règle 6). Une alerte non
-        # envoyée reste visible dans alerts_log avec email_sent=0.
-        logger.error("Échec d'envoi SMTP (%s) : %s", subject, exc)
-        sqlite_client.log_alert(level, subject, body, email_sent=False)
+        logger.error("Échec d'envoi SMTP (%s) : %s", msg["Subject"], exc)
         return False
 
 
-# ---------------------------------------------------------------------------
-# Moteur de règles — contrat 6.9, table de référence
-# ---------------------------------------------------------------------------
+_smtp_missing_reported = False
 
+
+def deliver_alert(level: str, rule_name: str, message: str) -> bool:
+    """Point de sortie UNIQUE de toutes les alertes (procédé, stockage, modèles) :
+    une ligne dans `alerts_log` sous le vrai nom de règle, plus un e-mail si SMTP est configuré.
+    Retourne True si l'e-mail est parti."""
+    global _smtp_missing_reported
+    sent = False
+    if smtp_configured():
+        sent = send_email(f"[Voltaneum][{level}] {rule_name}", message)
+    elif not _smtp_missing_reported:
+        logger.warning("E-mail non configuré (SMTP_*, ALERT_EMAIL_*) : les alertes sont seulement "
+                       "journalisées en base et visibles dans l'interface.")
+        _smtp_missing_reported = True
+    log = logger.error if level == "CRITIQUE" else logger.warning
+    log("ALERTE %s %s : %s", level, rule_name, message)
+    sqlite_client.log_alert(level, rule_name, message, email_sent=sent, db_path=config.SQLITE_DB_PATH)
+    return sent
+
+
+# ---------------------------------------------------------------------------
+# Règles
+# ---------------------------------------------------------------------------
 def _cooldown_elapsed(rule_name: str, state: dict, now: float) -> bool:
     last_sent = state["last_sent_at"].get(rule_name)
     if last_sent is None:
         return True
-    return (now - last_sent) >= config.ALERT_COOLDOWN_MINUTES * 60
+    return (now - last_sent) >= cooldown_seconds(rule_name)
 
 
 def _number(payload: dict | None, key: str) -> float | None:
@@ -228,17 +235,49 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
     if silence > config.TELEMETRY_TIMEOUT_SECONDS:
         since = "depuis le démarrage" if last_telemetry_ts is None else "depuis"
         emit("CRITIQUE", "telemetry_lost",
-             f"Aucun message voltaneum/telemetry {since} {silence / 60:.1f} min "
+             f"Aucune mesure reçue de la passerelle {since} {silence / 60:.1f} min "
              f"(seuil {config.TELEMETRY_TIMEOUT_SECONDS / 60:.0f} min)")
 
-    # --- ATTENTION : dérive d'efficacité de l'échangeur --------------------
-    if telemetry is not None and _is_new_sample(state, "telemetry", telemetry):
+    # --- ATTENTION : PT02 (grandeur régulée) absente ou figée ------------------
+    # Sans PT02 valide, AUCUNE consigne n'est publiée : l'automate retombe sur sa propre
+    # régulation. Un PT02 qui ne bouge plus d'un dixième de degré pendant une heure alors que
+    # le reste vit est presque toujours un mauvais point de passerelle ou une sonde bloquée.
+    if telemetry is not None and _is_new_sample(state, "oil_sensor", telemetry):
+        oil = _number(telemetry, config.TARGET_COLUMN)
+        if oil is None:
+            state.setdefault("oil_missing_since", now)
+        else:
+            state.pop("oil_missing_since", None)
+            if oil != state.get("oil_last_value"):
+                state["oil_last_value"] = oil
+                state["oil_unchanged_since"] = now
+    if telemetry is not None:
+        missing_since = state.get("oil_missing_since")
+        if missing_since is not None and now - missing_since >= config.OIL_SENSOR_MISSING_ALERT_SECONDS:
+            emit("ATTENTION", "oil_sensor_missing",
+                 f"PT02 (huile régulée) sans valeur valide depuis {(now - missing_since) / 60:.0f} min alors que "
+                 "la passerelle émet : aucune consigne n'est publiée, l'automate régule seul. "
+                 "Vérifier la sonde et le point sur la passerelle.")
+        unchanged_since = state.get("oil_unchanged_since")
+        frozen_after = config.SENSOR_FROZEN_ALERT_MINUTES * 60
+        if (frozen_after and missing_since is None and unchanged_since is not None
+                and now - unchanged_since >= frozen_after):
+            emit("ATTENTION", "oil_sensor_frozen",
+                 f"PT02 figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min : "
+                 "valeur suspecte (mauvais point de passerelle, consigne lue à la place de la mesure, sonde "
+                 "bloquée ?). À vérifier avec l'automaticien ; aucun modèle ne peut apprendre sur une mesure figée.")
+
+    # --- ATTENTION : dérive d'efficacité de l'échangeur (désactivée par défaut) -
+    # Formule et bornes NON validées sur l'installation : la règle n'est active que si
+    # EFFICIENCY_ALERT_ENABLED=true, pour ne pas envoyer d'alertes sans fondement.
+    if config.EFFICIENCY_ALERT_ENABLED and telemetry is not None and _is_new_sample(state, "telemetry", telemetry):
         efficiency = _compute_efficiency(telemetry)
         out_of_range = efficiency is not None and not (
             config.EFFICIENCY_MIN_EXPECTED <= efficiency <= config.EFFICIENCY_MAX_EXPECTED
         )
         _update_counter(state, "efficiency_drift", out_of_range)
-    if state["consecutive_counts"]["efficiency_drift"] >= config.ALERT_CONFIRMATION_CYCLES:
+    if (config.EFFICIENCY_ALERT_ENABLED
+            and state["consecutive_counts"]["efficiency_drift"] >= config.ALERT_CONFIRMATION_CYCLES):
         emit("ATTENTION", "efficiency_drift",
              "Écart d'efficacité échangeur hors plage attendue sur "
              f"{state['consecutive_counts']['efficiency_drift']} mesures consécutives")
@@ -275,169 +314,100 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
 
 
 # ---------------------------------------------------------------------------
-# Client MQTT — orchestration en continu
+# Moteur (dans le processus principal)
 # ---------------------------------------------------------------------------
+class AlertEngine:
+    """Évalue les règles sur les données du processus principal et distribue les alertes.
 
-class EmailNotifier:
-    """Abonné MQTT qui maintient l'état des dernières données vues et
-    déclenche `evaluate_rules` à chaque nouveau message de télémétrie, plus
-    une vérification périodique en tâche de fond pour la règle "perte de
-    communication" (qui doit se déclencher même en l'absence de nouveau
-    message — par définition)."""
+    Alimenté directement par le collecteur (`on_telemetry`), la boucle de contrôle
+    (`on_prediction`) et le vérificateur capteur / météo (`on_outdoor_consistency`).
 
-    def __init__(self, mqtt_host: str = config.MQTT_HOST, mqtt_port: int = config.MQTT_PORT):
-        self._mqtt_host = mqtt_host
-        self._mqtt_port = mqtt_port
-        # `started_at` : référence du chronomètre « aucune télémétrie depuis le démarrage »
-        # (sans lui, une passerelle en panne dès le lancement ne déclencherait jamais l'alerte).
+    Les alertes sont ENVOYÉES par le thread du moteur (`run_forever`), jamais par l'appelant :
+    un serveur SMTP lent (15 s par tentative) ne retarde ni la collecte ni la régulation.
+    `synchronous=True` envoie immédiatement (tests, scripts).
+    """
+
+    def __init__(self, deliver: Callable[[str, str, str], bool] | None = None,
+                 watchdog_interval_seconds: float = 30.0, synchronous: bool = False) -> None:
+        self._deliver = deliver or deliver_alert
+        self._interval = watchdog_interval_seconds
+        self._synchronous = synchronous
+        self._outbox: queue.Queue[dict | None] = queue.Queue()
+        # `started_at` : référence du chronomètre « aucune mesure depuis le démarrage ».
         self._state: dict = {"started_at": time.time()}
         self._latest_prediction: dict | None = None
         self._latest_outdoor_consistency: dict | None = None
-        self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
 
-        sqlite_client.init_db(config.SQLITE_DB_PATH)
+    def on_telemetry(self, snapshot: dict) -> None:
+        payload = {**snapshot, "ts": snapshot.get("ts", time.time())}
+        with self._lock:
+            self._state["last_telemetry_ts"] = time.time()
+            alerts = evaluate_rules(payload, self._latest_prediction, self._state,
+                                    self._latest_outdoor_consistency)
+        self._dispatch(alerts)
 
-        self._client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id="voltaneum-email-notifier",
-        )
-        if config.MQTT_USERNAME:
-            self._client.username_pw_set(config.MQTT_USERNAME, config.MQTT_PASSWORD)
-        if config.MQTT_TLS_ENABLED:
-            self._client.tls_set(
-                ca_certs=config.MQTT_TLS_CA_CERT,
-                certfile=config.MQTT_TLS_CERTFILE,
-                keyfile=config.MQTT_TLS_KEYFILE,
-                cert_reqs=ssl.CERT_REQUIRED,
-                tls_version=ssl.PROTOCOL_TLS_CLIENT,
-            )
-        self._client.on_connect = self._on_connect
-        self._client.on_message = self._on_message
-        self._client.on_disconnect = self._on_disconnect
+    def on_prediction(self, prediction: dict) -> None:
+        with self._lock:
+            self._latest_prediction = {**prediction, "ts": prediction.get("ts", time.time())}
 
-    # -- callbacks MQTT ----------------------------------------------------
+    def on_outdoor_consistency(self, result: dict) -> None:
+        with self._lock:
+            self._latest_outdoor_consistency = result
 
-    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
-        if reason_code != 0:
-            logger.error("Connexion MQTT échouée (code %s)", reason_code)
-            return
-        logger.info("Connecté au broker MQTT %s:%s", self._mqtt_host, self._mqtt_port)
-        for topic in (config.MQTT_TOPIC_TELEMETRY, config.MQTT_TOPIC_PREDICTION,
-                      config.MQTT_TOPIC_OUTDOOR_CONSISTENCY):
-            client.subscribe(topic)
-
-    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None):
-        # paho relance automatiquement la reconnexion (loop_start gère le
-        # backoff) — on se contente de journaliser (règle 6 : jamais de
-        # crash silencieux, jamais d'interruption non journalisée).
-        logger.warning("Déconnecté du broker MQTT (code %s), reconnexion automatique en cours", reason_code)
-
-    def _on_message(self, client, userdata, msg):
-        try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            logger.warning("Message MQTT illisible sur %s, ignoré", msg.topic)
-            return
-
-        if not isinstance(payload, dict):
-            logger.warning("Message MQTT sur %s ignoré : un objet JSON est attendu.", msg.topic)
-            return
-
-        alerts: list[dict] = []
-        try:
-            with self._lock:
-                if msg.topic == config.MQTT_TOPIC_TELEMETRY:
-                    self._state["last_telemetry_ts"] = time.time()
-                    alerts = evaluate_rules(
-                        telemetry=payload,
-                        prediction=self._latest_prediction,
-                        state=self._state,
-                        outdoor_consistency=self._latest_outdoor_consistency,
-                    )
-                elif msg.topic == config.MQTT_TOPIC_PREDICTION:
-                    self._latest_prediction = payload
-                elif msg.topic == config.MQTT_TOPIC_OUTDOOR_CONSISTENCY:
-                    self._latest_outdoor_consistency = payload
-        except Exception:
-            # Filet de sécurité générique : une règle qui plante sur un
-            # message inattendu ne doit jamais arrêter l'abonné MQTT.
-            logger.exception("Erreur lors du traitement du message %s", msg.topic)
-            return
-        self._dispatch(alerts)  # hors verrou : un serveur SMTP lent ne bloque pas l'abonné
-
-    # -- surveillance périodique (perte de communication) -------------------
-
-    def _watchdog_loop(self, interval_seconds: float = 30.0) -> None:
-        while not self._stop_event.wait(interval_seconds):
-            with self._lock:
-                alerts = evaluate_rules(
-                    telemetry=None,
-                    prediction=self._latest_prediction,
-                    state=self._state,
-                    outdoor_consistency=self._latest_outdoor_consistency,
-                )
-            self._dispatch(alerts)
-
-    def _dispatch(self, alerts: list[dict]) -> None:
-        for alert in alerts:
-            subject = f"[Voltaneum][{alert['level']}] {alert['rule_name']}"
-            try:
-                sent = send_email(subject, alert["message"], alert["level"])
-            except Exception:
-                # send_email ne devrait déjà rien lever, mais on double la
-                # protection ici : ce thread ne doit jamais mourir (règle 6).
-                logger.exception("send_email a levé une exception inattendue pour %s", alert["rule_name"])
-                sent = False
-            if not sent and smtp_configured():
-                # `evaluate_rules` a déjà démarré le cooldown : on le raccourcit pour que
-                # l'alerte soit retentée dans SEND_RETRY_SECONDS au lieu d'être perdue.
-                # (E-mail non configuré : alertes désactivées, inutile de retenter.)
-                with self._lock:
-                    self._state["last_sent_at"][alert["rule_name"]] = (
-                        time.time() - config.ALERT_COOLDOWN_MINUTES * 60 + SEND_RETRY_SECONDS
-                    )
-                logger.warning("Alerte %s non envoyée : nouvel essai dans %d s.",
-                               alert["rule_name"], SEND_RETRY_SECONDS)
-
-    # -- cycle de vie --------------------------------------------------------
+    def check_now(self) -> None:
+        """Évaluation sans nouvelle mesure : règles liées au temps (passerelle muette)."""
+        with self._lock:
+            alerts = evaluate_rules(None, self._latest_prediction, self._state, self._latest_outdoor_consistency)
+        self._dispatch(alerts)
 
     def run_forever(self) -> None:
-        if hasattr(self._client, "reconnect_delay_set"):
-            self._client.reconnect_delay_set(min_delay=1, max_delay=30)
-        backoff = 1.0
+        """Envoie les alertes en attente et lance le chien de garde toutes les `_interval` s."""
+        next_check = time.monotonic() + self._interval
         while not self._stop_event.is_set():
             try:
-                self._client.connect(
-                    self._mqtt_host,
-                    self._mqtt_port,
-                    keepalive=config.MQTT_KEEPALIVE_SECONDS,
-                )
-                break
-            except Exception as exc:
-                logger.error("Connexion initiale du notifier MQTT échouée : %s", exc)
-                if self._stop_event.wait(backoff):
-                    return
-                backoff = min(backoff * 2, 30.0)
-        self._client.loop_start()
-        watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
-        watchdog.start()
-        try:
-            self._stop_event.wait()
-        finally:
-            self.stop()
+                alert = self._outbox.get(timeout=max(0.0, min(1.0, next_check - time.monotonic())))
+            except queue.Empty:
+                alert = None
+            if alert is not None:
+                self._send([alert])
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + self._interval
+                try:
+                    self.check_now()
+                except Exception:
+                    logger.exception("Erreur du chien de garde des alertes")
+        # Arrêt : les alertes déjà décidées ne sont pas perdues (journal + e-mail).
+        pending = []
+        while not self._outbox.empty():
+            item = self._outbox.get_nowait()
+            if item is not None:
+                pending.append(item)
+        self._send(pending)
 
     def stop(self) -> None:
         self._stop_event.set()
-        self._client.loop_stop()
-        self._client.disconnect()
-        logger.info("EmailNotifier arrêté proprement")
+        self._outbox.put(None)  # réveille immédiatement le thread d'envoi
 
+    def _dispatch(self, alerts: list[dict]) -> None:
+        if self._synchronous:
+            self._send(alerts)
+        else:
+            for alert in alerts:
+                self._outbox.put(alert)
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    notifier = EmailNotifier()
-    try:
-        notifier.run_forever()
-    except KeyboardInterrupt:
-        notifier.stop()
+    def _send(self, alerts: list[dict]) -> None:
+        for alert in alerts:
+            try:
+                sent = self._deliver(alert["level"], alert["rule_name"], alert["message"])
+            except Exception:
+                logger.exception("Distribution impossible de l'alerte %s", alert["rule_name"])
+                sent = False
+            if not sent and smtp_configured():
+                # La règle a déjà démarré son délai entre e-mails : on le raccourcit pour que
+                # l'alerte soit retentée sous SEND_RETRY_SECONDS au lieu d'être perdue.
+                with self._lock:
+                    self._state["last_sent_at"][alert["rule_name"]] = (
+                        time.time() - cooldown_seconds(alert["rule_name"]) + SEND_RETRY_SECONDS
+                    )

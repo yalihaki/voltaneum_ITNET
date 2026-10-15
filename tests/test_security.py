@@ -5,30 +5,19 @@ import re
 import stat
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 
 import config
 from ml.train import train_and_compare
+from tests.test_train import make_synthetic_dataframe
 
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def _dataset(n=1500):
-    rng = np.random.default_rng(1)
-    t = pd.date_range("2026-01-01", periods=n, freq="30s")
-    pump = np.clip(7 + 7 * np.sin(np.linspace(0, 40, n)) + rng.normal(0, 1, n), 0, 15)
-    pt02 = 40 - 0.9 * pump + rng.normal(0, 0.2, n)
-    return pd.DataFrame({"timestamp": t, "pt01": pt02 - .3, "pt02": pt02, "pt03": pt02 - 1.4, "pt04": pt02 - 2,
-                         "ht01": 39 + rng.normal(0, .2, n), "freq_pompe": pump,
-                         "temp_outdoor": 15 + rng.normal(0, 1, n)})
 
 
 def test_saved_models_are_private_and_complete(tmp_path):
     """Un modèle est un pickle : modifiable par un autre utilisateur = exécution de code à son chargement."""
     model_dir = tmp_path / "models"
-    assert train_and_compare(_dataset(), 600, str(model_dir))["status"] == "ok"
+    assert train_and_compare(make_synthetic_dataframe(), 600, str(model_dir))["status"] == "ok"
     for name in ("random_forest.joblib", "gradient_boosting.joblib", "training_report.json"):
         assert stat.S_IMODE((model_dir / name).stat().st_mode) == 0o600
     assert stat.S_IMODE(model_dir.stat().st_mode) == 0o700

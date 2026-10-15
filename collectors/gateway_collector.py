@@ -85,6 +85,7 @@ class GatewayCollector:
         snapshot_interval_seconds: float = config.SNAPSHOT_INTERVAL_SECONDS,
         db_path: str = config.SQLITE_DB_PATH,
         outdoor_temperature: Callable[[], tuple[float | None, str | None]] | None = None,
+        on_snapshot: Callable[[dict], None] | None = None,
     ) -> None:
         self.manage_api_url = manage_api_url
         self.iot_api_url = iot_api_url
@@ -97,11 +98,11 @@ class GatewayCollector:
         self.password = config.VOLTANEUM_PASSWORD if password is _MISSING else password
         self.sensor_driver_node = sensor_driver_node
 
-        # Client MQTT déjà connecté, injecté par l'appelant (main.py, étape 10).
+        # Client MQTT déjà connecté, injecté par l'appelant (service/app.py).
         # En clair : le collecteur ne gère pas lui-même la connexion MQTT — il
         # se contente de publier dessus si on lui en donne un. Cela évite de
         # dupliquer la logique de connexion/reconnexion MQTT à plusieurs
-        # endroits du projet ; main.py est le seul responsable du cycle de
+        # endroits du projet ; service/app.py est le seul responsable du cycle de
         # vie du client MQTT (contrat 6.8).
         self.mqtt_client = mqtt_client
         self.snapshot_interval_seconds = snapshot_interval_seconds
@@ -109,6 +110,8 @@ class GatewayCollector:
         # Fournit (température extérieure, source) à chaque instantané : capteur, sinon API
         # météo (voir collectors/outdoor_temperature.py). None = colonne non renseignée ici.
         self.outdoor_temperature = outdoor_temperature
+        # Appelé avec chaque instantané enregistré (moteur d'alertes du processus principal).
+        self.on_snapshot = on_snapshot
 
         self.token: str | None = None
         self.keynode_to_column: dict[str, str] = {}
@@ -161,7 +164,7 @@ class GatewayCollector:
             # "except: pass" — on la logue clairement puis on la relaie, pour
             # que l'appelant (run_forever, à une étape suivante) puisse
             # décider de réessayer.
-            logger.error("Échec réseau lors de l'authentification : %s", exc)
+            logger.debug("Échec réseau lors de l'authentification : %s", exc)  # journalisé par run_forever
             raise
 
         try:
@@ -456,6 +459,11 @@ class GatewayCollector:
             db_path=self.db_path,
         )
 
+        if self.on_snapshot is not None:
+            try:
+                self.on_snapshot({**snapshot, "temp_outdoor_source": outdoor_source})
+            except Exception:
+                logger.exception("Traitement de l'instantané (alertes) en échec")
         if self.mqtt_client is not None:
             try:
                 payload = json.dumps({**snapshot, "temp_outdoor_source": outdoor_source, "ts": time.time()})
@@ -554,12 +562,16 @@ class GatewayCollector:
         mapping_thread.start()
 
         backoff = config.WS_RECONNECT_BACKOFF_INITIAL_SECONDS
+        failures = 0
 
         while not stop_event.is_set():
             try:
                 self.login()
                 self.refresh_point_mapping()
                 backoff = config.WS_RECONNECT_BACKOFF_INITIAL_SECONDS  # reset après succès
+                if failures:
+                    logger.info("Passerelle de nouveau joignable après %d tentative(s).", failures)
+                failures = 0
 
                 ws_app = websocket.WebSocketApp(
                     self.ws_url,
@@ -571,12 +583,19 @@ class GatewayCollector:
                 self._last_message_at = time.monotonic()
                 ws_app.run_forever()  # bloque jusqu'à déconnexion ou erreur
             except Exception as exc:
-                logger.error("Connexion à la passerelle interrompue : %s", exc)
+                failures += 1
+                # Première panne, puis un rappel toutes les 20 tentatives (~10 min) : une coupure
+                # longue ne doit pas noyer le journal (2 lignes toutes les 30 s auparavant).
+                if failures == 1 or failures % 20 == 0:
+                    logger.error("Passerelle injoignable (tentative %d) : %s — nouvel essai toutes les "
+                                 "%.0f s au plus.", failures, exc, config.WS_RECONNECT_BACKOFF_MAX_SECONDS)
+                else:
+                    logger.debug("Passerelle injoignable (tentative %d) : %s", failures, exc)
 
             if stop_event.is_set():
                 break
 
-            logger.info("Reconnexion dans %.1f s...", backoff)
+            logger.debug("Reconnexion dans %.1f s...", backoff)
             stop_event.wait(backoff)
             backoff = min(backoff * 2, config.WS_RECONNECT_BACKOFF_MAX_SECONDS)
 

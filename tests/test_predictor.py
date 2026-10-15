@@ -56,6 +56,7 @@ def empty_model_dir():
 
 
 SAMPLE_FEATURES = {
+    "pt02": 24.5,
     "pt01": 24.0,
     "pt03": 23.5,
     "pt04": 23.5,
@@ -163,3 +164,13 @@ class TestDualModelPredictorPredict:
 
         result = predictor.predict(SAMPLE_FEATURES)
         assert result["disagreement_flag"] is False
+
+def test_model_trained_with_other_inputs_is_refused(trained_model_dir):
+    """Un modèle entraîné avec une autre liste de variables donnerait des prédictions absurdes."""
+    import json
+    report_path = Path(trained_model_dir) / "training_report.json"
+    report = json.loads(report_path.read_text())
+    report["features"] = ["pt01", "pt03"]
+    report_path.write_text(json.dumps(report))
+    with pytest.raises(FileNotFoundError, match="autres variables"):
+        DualModelPredictor(model_dir=str(trained_model_dir))

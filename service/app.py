@@ -1,32 +1,32 @@
-"""Point d'entrée de Voltaneum / ITNET : démarre et supervise tous les modules.
+"""service/app.py — Le processus Voltaneum : démarre, supervise et arrête tous les composants.
 
-Ce fichier ne contient aucune logique métier (ni PID, ni analyse du flux de la
-passerelle) : il démarre chaque composant dans son propre thread, les relance s'ils
-s'arrêtent de façon inattendue, et les arrête proprement sur SIGINT/SIGTERM.
+Un seul processus (lancé par `./voltaneum`), sans dépendance à un broker MQTT pour fonctionner :
 
-Threads (tous supervisés : un thread mort est redémarré automatiquement) :
-  - "gateway-collector"          : login, flux WebSocket de la passerelle, écriture SQLite
-                                    et publication MQTT de la télémétrie ;
-  - "control-loop"               : prédiction ML (si des modèles existent) puis calcul PID,
-                                    publication d'une SUGGESTION de consigne sur MQTT ;
-  - "storage-monitor"            : protection de l'espace disque (voir database/storage_manager.py) ;
-  - "outdoor-sensor-listener"    : température extérieure du capteur indépendant (mode mqtt) ;
-  - "outdoor-consistency-checker": comparaison capteur extérieur / météo (alerte de vérification).
+  - gateway-collector     : login, flux WebSocket de la passerelle, instantané toutes les 15 s en base ;
+  - control-loop          : prédiction ML (si un modèle validé est installé), PID, conditions de
+                            refroidissement ; publication MQTT si un broker est joignable ;
+  - alerts                : règles d'alerte évaluées à chaque instantané + chien de garde (30 s) ;
+  - storage-monitor       : protection de l'espace disque (sauvegarde puis purge) ;
+  - model-monitor         : erreur réelle des prédictions, comparées à la mesure à l'échéance ;
+  - dashboard             : interface web en lecture seule ;
+  - nightly-retrain       : ré-entraînement quotidien (processus séparé, basse priorité), qui
+                            PROPOSE un modèle sans jamais l'installer ;
+  - outdoor-sensor-listener / outdoor-consistency-checker : capteur extérieur et contrôle météo.
 
-Le notifier d'e-mails (notifications/email_notifier.py) et le monitoring des modèles
-(run_model_monitor.py) tournent comme services séparés (voir deploy/).
+Chaque composant tourne dans un thread supervisé : s'il s'arrête, il est relancé.
 
-Règle de sécurité centrale : aucun module n'écrit jamais sur un actionneur. Les
-conditions de refroidissement (température cible, seuils de marche et d'arrêt du ventilateur
-selon la température extérieure) et la consigne PID sont seulement PUBLIÉES sur MQTT ;
-l'automate garde seul la décision finale.
+Règle de sécurité centrale : aucun module n'écrit jamais sur un actionneur. Les conditions de
+refroidissement et la consigne PID sont seulement PUBLIÉES ; l'automate garde seul la décision.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
+import subprocess  # nosec B404
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -42,13 +42,16 @@ from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdo
 from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_temperature
 from control.cooling_advice import compute_cooling_conditions
-from control.pid_controller import compute_setpoint
+from control.pid_controller import compute_setpoint_detailed
 from database import sqlite_client
 from database.storage_manager import StorageManager
 from messaging.mqtt import connect_with_retry, create_client
+from dashboard.server import DashboardServer, is_loopback, make_server
+from ml.monitor import run_monitor_loop
 from ml.predictor import DualModelPredictor
+from notifications.alerts import AlertEngine
 
-logger = logging.getLogger("voltaneum.main")
+logger = logging.getLogger("voltaneum.app")
 
 # Format des horodatages stockés dans SQLite (UTC).
 _DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -69,10 +72,15 @@ class VoltaneumApp:
         self.storage_manager: StorageManager | None = None
         self.outdoor_sensor: OutdoorSensorListener | None = None
         self.outdoor_consistency_checker: OutdoorConsistencyChecker | None = None
+        self.alerts: AlertEngine | None = None
+        self.dashboard: DashboardServer | None = None
 
         self._predictor: DualModelPredictor | None = None
         self._predictor_report_mtime: float | None = None
         self._pid_state: dict = {}
+        self._prediction_used = False
+        self._disagreement_reported = False
+        self._retrain_process: subprocess.Popen | None = None
         # Vrai tant que la boucle de contrôle est suspendue pour mesures périmées (un seul avertissement par panne).
         self._stale_data_reported = False
         # Idem quand seule la mesure d'huile est périmée (capteur muet alors que les autres émettent).
@@ -95,14 +103,20 @@ class VoltaneumApp:
         config.validate_config()
         sqlite_client.init_db(config.SQLITE_DB_PATH)
 
+        if config.MQTT_HOST not in ("localhost", "127.0.0.1", "::1") and not config.MQTT_TLS_ENABLED:
+            logger.warning("Broker MQTT distant (%s) sans TLS : les messages circulent en clair.", config.MQTT_HOST)
+
+        self.alerts = AlertEngine()
         self.mqtt_client = create_client("voltaneum-main")
         self.collector = GatewayCollector(
             mqtt_client=self.mqtt_client, db_path=config.SQLITE_DB_PATH,
             outdoor_temperature=self.outdoor_temperature.read,
+            on_snapshot=self.alerts.on_telemetry,
         )
         self.storage_manager = StorageManager(db_path=config.SQLITE_DB_PATH)
         self.outdoor_consistency_checker = OutdoorConsistencyChecker(
-            get_sensor_value=self._read_outdoor_temperature
+            get_sensor_value=self._read_outdoor_temperature,
+            on_result=self.alerts.on_outdoor_consistency,
         )
         self._reload_predictor_if_changed()
 
@@ -113,6 +127,12 @@ class VoltaneumApp:
         self._register("control-loop", self._control_loop)
         self._register("storage-monitor", self.storage_manager.run_forever)
         self._register("outdoor-consistency-checker", self.outdoor_consistency_checker.run_forever)
+        self._register("alerts", self.alerts.run_forever)
+        self._register("model-monitor", self._model_monitor)
+        if config.RETRAIN_AT:
+            self._register("nightly-retrain", self._retrain_scheduler)
+        if config.DASHBOARD_ENABLED:
+            self._start_dashboard()
         if config.OUTDOOR_SENSOR_MODE == "mqtt":
             self.outdoor_sensor = OutdoorSensorListener()
             self._register("outdoor-sensor-listener", self.outdoor_sensor.run_forever)
@@ -125,9 +145,16 @@ class VoltaneumApp:
         logger.info("Arrêt de Voltaneum / ITNET...")
         self._stop_event.set()
         for component in (self.collector, self.storage_manager, self.outdoor_sensor,
-                          self.outdoor_consistency_checker):
+                          self.outdoor_consistency_checker, self.alerts):
             if component is not None:
                 component.stop()
+        if self.dashboard is not None:
+            self.dashboard.shutdown()
+            self.dashboard.server_close()
+        retrain = self._retrain_process
+        if retrain is not None and retrain.poll() is None:
+            logger.info("Ré-entraînement en cours interrompu par l'arrêt (aucun modèle n'est installé sans validation).")
+            retrain.terminate()
 
         for name, thread in self._threads.items():
             thread.join(timeout=10)
@@ -231,8 +258,11 @@ class VoltaneumApp:
                 self._stale_data_reported = True
             return
         if self._stale_data_reported:
-            logger.info("Messages de la passerelle de nouveau reçus : publication reprise.")
+            # Reprise après une coupure : l'état du PID (intégrale) date d'avant la panne et ne
+            # correspond plus au procédé. Redémarrage « à froid » du PID.
+            logger.info("Messages de la passerelle de nouveau reçus : publication reprise, PID réinitialisé.")
             self._stale_data_reported = False
+            self._pid_state = {}
 
         last_known = collector.snapshot()   # valeurs périmées capteur par capteur déjà remplacées par None
         t_oil = last_known.get(config.TARGET_COLUMN)
@@ -249,8 +279,10 @@ class VoltaneumApp:
                 logger.debug("Pas de mesure %s valide : cycle de contrôle suspendu.", config.TARGET_COLUMN)
             return
         if self._target_stale_reported:
-            logger.info("Mesure %s de nouveau disponible : reprise des consignes.", config.TARGET_COLUMN)
+            logger.info("Mesure %s de nouveau disponible : reprise des consignes, PID réinitialisé.",
+                        config.TARGET_COLUMN)
             self._target_stale_reported = False
+            self._pid_state = {}
 
         # Capteur prioritaire, API météo en repli ; None si aucune des deux n'est disponible.
         t_outdoor, outdoor_source = self.outdoor_temperature.read()
@@ -258,7 +290,7 @@ class VoltaneumApp:
         last_known["temp_outdoor"] = t_outdoor
 
         t_oil_predicted = self._predict_if_possible(last_known, t_oil)
-        setpoint, self._pid_state, mode = compute_setpoint(
+        detail = compute_setpoint_detailed(
             t_oil=t_oil,
             t_target=config.TARGET_TEMP,
             t_oil_predicted=t_oil_predicted,
@@ -266,20 +298,98 @@ class VoltaneumApp:
             dt=dt,
             pid_state=self._pid_state,
         )
+        setpoint, self._pid_state, mode = detail.setpoint, detail.state, detail.mode
         # 1) Conditions à suivre (contrat principal) : température cible + seuils selon la
         #    température extérieure. Rien n'est publié si la température d'huile est invalide.
         conditions = compute_cooling_conditions(t_oil, t_outdoor)
+        conditions_message = None
         if conditions is not None:
             # La source dit si la bande extérieure vient du capteur ou de l'API météo (repli).
-            self._publish(config.MQTT_TOPIC_COOLING_CONDITIONS, {**conditions, "t_outdoor_source": outdoor_source})
+            conditions_message = self._publish(
+                config.MQTT_TOPIC_COOLING_CONDITIONS, {**conditions, "t_outdoor_source": outdoor_source})
         # 2) Consigne PID en % : INFORMATIVE (suivi, comparaison avec la régulation de l'automate).
+        setpoint_message = None
         if config.PUBLISH_PID_SETPOINT:
-            self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
+            setpoint_message = self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
+        # 3) Journal en base (interface de supervision) : la consigne et sa décomposition.
+        sqlite_client.log_control({
+            "t_oil": t_oil, "t_target": config.TARGET_TEMP,
+            "t_predicted": t_oil_predicted if self._prediction_used else None,
+            "t_outdoor": t_outdoor, "t_outdoor_source": outdoor_source,
+            "setpoint": setpoint, "mode": mode, "error": detail.error,
+            "p_term": detail.p_term, "i_term": detail.i_term, "d_term": detail.d_term,
+            "feedforward_prediction": detail.feedforward_prediction,
+            "feedforward_outdoor": detail.feedforward_outdoor, "raw_output": detail.raw_output,
+            "outdoor_band": conditions and conditions["outdoor_band"],
+            "fan_on_above": conditions and conditions["fan_on_above_temp"],
+            "fan_off_below": conditions and conditions["fan_off_below_temp"],
+            "fan_min_freq_hz": conditions and conditions["fan_min_freq_hz"],
+            "mqtt_setpoint": setpoint_message, "mqtt_conditions": conditions_message,
+            "mqtt_sent": None if not config.PUBLISH_PID_SETPOINT else int(setpoint_message is not None),
+        }, db_path=config.SQLITE_DB_PATH)
         logger.info(
             "Consigne suggérée : %.1f %% (mode=%s, huile=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
             setpoint, mode, t_oil, config.TARGET_TEMP, t_oil_predicted,
             "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C ({outdoor_source})",
         )
+
+    # ------------------------------------------------------------------
+    # Monitoring des modèles, interface, ré-entraînement nocturne
+    # ------------------------------------------------------------------
+    def _model_monitor(self) -> None:
+        """Compare chaque prédiction à la mesure réelle à son échéance (erreur en production)."""
+        run_monitor_loop(interval_seconds=30, mqtt_client=self.mqtt_client, stop_event=self._stop_event)
+
+    def _start_dashboard(self) -> None:
+        """Interface web en lecture seule, dans ce processus (thread du serveur HTTP)."""
+        try:
+            self.dashboard = make_server(config.DASHBOARD_HOST, config.DASHBOARD_PORT,
+                                         config.SQLITE_DB_PATH, config.DASHBOARD_ALLOWED_HOSTS)
+        except OSError as exc:
+            logger.error("Interface web non démarrée (port %d indisponible : %s). Le reste tourne normalement.",
+                         config.DASHBOARD_PORT, exc)
+            return
+        if not is_loopback(config.DASHBOARD_HOST):
+            logger.warning("Interface ouverte au réseau (%s) SANS authentification : réseau de confiance uniquement.",
+                           config.DASHBOARD_HOST)
+        server = self.dashboard
+        self._register("dashboard", lambda: server.serve_forever(poll_interval=0.5))
+        logger.info("Interface de supervision : http://localhost:%d", config.DASHBOARD_PORT)
+
+    def _retrain_scheduler(self) -> None:
+        """Lance le ré-entraînement chaque jour à RETRAIN_AT (heure locale), dans un processus
+        séparé à basse priorité : un entraînement long ne ralentit jamais la régulation."""
+        hour, minute = (int(part) for part in config.RETRAIN_AT.split(":"))
+        while not self._stop_event.is_set():
+            now = datetime.now()
+            next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
+            if self._stop_event.wait((next_run - now).total_seconds()):
+                return
+            self.run_retrain_subprocess()
+
+    def run_retrain_subprocess(self) -> int | None:
+        """Exécute `voltaneum.py retrain` en sous-processus « nice » ; retourne son code de sortie."""
+        script = Path(config.PROJECT_ROOT) / "voltaneum.py"
+        command = [sys.executable, str(script), "retrain", "--log-file", str(Path(config.PROJECT_ROOT) / "logs" / "retrain.log")]
+        logger.info("Ré-entraînement nocturne lancé (processus séparé, basse priorité).")
+        try:
+            self._retrain_process = subprocess.Popen(  # nosec B603
+                command, cwd=config.PROJECT_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                preexec_fn=(lambda: os.nice(19)) if hasattr(os, "nice") else None,
+            )
+            returncode = self._retrain_process.wait()
+        except OSError:
+            logger.exception("Ré-entraînement nocturne impossible à lancer")
+            return None
+        finally:
+            self._retrain_process = None
+        if self._stop_event.is_set():
+            return returncode
+        level = logging.INFO if returncode == 0 else logging.ERROR
+        logger.log(level, "Ré-entraînement nocturne terminé (code %d, voir logs/retrain.log).", returncode)
+        return returncode
 
     def _read_outdoor_temperature(self) -> float | None:
         """Température extérieure ACTUELLE du capteur indépendant, ou None si indisponible.
@@ -302,7 +412,7 @@ class VoltaneumApp:
     # Prédiction ML
     # ------------------------------------------------------------------
     def _reload_predictor_if_changed(self) -> None:
-        """(Re)charge les modèles quand `ml.train` en a écrit de nouveaux : pas de redémarrage nécessaire."""
+        """(Re)charge les modèles quand un modèle validé est installé (./voltaneum model accept) : pas de redémarrage nécessaire."""
         report = Path(config.MODEL_DIR) / "training_report.json"
         try:
             mtime = report.stat().st_mtime
@@ -319,7 +429,9 @@ class VoltaneumApp:
 
     def _predict_if_possible(self, last_known: dict, t_oil_current: float) -> float:
         """Température d'huile prédite, ou la température actuelle si la prédiction est impossible
-        (ce qui neutralise simplement le terme prédictif du PID)."""
+        (ce qui neutralise simplement le terme prédictif du PID). `_prediction_used` indique
+        si la valeur rendue vient réellement du modèle."""
+        self._prediction_used = False
         self._reload_predictor_if_changed()
         if self._predictor is None:
             return t_oil_current
@@ -334,6 +446,21 @@ class VoltaneumApp:
 
         self._publish(config.MQTT_TOPIC_PREDICTION, prediction)
         self._log_predictions(prediction)
+        if self.alerts is not None:
+            self.alerts.on_prediction(prediction)
+        # Les deux modèles ne sont pas d'accord : la prédiction n'est pas fiable, l'anticipation
+        # du PID est neutralisée pour ce cycle (le PID travaille sur la mesure actuelle).
+        if prediction.get("disagreement_flag"):
+            if not self._disagreement_reported:
+                logger.warning("Modèles en désaccord (%.2f °C > %.1f °C) : prédiction ignorée par le PID "
+                               "tant que le désaccord dure.", prediction.get("disagreement", float("nan")),
+                               config.DISAGREEMENT_THRESHOLD_CELSIUS)
+                self._disagreement_reported = True
+            return t_oil_current
+        if self._disagreement_reported:
+            logger.info("Modèles de nouveau d'accord : prédiction utilisée par le PID.")
+            self._disagreement_reported = False
+        self._prediction_used = True
         return prediction["combined_prediction"]
 
     def _log_predictions(self, prediction: dict) -> None:
@@ -351,20 +478,23 @@ class VoltaneumApp:
         except Exception:
             logger.exception("Échec de la journalisation des prédictions")
 
-    def _publish(self, topic: str, payload: dict) -> None:
-        """Publie `payload` (+ horodatage) sur MQTT ; une panne de publication n'interrompt jamais le contrôle."""
+    def _publish(self, topic: str, payload: dict) -> str | None:
+        """Publie `payload` (+ horodatage) sur MQTT ; une panne de publication n'interrompt jamais le contrôle.
+
+        Retourne le message JSON exact transmis au client MQTT, ou None s'il n'a pas pu l'être
+        (pas de client, broker non connecté, erreur) : il est journalisé dans `control_log`.
+        """
         if self.mqtt_client is None:
-            return
+            return None
+        message = json.dumps({**payload, "ts": time.time()})
         try:
-            self.mqtt_client.publish(topic, json.dumps({**payload, "ts": time.time()}))
+            info = self.mqtt_client.publish(topic, message)
         except Exception:
             logger.exception("Échec de publication MQTT sur %s", topic)
+            return None
+        rc = getattr(info, "rc", mqtt.MQTT_ERR_SUCCESS)
+        if rc != mqtt.MQTT_ERR_SUCCESS:
+            logger.debug("Message MQTT non transmis sur %s (code %s : broker non connecté ?)", topic, rc)
+            return None
+        return message
 
-
-def main() -> None:
-    logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    VoltaneumApp().run_forever()
-
-
-if __name__ == "__main__":
-    main()

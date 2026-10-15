@@ -341,6 +341,7 @@ def train_and_compare(
         "trained_at": int(time.time()),
         "n_samples": len(usable),
         "horizon_seconds": horizon_seconds,
+        "features": list(config.FEATURE_COLUMNS),
         "target_std_celsius": target_std,
         "feature_std": feature_std,
         "degenerate_features": degenerate_features,
@@ -363,13 +364,17 @@ def train_and_compare(
         return report
 
     if not beats_persistence:
-        logger.warning(
-            "Aucun modèle ne bat la persistance (best=%s, rmse=%.3f vs baseline=%.3f). "
-            "Le rapport le signale explicitement plutôt que de le masquer.",
-            best_model_name,
-            metrics[best_model_name]["rmse"],
-            baseline_rmse,
+        # Un modèle qui fait moins bien que « la température ne bouge pas » n'apporte rien et
+        # fausserait l'anticipation du PID : il n'est PAS sauvegardé (statut « no_skill »).
+        message = (
+            f"Aucun modèle ne bat la persistance (meilleur : {best_model_name}, erreur "
+            f"{metrics[best_model_name]['rmse']:.3f} °C contre {baseline_rmse:.3f} °C pour « la "
+            f"température ne bouge pas »). Aucun modèle n'est sauvegardé."
         )
+        logger.warning(message)
+        report["status"] = "no_skill"
+        report["message"] = message
+        return report
 
     model_dir_path = Path(model_dir)
     model_dir_path.mkdir(parents=True, exist_ok=True)
@@ -377,7 +382,7 @@ def train_and_compare(
     for name in ("random_forest", "gradient_boosting"):
         _write_atomically(model_dir_path / f"{name}.joblib", lambda f, n=name: joblib.dump(fitted_models[n], f))
     # Le rapport est écrit EN DERNIER : son apparition signale que les modèles sont complets
-    # (main.py recharge les modèles quand ce fichier change).
+    # (le processus principal recharge les modèles quand ce fichier change).
     _write_atomically(model_dir_path / "training_report.json",
                       lambda f: f.write(json.dumps(report, indent=2).encode("utf-8")))
 
@@ -402,7 +407,7 @@ def train_from_db(
 
     Fonctionne aussi bien sur la base de production que sur un export local
     (même schéma de table `telemetry`) — c'est la généralisation demandée du
-    script `train_from_local_db.py` déjà validé.
+    ancien script d'entraînement local.
     """
     df = sqlite_client.get_dataframe(start_ts, end_ts, db_path=db_path)
     return train_and_compare(df, horizon_seconds=horizon_seconds, model_dir=model_dir)

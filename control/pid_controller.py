@@ -5,7 +5,7 @@ RÈGLE DE SÉCURITÉ FONDAMENTALE DU PROJET (règle non négociable n°2) : ce
 fichier ne contient et ne doit JAMAIS contenir le moindre appel réseau, ni
 le moindre import de bibliothèque d'accès à un automate ou variateur. Il ne
 fait QUE du calcul pur : on lui donne des nombres, il rend un nombre. C'est
-l'appelant (main.py) qui publiera ce nombre sur MQTT ; c'est l'automate,
+l'appelant (service/app.py) qui publiera ce nombre sur MQTT ; c'est l'automate,
 et lui seul, qui décidera de l'appliquer réellement au variateur, en
 respectant son propre mode manuel/auto. Ce fichier n'a physiquement AUCUN
 moyen d'agir directement sur l'installation — c'est une garantie de
@@ -34,8 +34,33 @@ consigne maximale immédiate, sans même calculer le PID.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import config
+
+
+@dataclass(frozen=True)
+class SetpointDetail:
+    """Résultat complet d'un calcul de consigne, terme par terme (pour l'affichage et le journal).
+
+    Les termes P / I / D sont None en mode « safety_bypass » : ils ne sont alors pas calculés.
+    `raw_output` est la somme avant bornage dans [SETPOINT_MIN, SETPOINT_MAX].
+    """
+
+    setpoint: float
+    state: dict
+    mode: str
+    error: float | None = None
+    p_term: float | None = None
+    i_term: float | None = None
+    d_term: float | None = None
+    feedforward_prediction: float = 0.0
+    feedforward_outdoor: float = 0.0
+    raw_output: float | None = None
+
+    @property
+    def feedforward(self) -> float:
+        return self.feedforward_prediction + self.feedforward_outdoor
 
 
 def compute_setpoint(
@@ -46,6 +71,19 @@ def compute_setpoint(
     dt: float,
     pid_state: dict,
 ) -> tuple[float, dict, str]:
+    """Consigne, nouvel état et mode (voir `compute_setpoint_detailed` pour le détail des termes)."""
+    detail = compute_setpoint_detailed(t_oil, t_target, t_oil_predicted, t_outdoor, dt, pid_state)
+    return detail.setpoint, detail.state, detail.mode
+
+
+def compute_setpoint_detailed(
+    t_oil: float,
+    t_target: float,
+    t_oil_predicted: float,
+    t_outdoor: float | None,
+    dt: float,
+    pid_state: dict,
+) -> SetpointDetail:
     """Calcule la consigne de refroidissement (0-100%) à publier sur MQTT.
 
     Args:
@@ -61,10 +99,11 @@ def compute_setpoint(
             Doit contenir (ou se voir attribuer par défaut) 'integral' et
             'last_error'. Passer {} au tout premier appel.
 
-    Retourne un triplet (consigne, nouvel_état, mode) :
-        - consigne : float toujours dans [SETPOINT_MIN, SETPOINT_MAX] (0-100).
-        - nouvel_état : dict à repasser au prochain appel de compute_setpoint.
-        - mode : "safety_bypass", "feedforward" ou "pid".
+    Retourne un `SetpointDetail` :
+        - setpoint : float toujours dans [SETPOINT_MIN, SETPOINT_MAX] (0-100) ;
+        - state : dict à repasser au prochain appel ;
+        - mode : "safety_bypass", "feedforward" ou "pid" ;
+        - les termes P, I, D et feedforward qui composent la consigne.
 
     Ne réalise AUCUN appel réseau et n'importe AUCUN driver d'actionneur —
     voir l'en-tête du module.
@@ -72,7 +111,7 @@ def compute_setpoint(
     # Une mesure non finie ne doit jamais contaminer l'état PID. En cas de
     # température d'huile invalide, on demande le refroidissement maximal.
     if not math.isfinite(t_oil) or not math.isfinite(t_target):
-        return 100.0, dict(pid_state), "safety_bypass"
+        return SetpointDetail(100.0, dict(pid_state), "safety_bypass")
 
     if not math.isfinite(dt) or dt < 0.0:
         dt = 0.0
@@ -89,7 +128,7 @@ def compute_setpoint(
         # maximal sans discuter. L'état PID est conservé tel quel (pas
         # d'accumulation supplémentaire pendant le bypass) pour repartir
         # proprement une fois la situation redevenue normale.
-        return 100.0, dict(pid_state), "safety_bypass"
+        return SetpointDetail(100.0, dict(pid_state), "safety_bypass", error=t_oil - t_target)
 
     # --- Terme PID classique. ---
     # error > 0 signifie huile PLUS CHAUDE que la cible -> il faut REFROIDIR
@@ -142,24 +181,27 @@ def compute_setpoint(
 
     derivative = (error - previous_error) / dt if dt > 0 else 0.0
 
-    u_pid = config.PID_KP * error + config.PID_KI * integral + config.PID_KD * derivative
+    p_term = config.PID_KP * error
+    i_term = config.PID_KI * integral
+    d_term = config.PID_KD * derivative
+    u_pid = p_term + i_term + d_term
 
     # --- Terme feedforward : anticipation à partir de la prédiction ML et de
     # la météo extérieure. Les seuils et montants sont des valeurs par défaut
     # raisonnables (voir config.py), à calibrer expérimentalement en Phase 3a
     # — ne pas les considérer comme définitives (spec §6.7).
-    feedforward = 0.0
+    ff_prediction = ff_outdoor = 0.0
     mode = "pid"
 
     if t_oil_predicted > t_target + config.FEEDFORWARD_PREDICTED_OVERSHOOT_THRESHOLD:
-        feedforward += config.FEEDFORWARD_PREDICTED_BOOST
+        ff_prediction = config.FEEDFORWARD_PREDICTED_BOOST
         mode = "feedforward"
 
     if t_outdoor is not None and outdoor_is_finite and t_outdoor > config.FEEDFORWARD_OUTDOOR_HOT_THRESHOLD:
-        feedforward += config.FEEDFORWARD_OUTDOOR_BOOST
+        ff_outdoor = config.FEEDFORWARD_OUTDOOR_BOOST
         mode = "feedforward"
 
-    raw_setpoint = u_pid + feedforward
+    raw_setpoint = u_pid + ff_prediction + ff_outdoor
     setpoint = max(config.SETPOINT_MIN, min(config.SETPOINT_MAX, raw_setpoint))
 
     new_state = {
@@ -168,4 +210,7 @@ def compute_setpoint(
         "saturated_high": setpoint >= config.SETPOINT_MAX,
         "saturated_low": setpoint <= config.SETPOINT_MIN,
     }
-    return setpoint, new_state, mode
+    return SetpointDetail(
+        setpoint, new_state, mode, error=error, p_term=p_term, i_term=i_term, d_term=d_term,
+        feedforward_prediction=ff_prediction, feedforward_outdoor=ff_outdoor, raw_output=raw_setpoint,
+    )

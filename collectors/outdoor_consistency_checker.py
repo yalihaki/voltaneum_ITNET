@@ -5,15 +5,15 @@ physique à l'API météo, à titre de VÉRIFICATION uniquement.
 Contexte (30 septembre 2026, suite discussion avec Taher ; repli ajouté le
 12 octobre 2026) : le capteur physique est la valeur prioritaire injectée dans
 last_known / SQLite / le PID ; l'API météo ne la remplace que lorsque le
-capteur n'a aucune valeur actuelle (voir main.py). Ce module compare les deux
-quand le capteur fournit une valeur, et publie l'écart sur MQTT pour que
-notifications/email_notifier.py puisse alerter en cas de divergence
+capteur n'a aucune valeur actuelle (voir service/app.py). Ce module compare les deux
+quand le capteur fournit une valeur, et transmet l'écart au moteur d'alertes
+(notifications/alerts.py), qui peut alerter en cas de divergence
 importante et persistante. Sans valeur capteur, il ne compare rien (jamais
 la météo à elle-même).
 
 Ce module ne décide jamais d'une alerte lui-même (séparation des
 responsabilités déjà en place pour ml/monitor.py) : il publie un fait mesuré
-(l'écart), c'est email_notifier.py qui décide d'alerter, avec son propre
+(l'écart), c'est notifications/alerts.py qui décide d'alerter, avec son propre
 cooldown et sa confirmation multi-cycles.
 
 Important : ce module ne rejette et ne remplace JAMAIS une valeur du capteur.
@@ -24,16 +24,12 @@ capteur a tort — les deux mesurent des choses légitimement différentes
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
-from typing import Callable
-
-import paho.mqtt.client as mqtt
+from collections.abc import Callable
 
 import config
-from messaging.mqtt import connect_with_retry, create_client
 from collectors.weather_collector import get_outdoor_temperature
 
 logger = logging.getLogger(__name__)
@@ -42,18 +38,19 @@ logger = logging.getLogger(__name__)
 class OutdoorConsistencyChecker:
     """Compare périodiquement la valeur du capteur physique (fournie par
     `get_sensor_value`, injectée pour rester agnostique du mode mqtt/http de
-    OutdoorSensorListener) à l'API météo, et publie l'écart sur MQTT."""
+    OutdoorSensorListener) à l'API météo, et transmet l'écart à `on_result` (le moteur
+    d'alertes du processus principal) : aucun broker n'est nécessaire."""
 
     def __init__(
         self,
         get_sensor_value: Callable[[], float | None],
         interval_seconds: int | None = None,
+        on_result: Callable[[dict], None] | None = None,
     ) -> None:
         self._get_sensor_value = get_sensor_value
         self._interval_seconds = interval_seconds or config.OUTDOOR_CONSISTENCY_CHECK_INTERVAL_SECONDS
+        self._on_result = on_result
         self._stop_event = threading.Event()
-
-        self._client = create_client("voltaneum-outdoor-consistency-checker")
 
     def check_once(self) -> dict | None:
         """Effectue une comparaison et publie le résultat. Retourne le
@@ -78,10 +75,8 @@ class OutdoorConsistencyChecker:
             "gap": gap,
             "ts": time.time(),
         }
-        info = self._client.publish(config.MQTT_TOPIC_OUTDOOR_CONSISTENCY, json.dumps(result))
-        if info.rc != mqtt.MQTT_ERR_SUCCESS:
-            # Une panne de publication ne doit jamais arrêter la boucle de vérification.
-            logger.warning("Écart non publié sur %s (code MQTT %s)", config.MQTT_TOPIC_OUTDOOR_CONSISTENCY, info.rc)
+        if self._on_result is not None:
+            self._on_result(result)
 
         if gap > config.OUTDOOR_CONSISTENCY_MAX_GAP_CELSIUS:
             logger.info(
@@ -93,18 +88,11 @@ class OutdoorConsistencyChecker:
 
     def run_forever(self) -> None:
         """Boucle bloquante, à lancer dans un thread (arrêt via `stop()`)."""
-        if not connect_with_retry(self._client, self._stop_event):
-            return
-        self._client.loop_start()
-        try:
-            while not self._stop_event.wait(self._interval_seconds):
-                try:
-                    self.check_once()
-                except Exception:
-                    logger.exception("Erreur inattendue dans la vérification de cohérence")
-        finally:
-            self._client.loop_stop()
-            self._client.disconnect()
+        while not self._stop_event.wait(self._interval_seconds):
+            try:
+                self.check_once()
+            except Exception:
+                logger.exception("Erreur inattendue dans la vérification de cohérence")
 
     def stop(self) -> None:
         self._stop_event.set()

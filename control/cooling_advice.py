@@ -1,7 +1,7 @@
 """control/cooling_advice.py — Conditions de refroidissement à publier sur MQTT (calcul pur).
 
 RÈGLE DE SÉCURITÉ n°2 : aucun appel réseau, aucun import d'actionneur. Ce module reçoit des
-nombres et rend un dictionnaire ; c'est main.py qui le publie sur MQTT, et c'est l'AUTOMATE
+nombres et rend un dictionnaire ; c'est la boucle de contrôle (service/app.py) qui le publie sur MQTT, et c'est l'AUTOMATE
 (ou son pont) qui décide seul de démarrer ou d'arrêter le ventilateur.
 
 Il ne donne donc JAMAIS d'ordre « allume / éteins » : il publie la température cible et les

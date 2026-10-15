@@ -1,10 +1,10 @@
 # VOLTANEUM / ITNET
 ## Cahier des charges final unifié
 
-**Version :** 1.1  
-**Date :** 10 octobre 2026 (version 1.0 : 17 septembre 2026)  
+**Version :** 2.0  
+**Date :** 15 octobre 2026 (1.1 : 10 octobre 2026 ; 1.0 : 17 septembre 2026)  
 **Statut :** logiciel prêt pour essais terrain sur la passerelle réelle ; validation industrielle et calibration avec l'automaticien à réaliser  
-**Référence principale :** ce document, complété par `README.md` pour les commandes d'exploitation.
+**Référence principale :** ce document, complété par `README.md` pour l'exploitation (commande unique `./voltaneum`).
 
 ---
 
@@ -26,7 +26,7 @@ Le système doit :
 10. envoyer des alertes email contrôlées (dont « pompe en marche sans débit ») ;
 11. protéger automatiquement l'espace disque et conserver les données au moins un an ;
 12. continuer en mode dégradé lorsqu'un service externe est indisponible ;
-13. fonctionner sur macOS, Linux et Windows.
+13. s'installer et s'exploiter par une seule commande, sans droits administrateur, sur le contrôleur Linux.
 
 Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supervision industrielle officielle.
 
@@ -125,48 +125,45 @@ Voltaneum ne doit jamais écrire dans un registre de commande, un variateur ou u
 
 ## 4. Architecture logicielle
 
-```text
-collectors/gateway_collector.py
-    HTTP login + catalogue + WebSocket
-                 |
-                 +--> database/sqlite_client.py
-                 |       +--> telemetry
-                 |       +--> predictions_log
-                 |       +--> alerts_log
-                 |
-                 +--> MQTT voltaneum/telemetry
-                              |
-                              +--> ml/predictor.py
-                              +--> control/pid_controller.py
-                              +--> notifications/email_notifier.py
+Un seul processus (`voltaneum.py run`, lancé et surveillé par `./voltaneum`), dont aucun composant ne dépend du broker MQTT pour fonctionner :
 
-main.py
-    +--> gateway-collector
-    +--> control-loop
-    +--> storage-monitor
-    +--> component-supervisor
+```text
+Passerelle (HTTP + WebSocket)
+        |
+collectors/gateway_collector.py --- instantané 15 s ---> SQLite : telemetry
+        |                                   |
+        |                                   +--> notifications/alerts.py (règles, e-mail, alerts_log)
+        v
+service/app.py : boucle de contrôle (60 s)
+        ml/predictor.py -> control/pid_controller.py + control/cooling_advice.py
+        |                                   |
+        +--> SQLite : predictions_log, control_log
+        +--> MQTT (si joignable) : conditions + consigne informative -> pont -> automate
+
+Dans le même processus : stockage (sauvegarde/purge), monitoring ML, interface web
+(dashboard/, lecture seule), ré-entraînement nocturne (sous-processus basse priorité).
 ```
 
 ### 4.1 Modules
 
 | Module | Responsabilité |
 |---|---|
+| `voltaneum` | commande unique : environnement Python, `.env`, démarrage, relance automatique (crontab), état, arrêt |
+| `voltaneum.py` | point d'entrée Python : `run`, `retrain`, `model`, `data`, `diagnose`, `demo` |
 | `config.py` | configuration et validation de démarrage |
-| `collectors/gateway_collector.py` | login, mapping, WebSocket, validation, snapshots |
-| `collectors/outdoor_sensor_collector.py` | température extérieure via capteur physique indépendant (MQTT ou HTTP) |
-| `database/sqlite_client.py` | schéma, écritures, lectures, purge temporelle, suivi ML |
-| `database/storage_manager.py` | seuil disque, avertissement, délai, contrôle d'espace libre, sauvegarde, purge automatique |
-| `database/backup.py` | sauvegarde compressée vérifiée, conservation d'au moins un an |
-| `ml/train.py` | construction de cible, split temporel, entraînement, métriques |
-| `ml/predictor.py` | chargement et comparaison des modèles |
-| `ml/monitor.py` | complétion des prédictions et RMSE glissant |
-| `control/pid_controller.py` | PID, feedforward, bornage, bypass de sécurité, anti-windup |
-| `control/cooling_advice.py` | température cible et conditions de refroidissement selon la température extérieure (calcul pur) |
-| `notifications/email_notifier.py` | alertes MQTT, cooldown, SMTP, journalisation |
-| `main.py` | démarrage, supervision et arrêt des composants |
-| `collect_data.py` | campagne de collecte seule, sans PID ni suggestion de consigne |
-| `diagnose_connectivity.py` | diagnostic de ports sans envoyer de secrets |
-| `generate_test_data.py` | base synthétique isolée pour les essais hors réseau |
+| `service/app.py` | démarrage, supervision et arrêt de tous les composants, boucle de contrôle |
+| `service/diagnose.py` | diagnostic réseau / services / base / modèle, sans envoyer d'identifiant |
+| `collectors/gateway_collector.py` | login, mapping, WebSocket, validation, instantanés |
+| `collectors/outdoor_*.py`, `weather_collector.py` | température extérieure (capteur prioritaire, météo en repli) et contrôle de cohérence |
+| `database/sqlite_client.py` | schéma, écritures, lectures |
+| `database/storage_manager.py`, `backup.py` | limite disque effective, avertissement, sauvegarde vérifiée, purge |
+| `database/summary.py` | résumé lisible des mesures |
+| `ml/train.py`, `predictor.py`, `monitor.py` | entraînement contre la persistance, prédiction, erreur en production |
+| `ml/auto_retrain.py` | ré-entraînement nocturne multi-horizons, proposition, validation humaine, retour arrière |
+| `control/pid_controller.py`, `cooling_advice.py` | PID détaillé terme par terme, conditions de refroidissement (calcul pur) |
+| `notifications/alerts.py` | règles d'alerte, moteur dans le processus, e-mail, journal unique |
+| `messaging/mqtt.py` | clients MQTT (authentification, TLS vérifié) |
+| `dashboard/` | interface web en lecture seule (supervision, historique, alertes, PID, modèles, réglages) |
 
 ---
 
@@ -180,9 +177,10 @@ main.py
 4. configurer MQTT avec identifiants et TLS éventuels ;
 5. démarrer le collecteur ;
 6. charger les modèles disponibles ;
-7. démarrer la boucle de contrôle ;
-8. démarrer le superviseur de stockage ;
-9. démarrer le superviseur des threads.
+7. démarrer la boucle de contrôle, le moteur d'alertes, le superviseur de stockage, le monitoring ML, l'interface et la planification du ré-entraînement ;
+8. démarrer le superviseur des threads.
+
+Un verrou (`logs/voltaneum.lock`) garantit qu'un seul processus tourne : deux collectes écriraient chaque mesure en double.
 
 Une absence de modèles ne bloque pas la collecte : le contrôle passe en mode PID sans feedforward ML.
 
@@ -289,7 +287,7 @@ Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_f
 
 ### 6.5 Capteur extérieur, météo et SMTP
 
-La température extérieure vient en priorité d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate. Si le capteur n'a pas de valeur actuelle (non installé, muet, défaillant), la température de l'API météo est utilisée à sa place, relue à chaque instantané (`OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS`, 15 s), avec `main.py` comme avec `collect_data.py` ; la source (`sensor` / `weather`) est enregistrée dans `temp_outdoor_source`. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min), du capteur comme de la météo, est ignorée : jamais de valeur périmée. Sans aucune des deux, le PID et son bypass de sécurité continuent ; les conditions sont publiées avec la bande « inconnue ». Quand le capteur fournit une valeur, l'API météo sert aussi à calculer un écart de vérification (`voltaneum/sensors/outdoor_consistency`) ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur (décisions du 30 septembre et du 12 octobre 2026, voir CHANGELOG.md).
+La température extérieure vient en priorité d'un capteur physique indépendant (mode `mqtt` recommandé, ou `http` en repli), pas de l'automate. Si le capteur n'a pas de valeur actuelle (non installé, muet, défaillant), la température de l'API météo est utilisée à sa place, interrogée au plus toutes les `OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS` (600 s : l'API ne change qu'aux 15 min) et reportée sur chaque instantané ; la source (`sensor` / `weather`) est enregistrée dans `temp_outdoor_source`. Une mesure plus ancienne que `OUTDOOR_SENSOR_MAX_AGE_SECONDS` (30 min), du capteur comme de la météo, est ignorée : jamais de valeur périmée. Sans aucune des deux, le PID et son bypass de sécurité continuent ; les conditions sont publiées avec la bande « inconnue ». Quand le capteur fournit une valeur, l'API météo sert aussi à calculer un écart de vérification, transmis au moteur d'alertes ; un écart important et persistant déclenche une alerte, jamais un remplacement de la valeur du capteur.
 
 SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais la collecte.
 
@@ -311,6 +309,10 @@ SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais l
 
 `timestamp`, `level`, `rule_name`, `message`, `email_sent`.
 
+#### `control_log`
+
+Un enregistrement par cycle de contrôle (60 s) : `timestamp`, `t_oil`, `t_target`, `t_predicted` (prédiction combinée réellement utilisée, `NULL` sans modèle), `t_outdoor`, `t_outdoor_source`, `setpoint`, `mode`, `error`, `p_term`, `i_term`, `d_term`, `feedforward_prediction`, `feedforward_outdoor`, `raw_output` (somme avant bornage), `outdoor_band`, `fan_on_above`, `fan_off_below`, `fan_min_freq_hz`, `mqtt_setpoint` et `mqtt_conditions` (messages JSON exacts transmis au broker, `NULL` si non transmis), `mqtt_sent` (1 transmis, 0 échec, `NULL` publication désactivée). Rien n'est enregistré quand rien n'est publié (mesures périmées). Purge : même plancher que `predictions_log`.
+
 SQLite utilise WAL et un index sur les timestamps.
 
 ### 7.2 Trous de données
@@ -321,11 +323,7 @@ La cible ML est construite par timestamp réel avec une tolérance configurée, 
 
 ### 7.3 Campagne de collecte recommandée
 
-La collecte initiale doit être réalisée avec `collect_data.py`, sans activer le contrôle :
-
-```bash
-python collect_data.py --db voltaneum.db --hours 24 --interval 15
-```
+La collecte démarre avec `./voltaneum`. La boucle de contrôle tourne dès le départ, mais ne fait que publier des messages informatifs : tant qu'aucun pont vers l'automate n'est validé (§14.3), rien n'agit sur l'installation.
 
 Durées recommandées :
 
@@ -347,7 +345,13 @@ jamais un calendrier de suppression. Sous pression, l'ordre est
 empêche d'atteindre la cible, l'alerte critique est
 `storage_purge_ineffective`.
 
-### 7.4 Protection de capacité disque
+### 7.5 Sauvegardes et restauration
+
+Une sauvegarde **quotidienne**, cohérente (API de sauvegarde SQLite), compressée et vérifiée par restauration d'essai, est faite dans `backups/daily` ; les `STORAGE_DAILY_BACKUP_COUNT` (7) plus récentes sont gardées. Elle est indépendante des archives faites avant une purge (conservées au moins un an). Une sauvegarde impossible (espace, droits) déclenche l'alerte `storage_daily_backup_failed`.
+
+Restauration : `./voltaneum stop`, `./voltaneum restore` (liste), `./voltaneum restore <nom>` (refusée tant que Voltaneum tourne ; la base remplacée est d'abord sauvegardée dans `backups/avant-restauration`), puis `./voltaneum`.
+
+### 7.6 Protection de capacité disque
 
 Le `StorageManager` surveille `.db`, `.db-wal` et `.db-shm`.
 
@@ -392,8 +396,8 @@ Avant une purge, `database/backup.py` crée une copie cohérente via l'API SQLit
 
 ### 8.1 Entrées et cible
 
-Features : `pt01`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`.  
-Cible : `pt02`.  
+Features : `pt02` (valeur actuelle), `pt01`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`.  
+Cible : `pt02` à l'horizon. La valeur actuelle de `pt02` fait partie des entrées : sans elle, le modèle devait la deviner alors que la persistance, à laquelle il est comparé, la connaît. Chaque modèle enregistre sa liste de variables ; un modèle entraîné avec une autre liste est refusé au chargement.  
 Horizon de production actuel : `600` secondes.
 
 ### 8.2 Entraînement
@@ -429,15 +433,17 @@ Un modèle ne doit pas être déclaré industriellement valide si :
 
 Les modèles synthétiques servent à tester le pipeline, jamais à justifier une décision industrielle.
 
+### 8.3 bis Ré-entraînement automatique
+
+`ml/auto_retrain.py` (lancé chaque nuit, un seul à la fois grâce à un verrou) entraîne les horizons de `AUTO_RETRAIN_HORIZONS` sur les `AUTO_RETRAIN_MAX_DAYS` derniers jours et **propose** l'horizon le plus long jugé fiable (garde-fous de §8.3, erreur au moins `AUTO_RETRAIN_MIN_GAIN` sous la persistance, sous `AUTO_RETRAIN_MAX_RMSE_CELSIUS`, période de test d'au moins 3 fois l'horizon). Le remplacement du modèle de production exige une validation humaine (`./voltaneum model accept`), avec sauvegarde de l'ancien modèle et retour arrière (`./voltaneum model rollback`). Le monitoring (§8.4) suit tous les horizons présents dans `predictions_log`.
+
 ### 8.4 Monitoring
 
 Les prédictions arrivées à échéance sont complétées par une mesure réelle, puis l'erreur et le RMSE glissant sont calculés. L'état est publié sur `voltaneum/model_health` lorsqu'un client MQTT est disponible.
 
 ### 8.5 Validation multi-horizon
 
-`train_all_horizons.py` entraîne un couple de modèles indépendant pour chaque horizon configuré : 30, 60, 120, 300 et 600 secondes. Chaque horizon possède son rapport et son dossier de modèles ; seul l'horizon de production (600 s) est chargé par `ml/predictor.py`.
-
-La grille synthétique valide le pipeline. La validation terrain doit être produite séparément pour chaque horizon. Avec la base disponible au 17 septembre 2026, seul l'horizon 600 secondes bat la persistance ; les horizons 30 à 300 secondes ne sont pas déclarés valides car la cible est trop stable et la baseline obtient un RMSE nul.
+Le ré-entraînement nocturne (§8.3 bis) entraîne chaque horizon séparément et rend un verdict par horizon (onglet Modèles). Un horizon dont la cible est trop stable, ou que la persistance bat déjà, n'est jamais proposé. Un modèle qui ne bat pas la persistance n'est jamais sauvegardé (statut `no_skill`).
 
 ---
 
@@ -463,7 +469,13 @@ Si `t_oil > CRITICAL_TEMP`, la sortie est immédiatement 100 %. Les entrées non
 
 **Anti-windup.** L'intégrale est gelée tant que la sortie est saturée **et** bornée dans `[0, SETPOINT_MAX / Ki]`. Le correctif « huile froide » évite qu'une période froide crée une dette négative inutile : avant correction, huile à 10 °C puis 40 °C donnait 9 minutes à 0 % ; après, la consigne réagit dès le premier cycle chaud.
 
-**Rôle du PID.** Le contrat principal est la publication de la température cible et des conditions (§6.4) ; la consigne PID en % est publiée sur `voltaneum/control/setpoint` à titre informatif (suivi et comparaison avec la régulation de l'automate), désactivable par `PUBLISH_PID_SETPOINT=false`. Les gains par défaut (5 / 0,1 / 1) ne sont pas calibrés.
+**Rôle du PID.** Le contrat principal est la publication de la température cible et des conditions (§6.4) ; la consigne PID en % est publiée sur `voltaneum/control/setpoint` à titre informatif (suivi et comparaison avec la régulation de l'automate), désactivable par `PUBLISH_PID_SETPOINT=false`. Gains par défaut : Kp = 10 %/°C, Ki = 0,02 (temps d'intégration 500 s), Kd = 0 — point de départ prudent pour un procédé thermique lent échantillonné à 60 s, à régler sur site. Les anciennes valeurs (5 / 0,1 / 1) donnaient un temps d'intégration de 50 s, plus court qu'un cycle de calcul : consigne vite saturée.
+
+**Reprise après coupure.** Quand les mesures redeviennent disponibles après une période périmée (passerelle muette ou PT02 absente), l'état du PID est réinitialisé : l'intégrale accumulée avant la panne ne correspond plus au procédé.
+
+**Désaccord des modèles.** Si les deux modèles divergent de plus de `DISAGREEMENT_THRESHOLD_CELSIUS`, la prédiction n'est pas utilisée par le PID pendant ce cycle (pas d'anticipation sur une prédiction douteuse), et l'alerte `model_disagreement` est évaluée.
+
+Chaque cycle est journalisé dans `control_log` (termes, prédiction utilisée, message MQTT exact et résultat de l'envoi) et visible dans l'onglet PID.
 
 Aucun module ne dispose d'une primitive d'écriture directe sur le PLC ou le variateur ; les points modifiables du catalogue de la passerelle ne sont jamais mappés.
 
@@ -471,17 +483,23 @@ Aucun module ne dispose d'une primitive d'écriture directe sur le PLC ou le var
 
 ## 10. Alertes
 
-Règles prévues :
+Le moteur d'alertes tourne **dans le processus principal** : il est alimenté directement par le collecteur, la boucle de contrôle et le contrôle de cohérence, et ne dépend d'aucun broker MQTT (sur le contrôleur, sans broker, aucune alerte n'aurait jamais été émise auparavant).
 
-- température huile critique (`critical_temp`, CRITIQUE) ;
-- **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` (5 Hz) et débit < `FLOW_MIN_M3H` (0,5 m³/h) sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle (un capteur muet relève de la perte de télémétrie) ; seuils indicatifs à valider ;
+Règles :
+
+- température huile critique (`critical_temp`, CRITIQUE, immédiate) ;
+- **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
 - perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
-- dérive d'efficacité ;
+- **PT02 absente** alors que la passerelle émet (`oil_sensor_missing`, ATTENTION, après `OIL_SENSOR_MISSING_ALERT_SECONDS`) : aucune consigne n'est alors publiée ;
+- **PT02 figée** (`oil_sensor_frozen`, ATTENTION) : valeur strictement constante pendant `SENSOR_FROZEN_ALERT_MINUTES` (cas réel : 34,0 °C sur 652 mesures, point de passerelle douteux) ;
 - désaccord entre modèles ;
 - écart entre le capteur extérieur et la météo ;
-- capacité de stockage presque pleine, purge automatique exécutée, sauvegarde impossible (dont espace insuffisant).
+- dérive d'efficacité : formule non validée, **désactivée par défaut** (`EFFICIENCY_ALERT_ENABLED`) ;
+- stockage : seuil d'avertissement, purge exécutée ou bloquée, sauvegarde (avant purge ou quotidienne) impossible.
 
-Les alertes `ATTENTION` nécessitent plusieurs cycles consécutifs. Toutes les alertes ont un cooldown. Chaque tentative email est journalisée avec `email_sent`.
+Les e-mails sont envoyés par le thread du moteur d'alertes, jamais par la collecte : un serveur SMTP lent ne retarde aucune mesure. Un défaut durable (`oil_sensor_frozen`) n'est rappelé qu'une fois par jour ; les autres règles respectent `ALERT_COOLDOWN_MINUTES`.
+
+Chaque alerte est journalisée **une seule fois**, sous son vrai nom de règle, dans `alerts_log` (`email_sent` indique si l'e-mail est parti). Les alertes `ATTENTION` exigent plusieurs échantillons distincts, toutes ont un délai entre deux e-mails ; un e-mail en échec est retenté sous 60 s. Sans SMTP, les alertes restent visibles dans l'interface.
 
 Une panne SMTP ne doit jamais stopper la collecte, le PID ou le stockage.
 
@@ -489,75 +507,48 @@ Une panne SMTP ne doit jamais stopper la collecte, le PID ou le stockage.
 
 ## 11. Plateformes d'exploitation
 
-Le code est portable sur macOS, Linux et Windows 10/11 avec Python 3.11 ou plus récent (3.12 recommandé : les versions épinglées, numpy 2.4 notamment, exigent Python ≥ 3.11).
+Cible : le contrôleur Linux, avec Python 3.11 ou plus récent, **sans droits root**. Un poste macOS sert au développement et à la démonstration (`./voltaneum demo`).
 
-Les différences concernent seulement :
-
-- activation du virtualenv ;
-- chemins absolus ;
-- permissions `.env` et SQLite ;
-- installation du broker MQTT ;
-- démarrage automatique comme service.
-
-Sur Linux, utiliser un compte de service et `systemd`. Sur macOS, utiliser `launchd`. Sur Windows, utiliser un compte dédié avec permissions NTFS limitées et le Planificateur de tâches ou NSSM.
-
-Les détails et commandes sont dans `README.md`.
+`./voltaneum` crée l'environnement Python, installe les dépendances épinglées (seulement si `requirements.txt` change), vérifie `.env`, installe la relance automatique dans la crontab de l'utilisateur (vérification chaque minute : redémarrage après plantage ou redémarrage du serveur) et démarre le processus. Les anciennes installations du projet (collecte, interface et entraînement lancés séparément) sont arrêtées et leurs lignes de crontab retirées ; les autres tâches de la crontab sont conservées.
 
 ---
 
 ## 12. Déploiement terrain
 
-### 12.1 Avant transfert
+### 12.1 Installation et mise à jour
 
-- installer Python 3.11 ou plus récent (3.12 recommandé) sur la machine cible ;
-- recréer le virtualenv ;
-- installer `requirements.txt` ;
-- transférer uniquement le code, les modèles approuvés et les données nécessaires ;
-- créer `.env` localement ;
-- ne jamais transférer un secret par dépôt public ou messagerie non sécurisée ;
-- appliquer les permissions de fichiers ;
-- configurer le broker MQTT autorisé ;
-- vérifier le VPN/réseau industriel.
+```bash
+git clone … voltaneum_ITNET && cd voltaneum_ITNET
+./voltaneum                 # crée .env au premier lancement : le renseigner, puis relancer
+git pull && ./voltaneum restart
+```
+
+Ne jamais transférer un secret par dépôt public ou messagerie non sécurisée ; `.env` est en `0600`.
 
 ### 12.2 Diagnostics
 
-```bash
-python diagnose_connectivity.py
-```
-
-Ce script ne transmet aucun identifiant et ne commande aucun équipement. Il teste les ports MQTT, HTTP passerelle et WebSocket.
+`./voltaneum diagnose` vérifie la configuration, l'accès TCP à la passerelle (aucun identifiant envoyé, aucune commande), le broker, l'API météo, l'e-mail, la base, le modèle et le port de l'interface.
 
 ### 12.3 Mise en service progressive
 
-1. lancer `collect_data.py` en collecte seule, sans PID ni consigne ;
-2. vérifier les timestamps, plages et trous ;
-3. vérifier la base et les sauvegardes ;
-4. vérifier la publication MQTT ;
-5. activer les alertes email ;
-6. entraîner sur des cycles réels ;
-7. vérifier le rapport contre la persistance ;
-8. valider les seuils PID avec l'exploitant ;
-9. activer la suggestion de contrôle ;
-10. laisser l'automate décider de toute application physique.
+1. `./voltaneum` : collecte, alertes et interface ; aucun pont vers l'automate ;
+2. vérifier les mesures, les trous et l'alerte « PT02 figée » (`./voltaneum data`, interface) ;
+3. configurer l'e-mail des alertes ;
+4. attendre une collecte avec de vrais cycles de pompe ; le ré-entraînement nocturne proposera un modèle ;
+5. valider le modèle (`./voltaneum model accept`) après lecture du rapport ;
+6. régler les gains PID et les seuils avec l'exploitant ;
+7. définir et tester le pont MQTT vers l'automate ;
+8. laisser l'automate décider de toute application physique.
 
-### 12.4 Services d'exploitation
+### 12.4 Exploitation
 
-Le choix retenu est hybride : `main.py` supervise ses composants internes ; le notifier email et le monitoring ML sont des processus indépendants supervisés par l'OS. Les unités `systemd`, les fichiers `launchd` et le script PowerShell sont fournis dans `deploy/`. Les chemins, utilisateurs et permissions doivent être adaptés à la machine cible.
+`./voltaneum status` (état, dernières mesures, alertes, modèle proposé), `./voltaneum logs`, `./voltaneum stop`, `./voltaneum restart`, `./voltaneum restore`. Une passerelle injoignable est journalisée à la première tentative puis toutes les 20 tentatives (~10 min), pas à chaque essai.
 
 ---
 
 ## 13. Essais hors réseau industriel
 
-Créer une base synthétique isolée :
-
-```bash
-python generate_test_data.py --db voltaneum_test.db --rows 4000
-python train_from_local_db.py voltaneum_test.db 600 /tmp/voltaneum_test_models
-```
-
-Le générateur refuse d'écraser une base sans `--force`. Les modèles de test doivent rester hors du dossier de production `models/`.
-
-Cette procédure valide le pipeline logiciel, pas l'accès à la passerelle ni la performance industrielle.
+`./voltaneum demo` lance l'interface sur une base fictive séparée (7 jours de mesures, PID réel, prédictions, alertes), alimentée en continu. Elle valide l'interface et le pipeline, pas l'accès à la passerelle ni la performance industrielle.
 
 ---
 
@@ -565,35 +556,24 @@ Cette procédure valide le pipeline logiciel, pas l'accès à la passerelle ni l
 
 ### 14.1 Tests automatisés
 
-La recette logicielle est acceptée si :
-
-```bash
-python -m ruff check .
-python -m mypy .
-python -m bandit -r . -x ./tests -q
-python -m pip_audit -r requirements.txt
-pytest -q
-python simulate.py
-```
-
-sont tous verts : 282 tests réussis (3 ignorés : tests réseau réels, `RUN_NETWORK_TESTS=1`), 0 alerte ruff / mypy / bandit, aucune vulnérabilité connue, `simulate.py` 24/24.
+`./voltaneum test` : tests (pytest), style (ruff), types (mypy), sécurité (bandit) — tous verts.
 
 ### 14.2 Tests de résilience
 
 Les scénarios suivants doivent être exécutés :
 
-- broker MQTT arrêté puis relancé ;
+- broker MQTT absent, arrêté puis relancé (collecte et alertes continuent) ;
 - réseau passerelle coupé puis restauré ;
 - API météo indisponible ;
 - SMTP indisponible ;
-- modèle absent ou défaillant ;
-- valeur sensorielle hors plage ;
-- `NaN` ou infini ;
+- modèle absent, défaillant ou en désaccord ;
+- valeur sensorielle hors plage, `NaN` ou infinie ;
+- PT02 absente ou figée ;
 - thread métier arrêté ;
-- base proche de la limite de stockage ;
+- base proche de la limite effective de stockage ;
 - volume de sauvegarde sans espace libre (purge annulée, rien supprimé) ;
-- flux de la passerelle coupé (aucune consigne publiée sur des mesures périmées) ;
-- arrêt puis redémarrage propre.
+- deuxième lancement (refusé par le verrou) ;
+- arrêt puis redémarrage propre, redémarrage du serveur (relance par la crontab).
 
 ### 14.3 Validation terrain
 
@@ -602,9 +582,9 @@ La recette industrielle n'est prononcée qu'après :
 - accès réel à la passerelle depuis le réseau autorisé ;
 - collecte continue sans corruption ;
 - cycles réels de pompe/ventilateur ;
-- variation mesurable de `PT02` ;
-- modèle meilleur que la persistance sur une période représentative ;
-- validation des seuils par l'exploitant ;
+- variation mesurable de `PT02` (le point actuel, constant à 34,0 °C, est à vérifier) ;
+- modèle meilleur que la persistance sur une période représentative, validé par une personne ;
+- validation des seuils et des gains PID par l'exploitant ;
 - confirmation de `PUMP` (ou `DIAG Actual frequency VW12`) comme fréquence pompe / ventilateur ;
 - validation des bandes de température extérieure, décalages, hystérésis et fréquences conseillées ;
 - validation des seuils de la règle pompe sans débit ;
@@ -631,7 +611,7 @@ Les paramètres suivants restent à confirmer sur le terrain :
 - seuil critique ;
 - bandes de température extérieure, décalages, hystérésis et fréquences conseillées (`OUTDOOR_BANDS`) ;
 - seuils de la règle pompe sans débit ;
-- plage d'efficacité ;
+- formule et plage d'efficacité (règle désactivée d'ici là) ;
 - fréquence et dynamique réelles de la pompe ;
 - pont MQTT vers l'automate ;
 - politique d'archivage hors site.
@@ -640,15 +620,12 @@ Les paramètres suivants restent à confirmer sur le terrain :
 
 ## 16. Livrables
 
-- code Python source ;
+- code source et commande unique `./voltaneum` ;
 - `README.md` d'exploitation ;
-- ce cahier des charges final ;
+- ce cahier des charges ;
 - `.env.example` sans secrets ;
 - `requirements.txt` épinglé ;
 - tests automatisés ;
-- scripts de diagnostic et de génération de données ;
-- modèles ML validés selon le rapport de formation (non livrés tant qu'aucune collecte avec cycles de pompe n'a abouti) ;
+- modèles ML validés (non livrés tant qu'aucune collecte avec cycles de pompe n'a abouti) ;
 - base réelle uniquement si sa conservation est autorisée (non livrée) ;
-- `CHANGELOG.md`, `GUIDE_UTILISATION.md`, `SIMULATION.md` ;
-- présentation technique (`Voltaneum_Presentation_Technique.pptx`) ;
 - procédure de sauvegarde et de restauration à établir pour le site.

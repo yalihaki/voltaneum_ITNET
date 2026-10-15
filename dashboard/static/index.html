@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Voltaneum · Supervision</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/chart.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#supervision" aria-label="Voltaneum, retour à la supervision">
+    <b>VOLTANEUM</b><span>Échangeur thermique · supervision</span>
+  </a>
+  <nav class="tabs" aria-label="Écrans">
+    <a href="#supervision" data-tab="supervision">Supervision</a>
+    <a href="#historique" data-tab="historique">Historique</a>
+    <a href="#alertes" data-tab="alertes">Alertes <span class="badge" id="alert-badge" hidden></span></a>
+    <a href="#pid" data-tab="pid">PID</a>
+    <a href="#modeles" data-tab="modeles">Modèles <span class="badge info" id="model-badge" hidden>1</span></a>
+    <a href="#reglages" data-tab="reglages">Réglages</a>
+  </nav>
+  <div class="status">
+    <span class="pill" id="pill-link" title="Liaison temps réel avec le serveur"><span class="dot"></span><span class="txt">Connexion…</span></span>
+    <span class="pill" id="pill-data" title="Âge de la dernière mesure en base"><span class="dot"></span><span class="txt">—</span></span>
+    <span class="pill" id="pill-ext" title="Origine de la température extérieure" hidden><span class="dot"></span><span class="txt"></span></span>
+    <span class="clock num" id="clock">--:--:--</span>
+    <button class="icon-btn" id="theme-btn" type="button" title="Thème : automatique" aria-label="Changer de thème">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3z"/><circle cx="12" cy="12" r="9" class="ring"/></svg>
+    </button>
+  </div>
+</header>
+<div class="banner" id="banner" hidden></div>
+
+<main>
+<!-- ================================================================ SUPERVISION -->
+<section class="view" data-view="supervision" aria-label="Supervision">
+  <div class="tiles" id="tiles">
+    <article class="tile" data-key="pt02">
+      <span class="lbl">PT02 · Huile régulée</span>
+      <span class="val"><span class="v num">—</span><u>°C</u></span>
+      <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
+    </article>
+    <article class="tile tile-pred" data-key="pred">
+      <span class="lbl">Prédiction PT02 <span class="hz"></span></span>
+      <span class="val"><span class="v num">—</span><u>°C</u></span>
+      <span class="sub hint">aucune prédiction récente</span>
+    </article>
+    <article class="tile" data-key="freq_pompe">
+      <span class="lbl">Fréquence pompe / ventil.</span>
+      <span class="val"><span class="v num">—</span><u>Hz</u></span>
+      <span class="sub"><span class="meter" aria-hidden="true"><span></span></span></span>
+    </article>
+    <article class="tile" data-key="ht01">
+      <span class="lbl">HT01 · Débit huile</span>
+      <span class="val"><span class="v num">—</span><u>m³/h</u></span>
+      <span class="sub hint"></span>
+    </article>
+    <article class="tile" data-key="temp_outdoor">
+      <span class="lbl">Air extérieur</span>
+      <span class="val"><span class="v num">—</span><u>°C</u></span>
+      <span class="sub hint"></span>
+    </article>
+  </div>
+
+  <div class="grid-main">
+    <div class="col">
+      <section class="panel">
+        <header class="ph"><h2>Synoptique</h2><small id="syno-age"></small></header>
+        <div class="pb syno-wrap">
+          <svg class="syno" id="syno" viewBox="0 0 760 300" role="img" aria-label="Schéma de l'installation avec les sondes PT01 à PT04, la pompe, le débitmètre HT01 et le dry cooler">
+            <path class="pipe hot" d="M150 110 H520"/>
+            <path class="flow" d="M150 110 H520"/>
+            <path class="pipe cold" d="M520 220 H150"/>
+            <path class="flow" d="M520 220 H150"/>
+
+            <rect class="equip" x="40" y="70" width="110" height="190" rx="6"/>
+            <rect class="oil" x="44" y="130" width="102" height="126" rx="3"/>
+            <text class="t-lbl" x="95" y="96" text-anchor="middle">Bain</text>
+            <text class="t-lbl" x="95" y="112" text-anchor="middle">d'huile</text>
+
+            <circle class="equip" cx="270" cy="220" r="22"/>
+            <path class="glyph" d="M258 208 L286 220 L258 232 Z"/>
+            <text class="t-lbl" x="270" y="264" text-anchor="middle">Pompe</text>
+
+            <circle class="equip" cx="400" cy="220" r="14"/>
+            <text class="t-tag glyph-text" x="400" y="224" text-anchor="middle">FT</text>
+
+            <rect class="equip" x="520" y="60" width="160" height="190" rx="6"/>
+            <path class="fins" d="M540 150 h120 M540 170 h120 M540 190 h120 M540 210 h120 M540 230 h120"/>
+            <circle class="fan-ring" cx="600" cy="92" r="24"/>
+            <g class="fan" id="fan"><path class="glyph" d="M600 92 L600 72 Q610 82 600 92 Z M600 92 L620 92 Q610 102 600 92 Z M600 92 L600 112 Q590 102 600 92 Z M600 92 L580 92 Q590 82 600 92 Z"/></g>
+            <text class="t-lbl" x="660" y="96" text-anchor="middle">Dry</text>
+            <text class="t-lbl" x="660" y="112" text-anchor="middle">cooler</text>
+
+            <g class="tag" data-key="pt01"><rect class="tagbox" x="170" y="56" width="120" height="44" rx="4"/><text class="t-tag" x="180" y="73">PT01 · bain d'huile</text><text class="t-val" x="180" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt02"><rect class="tagbox" x="166" y="146" width="126" height="44" rx="4"/><text class="t-tag" x="176" y="163">PT02 · régulée</text><text class="t-val" x="176" y="182"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt03"><rect class="tagbox" x="370" y="56" width="128" height="44" rx="4"/><text class="t-tag" x="380" y="73">PT03 · dry cooler</text><text class="t-val" x="380" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt04"><rect class="tagbox" x="430" y="238" width="128" height="44" rx="4"/><text class="t-tag" x="440" y="255">PT04 · dry cooler</text><text class="t-val" x="440" y="274"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="302" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="312" y="163">Fréquence</text><text class="t-val" x="312" y="182"><tspan class="v">—</tspan> Hz</text></g>
+            <g class="tag" data-key="ht01"><rect class="tagbox" x="412" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="422" y="163">HT01 · débit</text><text class="t-val" x="422" y="182"><tspan class="v">—</tspan> m³/h</text></g>
+            <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="556" y="8" width="150" height="42" rx="4"/><text class="t-tag" x="566" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="566" y="42"><tspan class="v">—</tspan> °C</text></g>
+            <text class="t-tag" x="40" y="294">lecture seule · aucune commande vers l'automate</text>
+          </svg>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="ph">
+          <h2>Tendance PT02</h2>
+          <div class="seg" role="group" aria-label="Période" id="sup-range">
+            <button type="button" data-min="60">1 h</button>
+            <button type="button" data-min="360" aria-pressed="true">6 h</button>
+            <button type="button" data-min="1440">24 h</button>
+            <button type="button" data-min="10080">7 j</button>
+          </div>
+        </header>
+        <div class="chart-box tall" id="chart-sup"></div>
+        <div class="chart-box short" id="chart-sup-freq"></div>
+        <div class="chart-box short" id="chart-sup-pid"></div>
+        <div class="legend" id="legend-sup"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" id="pid-panel">
+        <header class="ph"><h2>Régulation PID</h2><small id="pid-age"></small></header>
+        <div class="pb">
+          <p class="callout" id="pid-empty" hidden></p>
+          <div id="pid-body" hidden>
+            <div class="pid-head">
+              <div class="pid-out">
+                <span class="lbl">Consigne de refroidissement suggérée</span>
+                <span class="big num"><span id="pid-sp">—</span><u>%</u></span>
+              </div>
+              <span class="chip" id="pid-mode">—</span>
+            </div>
+            <div class="gauge" aria-hidden="true"><span id="pid-gauge"></span><i id="pid-freq-mark"></i></div>
+            <div class="gauge-scale"><span>0 %</span><span>50 %</span><span>100 %</span></div>
+            <p class="pid-why" id="pid-why"></p>
+            <div class="terms" id="pid-terms" aria-label="Décomposition de la consigne"></div>
+            <dl class="kv compact" id="pid-inputs"></dl>
+            <a class="btn wide" href="#pid">Réglages du PID et messages MQTT envoyés →</a>
+            <p class="note">Consigne <strong>informative</strong>, publiée sur <code>voltaneum/control/setpoint</code> : l'automate reste seul décisionnaire. Le repère ▲ sur la jauge situe la fréquence réelle de la pompe (en % de sa plage), pour comparaison.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="ml-panel">
+        <header class="ph"><h2>Prédiction ML</h2><small id="ml-horizon"></small></header>
+        <div class="pb">
+          <p class="callout" id="ml-empty" hidden></p>
+          <div id="ml-body" hidden>
+            <div class="ml-models" id="ml-models"></div>
+            <dl class="kv compact" id="ml-info"></dl>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="ph"><h2>Conditions de refroidissement</h2><small>sur la dernière mesure</small></header>
+        <div class="pb">
+          <div class="bands" id="bands">
+            <div class="band" data-band="froid"><b>Froid</b><span>&lt; 10 °C</span></div>
+            <div class="band" data-band="tempere"><b>Tempéré</b><span>10 – 25 °C</span></div>
+            <div class="band" data-band="chaud"><b>Chaud</b><span>≥ 25 °C</span></div>
+          </div>
+          <dl class="kv" id="cooling">
+            <dt>Température cible huile</dt><dd data-k="target_temp">—</dd>
+            <dt>Ventilateur : marche au-dessus de</dt><dd data-k="fan_on_above_temp">—</dd>
+            <dt>Ventilateur : arrêt en dessous de</dt><dd data-k="fan_off_below_temp">—</dd>
+            <dt>Fréquence minimale conseillée</dt><dd data-k="fan_min_freq_hz">—</dd>
+            <dt>Seuil critique</dt><dd data-k="critical_temp">—</dd>
+          </dl>
+          <p class="note">Mêmes règles que les messages publiés sur <code>voltaneum/control/cooling_conditions</code>. Valeurs indicatives, à valider avec l'automaticien ; l'automate reste seul décisionnaire.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="ph"><h2>Dernières alertes</h2><a class="more" href="#alertes">Tout voir</a></header>
+        <ul class="alerts compact" id="alerts-recent"><li class="empty">Chargement…</li></ul>
+      </section>
+
+      <section class="panel">
+        <header class="ph"><h2>État du système</h2><a class="more" href="#modeles">Modèles</a></header>
+        <div class="pb health" id="health">
+          <div class="hrow"><span>Base de données</span><span class="num" data-k="db">—</span><span class="meter" aria-hidden="true"><span data-k="db-meter"></span></span></div>
+          <div class="hrow"><span>Espace disque libre</span><span class="num" data-k="disk">—</span></div>
+          <div class="hrow"><span>Mesures sur la dernière heure</span><span class="num" data-k="completeness">—</span></div>
+          <div class="hrow"><span>Dernière sauvegarde</span><span class="num" data-k="backup">—</span></div>
+          <div class="hrow"><span>Modèle de prédiction</span><span data-k="model">—</span></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ HISTORIQUE -->
+<section class="view" data-view="historique" aria-label="Historique" hidden>
+  <section class="panel">
+    <header class="ph wrap">
+      <h2>Historique des mesures</h2>
+      <form class="toolbar" id="hist-form">
+        <div class="seg" role="group" aria-label="Période rapide" id="hist-presets">
+          <button type="button" data-min="360">6 h</button>
+          <button type="button" data-min="1440" aria-pressed="true">24 h</button>
+          <button type="button" data-min="10080">7 j</button>
+          <button type="button" data-min="43200">30 j</button>
+        </div>
+        <label class="field">Du <input type="datetime-local" id="hist-from" required></label>
+        <label class="field">au <input type="datetime-local" id="hist-to" required></label>
+        <button class="btn primary" type="submit">Afficher</button>
+        <a class="btn" id="hist-csv" href="#" download>Exporter CSV</a>
+      </form>
+    </header>
+    <div class="chips" id="hist-series" role="group" aria-label="Courbes affichées"></div>
+    <div class="chart-box tall" id="chart-hist-temp"></div>
+    <div class="chart-box mid" id="chart-hist-flow"></div>
+    <p class="chart-foot" id="hist-foot"></p>
+  </section>
+  <section class="panel">
+    <header class="ph"><h2>Statistiques de la période</h2><small id="hist-stats-note"></small></header>
+    <div class="table-wrap"><table class="table" id="hist-stats">
+      <thead><tr><th>Mesure</th><th class="r">Minimum</th><th class="r">Moyenne</th><th class="r">Maximum</th><th class="r">Amplitude</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+</section>
+
+<!-- ================================================================ ALERTES -->
+<section class="view" data-view="alertes" aria-label="Alertes" hidden>
+  <div class="counts" id="alert-counts"></div>
+  <section class="panel">
+    <header class="ph wrap">
+      <h2>Journal des alertes</h2>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Niveau" id="alert-filter">
+          <button type="button" data-level="" aria-pressed="true">Toutes</button>
+          <button type="button" data-level="CRITIQUE">Critiques</button>
+          <button type="button" data-level="ATTENTION">Attention</button>
+          <button type="button" data-level="INFO">Info</button>
+        </div>
+        <label class="field search"><span class="sr">Rechercher</span><input type="search" id="alert-search" placeholder="Rechercher une règle ou un message"></label>
+      </div>
+    </header>
+    <div class="table-wrap"><table class="table alerts-table" id="alerts-table">
+      <thead><tr><th>Date</th><th>Niveau</th><th>Règle</th><th>Message</th><th>E-mail</th></tr></thead>
+      <tbody><tr><td colspan="5" class="empty">Chargement…</td></tr></tbody>
+    </table></div>
+  </section>
+</section>
+
+<!-- ================================================================ PID -->
+<section class="view" data-view="pid" aria-label="PID" hidden>
+  <div class="pid-banner panel" id="pid-live">
+    <div class="pb pid-live">
+      <div><span class="lbl">Dernière consigne</span><span class="big num"><span id="pl-sp">—</span><u>%</u></span></div>
+      <div><span class="lbl">Mode</span><span class="chip" id="pl-mode">—</span></div>
+      <div><span class="lbl">Calculée</span><span class="num" id="pl-when">—</span></div>
+      <div><span class="lbl">Envoi MQTT</span><span id="pl-mqtt">—</span></div>
+      <div class="formula" aria-label="Formule du PID">consigne = <b>Kp</b>·écart + <b>Ki</b>·∫écart·dt + <b>Kd</b>·d(écart)/dt + anticipation, bornée à [0 ; 100] %</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <section class="panel">
+      <header class="ph"><h2>Réglages du PID</h2><small>lecture seule</small></header>
+      <div class="pb">
+        <div class="gains" id="pid-gains"></div>
+        <h3 class="sub-h">Boucle et sécurité</h3>
+        <dl class="kv compact settings" id="pid-loop"></dl>
+        <h3 class="sub-h">Anticipation (feedforward)</h3>
+        <dl class="kv compact settings" id="pid-ff"></dl>
+        <h3 class="sub-h">Anti-emballement de l'intégrale</h3>
+        <p class="small-text" id="pid-aw"></p>
+        <p class="note">Réglages marqués <span class="chip">.env</span> : à modifier dans le fichier <code>.env</code> du contrôleur, puis <code>./voltaneum restart</code>. Réglages marqués <span class="chip">code</span> : constantes de <code>config.py</code>. Les gains par défaut ne sont pas calibrés sur l'installation.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header class="ph wrap">
+        <h2>Messages MQTT</h2>
+        <div class="seg" role="group" aria-label="Topic" id="mqtt-topic"></div>
+      </header>
+      <div class="pb" id="mqtt-box">
+        <div class="topic-line"><code id="mqtt-topic-name">—</code><button class="btn small" type="button" id="mqtt-copy">Copier le topic</button></div>
+        <p class="small-text" id="mqtt-meta"></p>
+        <div class="json-head"><span class="lbl" id="mqtt-msg-label">Dernier message envoyé</span><button class="btn small" type="button" id="mqtt-copy-json">Copier le JSON</button></div>
+        <pre class="json" id="mqtt-json" tabindex="0"></pre>
+        <div class="table-wrap"><table class="table compact" id="mqtt-fields">
+          <thead><tr><th>Champ</th><th>Type</th><th>Unité</th><th>Description</th></tr></thead><tbody></tbody>
+        </table></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <header class="ph wrap">
+      <h2>Consignes calculées et envoyées</h2>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Période" id="pid-range">
+          <button type="button" data-min="60" aria-pressed="true">1 h</button>
+          <button type="button" data-min="360">6 h</button>
+          <button type="button" data-min="1440">24 h</button>
+          <button type="button" data-min="10080">7 j</button>
+        </div>
+        <label class="field"><input type="checkbox" id="pid-failed-only"> échecs d'envoi seulement</label>
+        <a class="btn" id="pid-csv" href="#" download>Exporter CSV</a>
+      </div>
+    </header>
+    <div class="counts compact-counts" id="pid-summary"></div>
+    <div class="chart-box mid" id="chart-pid-history"></div>
+    <div class="table-wrap tall-table"><table class="table pid-table" id="pid-table">
+      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r">Huile</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
+      <tbody><tr><td colspan="12" class="empty">Chargement…</td></tr></tbody>
+    </table></div>
+    <p class="chart-foot">Cliquez une ligne pour voir le message JSON exact transmis au broker.</p>
+  </section>
+</section>
+
+<!-- ================================================================ MODÈLES -->
+<section class="view" data-view="modeles" aria-label="Modèles de prédiction" hidden>
+  <section class="panel" id="retrain-panel">
+    <header class="ph"><h2>Ré-entraînement automatique</h2><small id="retrain-when"></small></header>
+    <div class="pb">
+      <div id="retrain-proposal"></div>
+      <p class="small-text" id="retrain-criteria"></p>
+    </div>
+    <div class="table-wrap"><table class="table" id="retrain-table">
+      <thead><tr><th>Horizon</th><th>Verdict</th><th class="r">Erreur</th><th class="r">Persistance</th><th class="r">Erreur vs persistance</th><th>Raison</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <details class="history">
+      <summary>Historique des nuits et des décisions</summary>
+      <ul class="events" id="retrain-events"></ul>
+    </details>
+  </section>
+  <div class="grid-2">
+    <section class="panel">
+      <header class="ph"><h2>Dernier entraînement</h2><small id="train-when"></small></header>
+      <div class="pb" id="training"><p class="empty">Chargement…</p></div>
+    </section>
+    <section class="panel">
+      <header class="ph"><h2>Erreur en production</h2><small id="live-note"></small></header>
+      <div class="table-wrap"><table class="table" id="live-models">
+        <thead><tr><th>Horizon</th><th>Modèle</th><th class="r">RMSE</th><th class="r">MAE</th><th class="r">Biais</th><th class="r">Points</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+  </div>
+  <section class="panel">
+    <header class="ph">
+      <h2>Prédiction comparée à la mesure</h2>
+      <div class="seg" role="group" aria-label="Période" id="model-range">
+        <button type="button" data-min="360">6 h</button>
+        <button type="button" data-min="1440" aria-pressed="true">24 h</button>
+        <button type="button" data-min="10080">7 j</button>
+      </div>
+    </header>
+    <div class="chart-box tall" id="chart-models"></div>
+    <div class="legend" id="legend-models"></div>
+    <p class="chart-foot">Chaque prédiction est placée à son échéance : si le modèle est bon, sa courbe recouvre celle de la mesure.</p>
+  </section>
+</section>
+
+<!-- ================================================================ RÉGLAGES -->
+<section class="view" data-view="reglages" aria-label="Réglages" hidden>
+  <p class="lead">Réglages en vigueur sur le contrôleur, en lecture seule. Pour les modifier : fichier <code>.env</code> puis redémarrage des services. Aucun identifiant n'est affiché ici.</p>
+  <div class="grid-2" id="settings"></div>
+</section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="tooltip" id="tooltip" hidden></div>
+</body>
+</html>

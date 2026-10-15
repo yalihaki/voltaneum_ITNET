@@ -1,10 +1,10 @@
-"""Tests du moteur d'alertes (notifications/email_notifier.py).
+"""Tests du moteur d'alertes (notifications/alerts.py).
 
-Couvre toutes les règles de `evaluate_rules`, la sécurité de `send_email`
-(TLS vérifié, en-têtes sûrs) et le chien de garde de l'`EmailNotifier`.
+Couvre toutes les règles de `evaluate_rules`, la sécurité de `send_email` (TLS vérifié,
+en-têtes sûrs), la journalisation unique de `deliver_alert` et le moteur `AlertEngine`,
+qui fonctionne sans aucun broker MQTT.
 """
 
-import json
 import ssl
 import threading
 import time
@@ -13,8 +13,9 @@ from unittest.mock import MagicMock
 import pytest
 
 import config
-from notifications import email_notifier
-from notifications.email_notifier import _number, evaluate_rules
+from database import sqlite_client
+from notifications import alerts
+from notifications.alerts import AlertEngine, _number, evaluate_rules
 
 N = config.ALERT_CONFIRMATION_CYCLES
 
@@ -148,6 +149,17 @@ class TestTelemetryLost:
 class TestEfficiencyDrift:
     BAD = dict(pt01=40.0, pt02=41.0, pt03=30.0)   # efficacité négative : hors plage
 
+    @pytest.fixture(autouse=True)
+    def _enabled(self, monkeypatch):
+        monkeypatch.setattr(config, "EFFICIENCY_ALERT_ENABLED", True)
+
+    def test_disabled_by_default(self, monkeypatch):
+        """Formule non validée sur l'installation : aucune alerte tant qu'elle n'est pas activée."""
+        monkeypatch.setattr(config, "EFFICIENCY_ALERT_ENABLED", False)
+        state = _fresh_state()
+        for i in range(N * 2):
+            assert evaluate_rules(_telemetry(**self.BAD, ts=i), None, state) == []
+
     def test_needs_n_distinct_samples(self):
         state = _fresh_state()
         for i in range(N - 1):
@@ -267,14 +279,14 @@ class TestSendEmail:
             "SMTP_PASSWORD": "p", "ALERT_EMAIL_FROM": "a@example.org", "ALERT_EMAIL_TO": "b@example.org",
         }.items():
             monkeypatch.setattr(config, name, value)
-        monkeypatch.setattr(email_notifier.sqlite_client, "log_alert", MagicMock())
+        monkeypatch.setattr(alerts.sqlite_client, "log_alert", MagicMock())
 
     def test_starttls_uses_a_verifying_context(self, monkeypatch, smtp_configured):
         """Sans `context=`, smtplib n'authentifie pas le serveur : l'envoi serait
         exposé à une interception (attaque de l'homme du milieu)."""
         smtp_cls = MagicMock()
-        monkeypatch.setattr(email_notifier.smtplib, "SMTP", smtp_cls)
-        assert email_notifier.send_email("sujet", "corps", "INFO") is True
+        monkeypatch.setattr(alerts.smtplib, "SMTP", smtp_cls)
+        assert alerts.send_email("sujet", "corps") is True
         server = smtp_cls.return_value.__enter__.return_value
         context = server.starttls.call_args.kwargs["context"]
         assert isinstance(context, ssl.SSLContext)
@@ -283,8 +295,8 @@ class TestSendEmail:
 
     def test_subject_cannot_inject_headers(self, monkeypatch, smtp_configured):
         smtp_cls = MagicMock()
-        monkeypatch.setattr(email_notifier.smtplib, "SMTP", smtp_cls)
-        email_notifier.send_email("ok\r\nBcc: attaquant@example.org", "corps", "INFO")
+        monkeypatch.setattr(alerts.smtplib, "SMTP", smtp_cls)
+        alerts.send_email("ok\r\nBcc: attaquant@example.org", "corps")
         server = smtp_cls.return_value.__enter__.return_value
         message = server.send_message.call_args.args[0]
         assert "\n" not in message["Subject"] and "\r" not in message["Subject"]
@@ -292,88 +304,136 @@ class TestSendEmail:
 
     def test_incomplete_config_is_reported_not_raised(self, monkeypatch, smtp_configured):
         monkeypatch.setattr(config, "SMTP_PASSWORD", None)
-        assert email_notifier.send_email("s", "b", "INFO") is False
+        assert alerts.send_email("s", "b") is False
 
     def test_smtp_failure_never_raises(self, monkeypatch, smtp_configured):
-        monkeypatch.setattr(email_notifier.smtplib, "SMTP", MagicMock(side_effect=OSError("réseau")))
-        assert email_notifier.send_email("s", "b", "INFO") is False
+        monkeypatch.setattr(alerts.smtplib, "SMTP", MagicMock(side_effect=OSError("réseau")))
+        assert alerts.send_email("s", "b") is False
 
 
-class TestNotifierWatchdog:
-    def test_alert_when_gateway_down_since_startup(self, monkeypatch, tmp_path):
-        """Régression de bout en bout : le chien de garde doit alerter même si AUCUN
-        message de télémétrie n'est jamais arrivé depuis le lancement."""
-        monkeypatch.setattr(config, "SQLITE_DB_PATH", str(tmp_path / "t.db"))
-        sent: list[tuple] = []
-        monkeypatch.setattr(email_notifier, "send_email", lambda *a: sent.append(a) or True)
-        notifier = email_notifier.EmailNotifier()
-        assert "started_at" in notifier._state
-        notifier._state["started_at"] -= config.TELEMETRY_TIMEOUT_SECONDS + 60
+class TestOilSensor:
+    """PT02 absente ou figée : sans elle, aucune consigne n'est publiée."""
 
-        thread = threading.Thread(target=notifier._watchdog_loop, args=(0.01,), daemon=True)
+    def _feed(self, state, pt02, at, monkeypatch):
+        monkeypatch.setattr(alerts.time, "time", lambda: at)
+        state["last_telemetry_ts"] = at              # la passerelle émet (comme AlertEngine.on_telemetry)
+        return evaluate_rules({"pt01": 40.0, "pt02": pt02, "pt03": 30.0, "ts": at}, None, state)
+
+    def test_missing_oil_value_alerts_after_delay(self, monkeypatch):
+        state = {"started_at": 0.0}
+        assert self._feed(state, None, 1000.0, monkeypatch) == []
+        alerts_ = self._feed(state, None, 1000.0 + config.OIL_SENSOR_MISSING_ALERT_SECONDS, monkeypatch)
+        assert _names(alerts_) == ["oil_sensor_missing"]
+
+    def test_value_coming_back_cancels_the_timer(self, monkeypatch):
+        state = {"started_at": 0.0}
+        self._feed(state, None, 1000.0, monkeypatch)
+        self._feed(state, 35.0, 1010.0, monkeypatch)
+        assert "oil_sensor_missing" not in _names(
+            self._feed(state, 35.1, 1000.0 + config.OIL_SENSOR_MISSING_ALERT_SECONDS + 5, monkeypatch))
+
+    def test_frozen_value_alerts(self, monkeypatch):
+        """Cas réel : PT02 constante à 34,0 °C sur 652 mesures (point de passerelle douteux)."""
+        state = {"started_at": 0.0}
+        start = 10_000.0
+        for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):
+            assert self._feed(state, 34.0, start + minute * 60, monkeypatch) == []
+        frozen = self._feed(state, 34.0, start + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch)
+        assert _names(frozen) == ["oil_sensor_frozen"] and "34.0" in frozen[0]["message"]
+
+    def test_moving_value_never_frozen(self, monkeypatch):
+        state = {"started_at": 0.0}
+        for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES * 2):
+            assert self._feed(state, 34.0 + (minute % 2) * 0.1, 10_000.0 + minute * 60, monkeypatch) == []
+
+
+class TestDeliverAlert:
+    def test_logged_once_under_its_rule_name_without_smtp(self, monkeypatch, tmp_path):
+        """Régression : l'alerte était journalisée sous « smtp_config_missing » (vrai nom perdu),
+        et les alertes de stockage l'étaient deux fois."""
+        db = str(tmp_path / "t.db")
+        sqlite_client.init_db(db)
+        monkeypatch.setattr(config, "SQLITE_DB_PATH", db)
+        monkeypatch.setattr(sqlite_client, "SQLITE_DB_PATH", db)
+        monkeypatch.setattr(config, "SMTP_HOST", None)
+        logged = []
+        monkeypatch.setattr(alerts.sqlite_client, "log_alert",
+                            lambda level, rule, message, email_sent, db_path: logged.append((level, rule, email_sent)))
+        assert alerts.deliver_alert("CRITIQUE", "critical_temp", "T = 56 °C") is False
+        assert logged == [("CRITIQUE", "critical_temp", False)]
+
+
+class TestAlertEngine:
+    """Le moteur tourne dans le processus principal : aucun broker n'est nécessaire."""
+
+    def _engine(self, results=None):
+        delivered: list[tuple[str, str]] = []
+        outcomes = list(results or [])
+
+        def deliver(level, rule, message):
+            delivered.append((level, rule))
+            return outcomes.pop(0) if outcomes else True
+
+        return AlertEngine(deliver=deliver, watchdog_interval_seconds=0.01, synchronous=True), delivered
+
+    def test_critical_temperature_from_a_snapshot(self):
+        engine, delivered = self._engine()
+        engine.on_telemetry({"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        assert ("CRITIQUE", "critical_temp") in delivered
+
+    def test_watchdog_alerts_when_gateway_silent_since_startup(self):
+        engine, delivered = self._engine()
+        engine._state["started_at"] -= config.TELEMETRY_TIMEOUT_SECONDS + 60
+        thread = threading.Thread(target=engine.run_forever, daemon=True)
         thread.start()
         deadline = time.time() + 3
-        while not sent and time.time() < deadline:
+        while not delivered and time.time() < deadline:
             time.sleep(0.01)
-        notifier._stop_event.set()
+        engine.stop()
         thread.join(timeout=2)
-        assert sent and "telemetry_lost" in sent[0][0]
+        assert ("CRITIQUE", "telemetry_lost") in delivered
 
-    def test_non_object_payload_is_ignored(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(config, "SQLITE_DB_PATH", str(tmp_path / "t.db"))
-        notifier = email_notifier.EmailNotifier()
-        message = MagicMock(topic=config.MQTT_TOPIC_TELEMETRY, payload=b"[1, 2, 3]")
-        notifier._on_message(None, None, message)  # ne doit pas lever
-        assert "last_telemetry_ts" not in notifier._state
-
-
-class TestFailedSendIsRetried:
-    """Régression : un échec SMTP ne doit pas « consommer » le cooldown de l'alerte."""
-
-    @staticmethod
-    def _notifier(monkeypatch, tmp_path, send_results):
-        monkeypatch.setattr(config, "SQLITE_DB_PATH", str(tmp_path / "t.db"))
+    def test_failed_email_is_retried_after_short_delay(self, monkeypatch):
         for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
             monkeypatch.setattr(config, name, "x")
-        attempts: list[str] = []
+        engine, delivered = self._engine([False, True])
+        hot = {"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0}
+        engine.on_telemetry(hot)
+        engine.on_telemetry(hot)                       # immédiatement : pas de rafale
+        assert len(delivered) == 1
+        engine._state["last_sent_at"]["critical_temp"] -= alerts.SEND_RETRY_SECONDS + 1
+        engine.on_telemetry(hot)
+        assert len(delivered) == 2
 
-        def fake_send(subject, body, level):
-            attempts.append(subject)
-            return send_results.pop(0)
+    def test_prediction_and_consistency_feed_the_rules(self):
+        engine, delivered = self._engine()
+        for i in range(N):
+            engine.on_prediction({"disagreement_flag": True, "disagreement": 2.0, "ts": float(i)})
+            engine.on_telemetry({"pt01": 40.0, "pt02": 36.0, "pt03": 30.0})
+        assert ("ATTENTION", "model_disagreement") in delivered
 
-        monkeypatch.setattr(email_notifier, "send_email", fake_send)
-        return email_notifier.EmailNotifier(), attempts
 
-    @staticmethod
-    def _critical(notifier, ts):
-        message = MagicMock(topic=config.MQTT_TOPIC_TELEMETRY,
-                            payload=json.dumps(_telemetry(pt01=config.CRITICAL_TEMP + 15, pt02=config.CRITICAL_TEMP + 5,
-                                                       pt03=30.0, ts=ts)).encode())
-        notifier._on_message(None, None, message)
+class TestAsynchronousSending:
+    def test_slow_smtp_never_blocks_the_collector(self):
+        """L'instantané (thread de collecte) ne doit jamais attendre le serveur SMTP."""
+        sent = threading.Event()
 
-    def test_failed_critical_alert_is_retried_after_short_delay(self, monkeypatch, tmp_path):
-        notifier, attempts = self._notifier(monkeypatch, tmp_path, [False, True])
-        self._critical(notifier, ts=1.0)
-        assert len(attempts) == 1
+        def slow_deliver(level, rule, message):
+            time.sleep(0.5)
+            sent.set()
+            return True
 
-        self._critical(notifier, ts=2.0)  # immédiatement : pas de rafale de tentatives
-        assert len(attempts) == 1
+        engine = AlertEngine(deliver=slow_deliver, watchdog_interval_seconds=60)
+        started = time.monotonic()
+        engine.on_telemetry({"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        assert time.monotonic() - started < 0.1                  # retour immédiat
+        worker = threading.Thread(target=engine.run_forever, daemon=True)
+        worker.start()
+        assert sent.wait(3)                                       # envoyée par le thread du moteur
+        engine.stop()
+        worker.join(timeout=3)
 
-        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
-        self._critical(notifier, ts=3.0)
-        assert len(attempts) == 2
 
-    def test_successful_alert_keeps_full_cooldown(self, monkeypatch, tmp_path):
-        notifier, attempts = self._notifier(monkeypatch, tmp_path, [True, True])
-        self._critical(notifier, ts=1.0)
-        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
-        self._critical(notifier, ts=2.0)
-        assert len(attempts) == 1
-
-    def test_no_retry_when_email_is_not_configured(self, monkeypatch, tmp_path):
-        notifier, attempts = self._notifier(monkeypatch, tmp_path, [False, False])
-        monkeypatch.setattr(config, "SMTP_HOST", None)
-        self._critical(notifier, ts=1.0)
-        notifier._state["last_sent_at"]["critical_temp"] -= email_notifier.SEND_RETRY_SECONDS + 1
-        self._critical(notifier, ts=2.0)
-        assert len(attempts) == 1
+def test_durable_defect_is_recalled_once_a_day_not_every_30_min():
+    assert alerts.cooldown_seconds("oil_sensor_frozen") == 24 * 3600
+    assert alerts.cooldown_seconds("critical_temp") == config.ALERT_COOLDOWN_MINUTES * 60

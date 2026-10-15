@@ -53,8 +53,8 @@ class FakeAlerts:
     def __init__(self):
         self.sent: list[tuple[str, str, str]] = []
 
-    def __call__(self, subject, body, level):
-        self.sent.append((subject, body, level))
+    def __call__(self, level, rule, message):
+        self.sent.append((rule, message, level))      # (règle, message, niveau)
         return True
 
 
@@ -149,7 +149,7 @@ class TestManager:
         clock["t"] += config.STORAGE_GRACE_PERIOD_SECONDS + 1
         assert manager.check_once()["purged"] == 0
         assert _count(db) == ROWS                         # AUCUNE donnée supprimée
-        assert alerts.sent[-1][2] == "CRITIQUE" and "Sauvegarde" in alerts.sent[-1][0]
+        assert alerts.sent[-1][2] == "CRITIQUE" and alerts.sent[-1][0] == "storage_backup_failed"
 
     def test_backup_receives_the_one_year_minimum_age(self, db, monkeypatch):
         """La purge doit créer sa sauvegarde avec le plancher d'âge de STORAGE_BACKUP_MIN_AGE_DAYS."""
@@ -177,7 +177,7 @@ class TestManager:
         clock["t"] += config.STORAGE_GRACE_PERIOD_SECONDS + 1
         assert manager.check_once()["purged"] == 0
         assert _count(db) == ROWS
-        assert alerts.sent[-1][2] == "CRITIQUE" and "Sauvegarde" in alerts.sent[-1][0]
+        assert alerts.sent[-1][2] == "CRITIQUE" and alerts.sent[-1][0] == "storage_backup_failed"
         assert "espace libre insuffisant" in alerts.sent[-1][1]
         assert not list(Path(config.STORAGE_BACKUP_DIR).glob("*.db.gz"))
 
@@ -225,20 +225,19 @@ class TestManager:
         for _ in range(5):
             clock["t"] += 60                              # bien en deçà du cooldown
             manager.check_once()
-        assert len(alerts.sent) == sent_after_first_failure
-        with sqlite_client.connect(db) as conn:           # mais chaque événement reste journalisé
-            logged = conn.execute("SELECT COUNT(*) FROM alerts_log WHERE rule_name='storage_backup_failed'").fetchone()[0]
-        assert logged >= 6
+        assert len(alerts.sent) == sent_after_first_failure   # ni e-mail ni ligne de journal en double
 
     def test_failed_email_is_retried_at_next_check(self, db, monkeypatch):
         """Régression : un e-mail qui n'est pas parti ne doit pas déclencher le cooldown."""
         results = [False, True]
         sent: list[str] = []
 
-        def flaky_sender(subject, body, level):
-            sent.append(subject)
+        def flaky_sender(level, rule, message):
+            sent.append(rule)
             return results.pop(0)
 
+        for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
+            monkeypatch.setattr(config, name, "x")
         manager = StorageManager(db, alert_sender=flaky_sender)
         assert manager._alert("storage_backup_failed", "s", "m", "CRITIQUE") is False
         assert manager._alert("storage_backup_failed", "s", "m", "CRITIQUE") is True
@@ -250,3 +249,45 @@ class TestManager:
         manager.stop()
         manager.run_forever()                             # retourne immédiatement
         assert manager._stop_event.is_set()
+
+
+class TestEffectiveLimit:
+    def test_limit_never_exceeds_the_real_disk(self, db, monkeypatch):
+        """Régression : 1 Tio configuré sur un disque de quelques Go ne protégeait rien."""
+        from collections import namedtuple
+        usage = namedtuple("usage", "total used free")
+        monkeypatch.setattr(config, "STORAGE_LIMIT_BYTES", 1024**4)
+        monkeypatch.setattr(storage_manager.shutil, "disk_usage", lambda path: usage(10 * 1024**3, 0, 5 * 1024**3))
+        manager = StorageManager(db, alert_sender=FakeAlerts())
+        expected = int((database_size_bytes(db) + 5 * 1024**3) * config.STORAGE_DISK_MAX_SHARE)
+        assert manager.limit_bytes == expected < 1024**4
+
+    def test_disk_not_measurable_keeps_configured_limit(self, db, monkeypatch):
+        def broken(path):
+            raise OSError("volume démonté")
+
+        monkeypatch.setattr(storage_manager.shutil, "disk_usage", broken)
+        assert StorageManager(db, alert_sender=FakeAlerts()).limit_bytes == config.STORAGE_LIMIT_BYTES
+
+
+class TestDailyBackup:
+    def test_daily_backup_is_made_verified_and_rotated(self, db, monkeypatch):
+        """Régression : la base n'était sauvegardée qu'avant une purge (disque presque plein)."""
+        monkeypatch.setattr(config, "STORAGE_DAILY_BACKUP_COUNT", 2)
+        clock = {"t": 1_000_000.0}
+        manager = StorageManager(db, alert_sender=FakeAlerts(), time_fn=lambda: clock["t"])
+        first = manager.daily_backup_if_due()
+        assert first is not None and first.exists()
+        assert storage_manager.verify_backup(str(first))
+        clock["t"] = first.stat().st_mtime + 3600              # une heure plus tard : rien à faire
+        assert manager.daily_backup_if_due() is None
+
+    def test_disabled_when_count_is_zero(self, db, monkeypatch):
+        monkeypatch.setattr(config, "STORAGE_DAILY_BACKUP_COUNT", 0)
+        assert StorageManager(db, alert_sender=FakeAlerts()).daily_backup_if_due() is None
+
+    def test_failure_raises_an_alert_and_never_breaks(self, db, monkeypatch):
+        alerts = FakeAlerts()
+        monkeypatch.setattr(storage_manager, "create_backup", lambda *a: (_ for _ in ()).throw(OSError("disque plein")))
+        assert StorageManager(db, alert_sender=alerts).daily_backup_if_due() is None
+        assert alerts.sent[-1][0] == "storage_daily_backup_failed"

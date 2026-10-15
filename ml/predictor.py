@@ -53,7 +53,7 @@ class DualModelPredictor:
             raise FileNotFoundError(
                 f"Modèles non entraînés : fichier(s) manquant(s) dans "
                 f"'{self.model_dir}' : {missing}. Lancez d'abord "
-                f"'python3 -m ml.train' pour entraîner et sauvegarder les modèles."
+                f"'./voltaneum retrain' puis './voltaneum model accept' pour installer un modèle validé."
             )
 
         with open(report_path, "r", encoding="utf-8") as f:
@@ -69,6 +69,13 @@ class DualModelPredictor:
                 f"un statut '{self.training_report.get('status')}' plutôt que 'ok' : "
                 f"les modèles associés ne sont pas fiables. Ré-entraînez avant "
                 f"d'utiliser ce dossier pour la prédiction."
+            )
+
+        if self.training_report.get("features") != list(config.FEATURE_COLUMNS):
+            raise FileNotFoundError(
+                f"Les modèles de '{self.model_dir}' ont été entraînés avec d'autres variables d'entrée "
+                f"({self.training_report.get('features')}) que celles attendues ({config.FEATURE_COLUMNS}) : "
+                f"ré-entraîner (./voltaneum retrain) puis valider (./voltaneum model accept)."
             )
 
         self.random_forest = joblib.load(rf_path)

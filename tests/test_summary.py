@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from check_data import summarize
+from database.summary import summarize
 
 
 def _df():

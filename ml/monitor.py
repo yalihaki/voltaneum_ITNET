@@ -1,11 +1,11 @@
 """Surveillance des modèles : compare chaque prédiction à la mesure réelle à son échéance.
 
-Pour chaque prédiction journalisée (voir main.py), `run_monitor_loop` :
+Pour chaque prédiction journalisée (voir service/app.py), `run_monitor_loop` :
   1. la rapproche de la mesure réelle de `telemetry` dès que son échéance est passée ;
   2. calcule le RMSE glissant par modèle et par horizon ;
   3. le publie sur MQTT (`voltaneum/model_health`).
 
-Lancé comme service autonome par `run_model_monitor.py`.
+Tourne dans le processus principal (thread « model-monitor »).
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ def run_monitor_cycle(mqtt_client=None, db_path: str | None = None) -> int:
     # SQLite horodate en UTC : comparer avec l'heure LOCALE décalerait toutes les échéances.
     now = datetime.now(timezone.utc).strftime(_DB_TIME_FORMAT)
     completed = sqlite_client.complete_due_predictions(now_ts=now, db_path=db_path)
-    for horizon in config.PREDICTION_HORIZONS_SECONDS:
+    horizons = sorted(set(config.PREDICTION_HORIZONS_SECONDS) | set(sqlite_client.prediction_horizons(db_path)))
+    for horizon in horizons:
         for model_name in _MODELS:
             stats = sqlite_client.get_rolling_rmse_stats(horizon, model_name, db_path=db_path)
             if stats is None or mqtt_client is None:

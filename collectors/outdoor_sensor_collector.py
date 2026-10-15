@@ -140,7 +140,7 @@ def get_outdoor_temperature_http(url: str | None = None, timeout: float | None =
     if not url:
         raise RuntimeError("OUTDOOR_SENSOR_HTTP_URL n'est pas configuré (mode http).")
     try:
-        response = requests.get(url, timeout=timeout or config.OUTDOOR_SENSOR_HTTP_TIMEOUT)  # nosec B113 - délai toujours défini
+        response = requests.get(url, timeout=timeout or config.OUTDOOR_SENSOR_HTTP_TIMEOUT)  # nosec B113
         response.raise_for_status()
     except requests.exceptions.RequestException as exc:
         logger.error("Échec de l'appel au capteur extérieur : %s", exc)

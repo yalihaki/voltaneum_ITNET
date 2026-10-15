@@ -1,8 +1,10 @@
 """Protection automatique de l'espace disque occupé par la base SQLite.
 
 Principe (décision d'architecture) : la purge est déclenchée par la TAILLE de la
-base, jamais par une échéance calendaire. Séquence quand la base atteint
-`STORAGE_WARNING_RATIO` de `STORAGE_LIMIT_BYTES` :
+base, jamais par une échéance calendaire. La limite effective est la plus petite de
+`STORAGE_LIMIT_BYTES` et de `STORAGE_DISK_MAX_SHARE` × (taille de la base + espace libre du
+disque) : elle suit le disque réel. Séquence quand la base atteint `STORAGE_WARNING_RATIO`
+de cette limite :
 
   1. e-mail d'avertissement, puis délai de grâce (`STORAGE_GRACE_PERIOD_SECONDS`) ;
   2. sauvegarde compressée et vérifiée de la base, conservée AU MOINS `STORAGE_BACKUP_MIN_AGE_DAYS`
@@ -30,11 +32,11 @@ from pathlib import Path
 import config
 from database import sqlite_client
 from database.backup import create_backup, verify_backup
-from notifications.email_notifier import send_email
+from notifications.alerts import deliver_alert, smtp_configured
 
 logger = logging.getLogger(__name__)
 
-# (sujet, corps, niveau) -> True si l'e-mail est parti
+# (niveau, règle, message) -> True si l'e-mail est parti ; journalise lui-même dans alerts_log.
 AlertSender = Callable[[str, str, str], bool]
 
 
@@ -49,7 +51,8 @@ class _Journal:
     count_eligible_sql: str
 
 
-# Ordre de purge : la télémétrie d'abord, puis les prédictions (complétées en premier), puis les alertes.
+# Ordre de purge : la télémétrie d'abord, puis les prédictions (complétées en premier), le journal
+# de contrôle (même plancher que les prédictions), puis les alertes.
 _JOURNALS = (
     _Journal(
         "RETENTION_DAYS",
@@ -66,6 +69,14 @@ _JOURNALS = (
         "DELETE FROM predictions_log WHERE id = ?",
         "SELECT COUNT(*) FROM predictions_log",
         "SELECT COUNT(*) FROM predictions_log WHERE made_at < datetime('now', ?)",
+    ),
+    _Journal(
+        "PREDICTIONS_RETENTION_DAYS",
+        "SELECT id FROM control_log WHERE timestamp < datetime('now', ?) "
+        "ORDER BY timestamp ASC, id ASC LIMIT ?",
+        "DELETE FROM control_log WHERE id = ?",
+        "SELECT COUNT(*) FROM control_log",
+        "SELECT COUNT(*) FROM control_log WHERE timestamp < datetime('now', ?)",
     ),
     _Journal(
         "ALERTS_RETENTION_DAYS",
@@ -165,7 +176,7 @@ class StorageManager:
     def __init__(
         self,
         db_path: str | None = None,
-        alert_sender: AlertSender = send_email,
+        alert_sender: AlertSender = deliver_alert,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
         self.db_path = db_path or config.SQLITE_DB_PATH
@@ -176,26 +187,35 @@ class StorageManager:
         self._alert_sent_at: dict[str, float] = {}
 
     @property
+    def limit_bytes(self) -> int:
+        """Limite effective : la configuration, sans jamais dépasser la part autorisée du disque réel."""
+        limit = config.STORAGE_LIMIT_BYTES
+        try:
+            free = shutil.disk_usage(Path(self.db_path).resolve().parent).free
+        except OSError:
+            return limit
+        return min(limit, int((database_size_bytes(self.db_path) + free) * config.STORAGE_DISK_MAX_SHARE))
+
+    @property
     def warning_threshold_bytes(self) -> int:
-        return int(config.STORAGE_LIMIT_BYTES * config.STORAGE_WARNING_RATIO)
+        return int(self.limit_bytes * config.STORAGE_WARNING_RATIO)
 
     @property
     def purge_target_bytes(self) -> int:
-        return int(config.STORAGE_LIMIT_BYTES * config.STORAGE_PURGE_TARGET_RATIO)
+        return int(self.limit_bytes * config.STORAGE_PURGE_TARGET_RATIO)
 
     def _alert(self, event_type: str, subject: str, message: str, level: str) -> bool:
-        """Journalise l'événement puis envoie l'e-mail, au plus une fois par type et par
-        `STORAGE_ALERT_COOLDOWN_MINUTES` après un envoi réussi (un problème qui persiste
-        ne doit pas spammer, mais un e-mail qui n'est pas parti doit être retenté)."""
-        sqlite_client.log_alert(level, event_type, message, email_sent=False, db_path=self.db_path)
+        """Distribue l'alerte (journal + e-mail), au plus une fois par type et par
+        `STORAGE_ALERT_COOLDOWN_MINUTES`. Le délai démarre après un envoi réussi, ou aussitôt si
+        l'e-mail n'est pas configuré (sinon une ligne serait journalisée à chaque contrôle) ;
+        un e-mail configuré mais en échec est retenté au contrôle suivant."""
         now = self.time_fn()
         last_sent = self._alert_sent_at.get(event_type)
         if last_sent is not None and now - last_sent < config.STORAGE_ALERT_COOLDOWN_MINUTES * 60:
+            logger.warning("%s (alerte déjà signalée, nouvel envoi après le délai) : %s", subject, message)
             return False
-        sent = self.alert_sender(f"[Voltaneum][{level}] {subject}", message, level)
-        if sent:
-            # Le cooldown ne démarre qu'après un envoi RÉUSSI : un échec SMTP est retenté
-            # au contrôle suivant (STORAGE_CHECK_INTERVAL_SECONDS) au lieu d'être perdu.
+        sent = self.alert_sender(level, event_type, message)
+        if sent or not smtp_configured():
             self._alert_sent_at[event_type] = now
         return sent
 
@@ -257,7 +277,8 @@ class StorageManager:
             result["warning_sent"] = self._alert(
                 "storage_warning", "Stockage presque plein",
                 f"La base {self.db_path} occupe {size / 1024**3:.2f} Gio "
-                f"(seuil d'avertissement {self.warning_threshold_bytes / 1024**3:.2f} Gio). "
+                f"(seuil d'avertissement {self.warning_threshold_bytes / 1024**3:.2f} Gio, limite effective "
+                f"{self.limit_bytes / 1024**3:.2f} Gio). "
                 f"Une purge automatique aura lieu dans {grace_hours:.1f} heure(s) sans intervention.",
                 "ATTENTION",
             )
@@ -289,13 +310,45 @@ class StorageManager:
         result["size_bytes"] = remaining
         return result
 
+    @property
+    def daily_backup_dir(self) -> Path:
+        return Path(config.STORAGE_BACKUP_DIR) / "daily"
+
+    def daily_backup_if_due(self) -> Path | None:
+        """Sauvegarde quotidienne vérifiée (les STORAGE_DAILY_BACKUP_COUNT plus récentes sont
+        gardées). Sans elle, la base n'était sauvegardée qu'avant une purge, c'est-à-dire
+        jamais tant que le disque n'est pas presque plein. Retourne l'archive créée, ou None."""
+        count = config.STORAGE_DAILY_BACKUP_COUNT
+        if count <= 0 or not Path(self.db_path).exists():
+            return None
+        existing = sorted(self.daily_backup_dir.glob("voltaneum-*.db.gz"))
+        if existing and self.time_fn() - existing[-1].stat().st_mtime < 24 * 3600:
+            return None
+        missing_space = self._backup_space_missing()
+        if missing_space is not None:
+            self._alert("storage_daily_backup_failed", "Sauvegarde quotidienne impossible",
+                        f"Sauvegarde quotidienne non faite : {missing_space}.", "ATTENTION")
+            return None
+        try:
+            archive = create_backup(self.db_path, str(self.daily_backup_dir), count, 0)
+            if verify_backup(str(archive)):
+                return archive
+            reason = f"sauvegarde invalide ({archive})"
+        except Exception as exc:
+            logger.exception("Échec de la sauvegarde quotidienne")
+            reason = f"échec ({exc})"
+        self._alert("storage_daily_backup_failed", "Sauvegarde quotidienne impossible",
+                    f"Sauvegarde quotidienne non faite : {reason}.", "ATTENTION")
+        return None
+
     def run_forever(self) -> None:
         """Boucle de surveillance (à lancer dans un thread dédié)."""
         while not self._stop_event.wait(config.STORAGE_CHECK_INTERVAL_SECONDS):
-            try:
-                self.check_once()
-            except Exception:
-                logger.exception("Erreur inattendue du superviseur de stockage")
+            for task in (self.daily_backup_if_due, self.check_once):
+                try:
+                    task()
+                except Exception:
+                    logger.exception("Erreur inattendue du superviseur de stockage")
 
     def stop(self) -> None:
         self._stop_event.set()

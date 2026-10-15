@@ -11,7 +11,7 @@ import time
 import pytest
 
 import config
-import main as main_module
+from service import app as main_module
 from database import sqlite_client
 
 
@@ -155,7 +155,7 @@ def app(tmp_path, monkeypatch):
     for name, value in {
         "SQLITE_DB_PATH": str(tmp_path / "t.db"), "MODEL_DIR": str(tmp_path / "models"),
         "VOLTANEUM_USER": "test-user", "VOLTANEUM_PASSWORD": "test-password",
-        "OUTDOOR_SENSOR_MODE": "mqtt",
+        "OUTDOOR_SENSOR_MODE": "mqtt", "DASHBOARD_ENABLED": False, "RETRAIN_AT": "",
     }.items():
         monkeypatch.setattr(config, name, value)
     FakeOutdoorSensor.value = None
@@ -187,7 +187,7 @@ class TestLifecycle:
         app.start()
         assert set(app._threads) == {
             "mqtt-connection", "gateway-collector", "control-loop", "storage-monitor",
-            "outdoor-consistency-checker", "outdoor-sensor-listener",
+            "outdoor-consistency-checker", "outdoor-sensor-listener", "alerts", "model-monitor",
         }
         assert app.fake_client.loop_started.wait(2)
 
@@ -307,6 +307,54 @@ class TestControlTick:
         app._control_tick(1.0)
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)
         assert 0.0 <= message["percent"] <= 100.0 and "ts" in message
+
+    def test_each_cycle_is_logged_with_its_pid_terms(self, app):
+        """Journal pour l'interface : la consigne enregistrée est celle publiée, et la somme des
+        termes enregistrés redonne bien la consigne (avant bornage)."""
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT setpoint, mode, p_term, i_term, d_term, feedforward_prediction, feedforward_outdoor,"
+                " raw_output, outdoor_band, t_oil, t_outdoor FROM control_log").fetchall()
+        (setpoint, mode, p, i, d, ff_pred, ff_out, raw, band, t_oil, t_outdoor), = rows
+        assert setpoint == message["percent"] and mode == message["mode"]
+        assert raw == pytest.approx(p + i + d + ff_pred + ff_out)
+        assert setpoint == pytest.approx(max(0.0, min(100.0, raw)))
+        assert (band, t_oil, t_outdoor) == ("tempere", 40.0, 15.0)
+
+    def test_exact_mqtt_messages_are_logged(self, app):
+        """Le journal garde le message JSON exact transmis au broker, et le résultat de l'envoi."""
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        app.fake_client.publish_error = OSError("broker injoignable")
+        app._control_tick(60.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            rows = conn.execute("SELECT mqtt_setpoint, mqtt_conditions, mqtt_sent FROM control_log ORDER BY id").fetchall()
+        (setpoint_msg, conditions_msg, sent), failed = rows
+        assert json.loads(setpoint_msg) == app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)[0]
+        assert json.loads(conditions_msg) == app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)[0]
+        assert sent == 1
+        assert failed == (None, None, 0)
+
+    def test_publication_disabled_is_logged_as_such(self, app, monkeypatch):
+        monkeypatch.setattr(config, "PUBLISH_PID_SETPOINT", False)
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        app._control_tick(60.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            assert conn.execute("SELECT mqtt_setpoint, mqtt_sent FROM control_log").fetchone() == (None, None)
+
+    def test_nothing_logged_without_oil_temperature(self, app):
+        app.start()
+        app._control_tick(1.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM control_log").fetchone()[0] == 0
 
     def test_safety_bypass_requests_full_cooling(self, app):
         app.start()
@@ -565,6 +613,23 @@ class TestPredictions:
         (published,) = app.fake_client.messages(config.MQTT_TOPIC_PREDICTION)
         assert published["combined_prediction"] == 33.5 and "ts" in published
 
+    def test_disagreeing_models_are_not_used_by_the_pid(self, app, monkeypatch):
+        """Deux modèles en désaccord : la prédiction n'est pas fiable, l'anticipation du PID est
+        neutralisée (le PID travaille sur la mesure) et rien n'est noté comme « prédiction utilisée »."""
+        self._install_models(app)
+        original = FakePredictor.predict
+        monkeypatch.setattr(FakePredictor, "predict", lambda self, f: {
+            **original(self, f), "predictions": {"random_forest": 45.0, "gradient_boosting": 33.0},
+            "combined_prediction": 45.0, "disagreement": 12.0, "disagreement_flag": True})
+        app.start()
+        feed_measurements(app, t_oil=35.0)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            t_predicted, ff_prediction = conn.execute(
+                "SELECT t_predicted, feedforward_prediction FROM control_log").fetchone()
+        assert t_predicted is None and ff_prediction == 0.0      # 45 °C prédits n'ont rien déclenché
+
     def test_no_prediction_when_an_input_variable_is_missing(self, app):
         self._install_models(app)
         app.start()
@@ -608,3 +673,73 @@ class TestPredictions:
         os.utime(report, (time.time() + 10, time.time() + 10))
         app._reload_predictor_if_changed()
         assert app._predictor is previous
+
+
+class TestSingleProcessServices:
+    """Tout tourne dans un seul processus : interface, ré-entraînement nocturne, alertes."""
+
+    def test_dashboard_runs_inside_the_process(self, app, monkeypatch):
+        import urllib.request
+        import socket
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        free_port = probe.getsockname()[1]
+        probe.close()
+        monkeypatch.setattr(config, "DASHBOARD_ENABLED", True)
+        monkeypatch.setattr(config, "DASHBOARD_PORT", free_port)
+        app.start()
+        port = app.dashboard.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as response:
+            assert response.read() == b"ok"
+
+    def test_busy_dashboard_port_does_not_stop_the_rest(self, app, monkeypatch):
+        import socket
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        monkeypatch.setattr(config, "DASHBOARD_ENABLED", True)
+        monkeypatch.setattr(config, "DASHBOARD_PORT", busy.getsockname()[1])
+        try:
+            app.start()
+            assert app.dashboard is None and "gateway-collector" in app._threads
+        finally:
+            busy.close()
+
+    def test_nightly_retrain_runs_in_a_low_priority_subprocess(self, app, monkeypatch):
+        calls = []
+
+        class FakeProcess:
+            def __init__(self, command, **kwargs):
+                calls.append((command, kwargs))
+
+            def wait(self):
+                return 0
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(main_module.subprocess, "Popen", FakeProcess)
+        assert app.run_retrain_subprocess() == 0
+        command, kwargs = calls[0]
+        assert command[1].endswith("voltaneum.py") and command[2] == "retrain"
+        assert kwargs["preexec_fn"] is not None            # priorité basse (nice)
+
+    def test_pid_restarts_cold_after_a_gateway_outage(self, app):
+        """Après une coupure, l'intégrale d'avant la panne ne doit pas peser sur la reprise."""
+        app.start()
+        feed_measurements(app, t_oil=40.0)
+        FakeOutdoorSensor.value = 15.0
+        for _ in range(5):
+            app._control_tick(60.0)
+        assert app._pid_state["integral"] > 0
+        FakeCollector.message_age = config.CONTROL_MAX_DATA_AGE_SECONDS + 1     # passerelle muette
+        try:
+            app._control_tick(60.0)
+        finally:
+            FakeCollector.message_age = 1.0
+        app._control_tick(60.0)                                                  # reprise
+        assert app._pid_state["integral"] == pytest.approx(5.0 * 60.0)          # une seule minute d'écart
+
+    def test_collector_snapshots_reach_the_alert_engine(self, app):
+        app.start()
+        assert app.collector.kwargs["on_snapshot"] == app.alerts.on_telemetry
