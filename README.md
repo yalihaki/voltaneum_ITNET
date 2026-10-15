@@ -34,6 +34,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum status` | état, dernières mesures, alertes du jour, modèle proposé, journal |
 | `./voltaneum stop` / `restart` | arrête / redémarre (relance automatique comprise) |
 | `./voltaneum logs` | journal en direct (`logs/voltaneum.log`) |
+| `./voltaneum watch` | **supervision en direct dans le terminal** (sans navigateur) |
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
 | `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) |
@@ -43,7 +44,20 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum demo` | interface sur données fictives, sans passerelle (port 8090) |
 | `./voltaneum test` | tests et contrôles qualité |
 
-## 3. Interface de supervision
+## 3. Supervision
+
+### 3.1 Dans un terminal (contrôleur joint seulement par SSH / VPN)
+
+```bash
+./voltaneum watch
+```
+
+Mesures, régulation PID (consigne, termes, envoi MQTT), prédiction, conditions de
+refroidissement, courbes de la dernière heure en caractères et alertes des 24 h, rafraîchis
+toutes les 5 s (Ctrl+C pour quitter). Options : `--minutes 360` (courbes sur 6 h),
+`--interval 10`, `--once` (une seule fois). Lecture seule.
+
+### 3.2 Dans un navigateur
 
 `http://localhost:8080` sur le contrôleur. Depuis un autre poste, par tunnel SSH :
 

@@ -3,6 +3,7 @@
     python voltaneum.py run                    # tout le système, au premier plan
     python voltaneum.py retrain                # une nuit de ré-entraînement (proposition)
     python voltaneum.py model [accept|reject|rollback]
+    python voltaneum.py watch                  # supervision en direct dans le terminal
     python voltaneum.py data                   # résumé des mesures en base
     python voltaneum.py diagnose               # réseau, services, base, modèle
     python voltaneum.py restore [sauvegarde]   # lister / restaurer une sauvegarde
@@ -166,6 +167,12 @@ def cmd_diagnose(_args: argparse.Namespace) -> int:
     return run_diagnostic()
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    from service.watch import run_watch
+
+    return run_watch(args.db, interval=args.interval, minutes=args.minutes, once=args.once)
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     """Liste les sauvegardes, ou restaure l'une d'elles (Voltaneum doit être arrêté)."""
     from database.backup import create_backup, restore_backup
@@ -252,6 +259,13 @@ def build_parser() -> argparse.ArgumentParser:
     data.set_defaults(func=cmd_data)
 
     sub.add_parser("diagnose", help="vérifier réseau, services, base et modèle").set_defaults(func=cmd_diagnose)
+
+    watch = sub.add_parser("watch", help="supervision en direct dans le terminal (sans navigateur)")
+    watch.add_argument("--db", default=config.SQLITE_DB_PATH)
+    watch.add_argument("--interval", type=float, default=5.0, help="rafraîchissement en secondes")
+    watch.add_argument("--minutes", type=int, default=60, help="durée des courbes")
+    watch.add_argument("--once", action="store_true", help="afficher une seule fois puis quitter")
+    watch.set_defaults(func=cmd_watch)
 
     restore = sub.add_parser("restore", help="lister les sauvegardes, ou en restaurer une (Voltaneum arrêté)")
     restore.add_argument("archive", nargs="?", help="nom de la sauvegarde (voir la liste)")

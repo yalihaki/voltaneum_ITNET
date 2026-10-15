@@ -6,6 +6,7 @@
 #   ./voltaneum stop         arrête tout (et la relance automatique)
 #   ./voltaneum restart      redémarre (après un git pull, par exemple)
 #   ./voltaneum logs         journal en direct
+#   ./voltaneum watch        supervision en direct dans le terminal (sans navigateur)
 #   ./voltaneum run          tout au premier plan (Ctrl+C pour arrêter)
 #   ./voltaneum diagnose     réseau, services, base, modèle (lecture seule)
 #   ./voltaneum data         résumé des mesures enregistrées
@@ -250,8 +251,8 @@ case "$command" in
     status)   cmd_status ;;
     logs)     mkdir -p logs; touch "$LOG"; tail -n 50 -f "$LOG" ;;
     run)      ensure_env; ensure_dotenv; exec "$PY" voltaneum.py run "$@" ;;
-    diagnose|data|model|retrain|demo|restore) ensure_env; exec "$PY" voltaneum.py "$command" "$@" ;;
+    diagnose|data|model|retrain|demo|restore|watch) ensure_env; exec "$PY" voltaneum.py "$command" "$@" ;;
     test)     cmd_test ;;
-    help|-h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *)        say "Commande inconnue : $command"; sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    help|-h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)        say "Commande inconnue : $command"; sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

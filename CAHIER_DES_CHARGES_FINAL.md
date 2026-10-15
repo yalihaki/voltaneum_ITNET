@@ -153,6 +153,7 @@ Dans le même processus : stockage (sauvegarde/purge), monitoring ML, interface 
 | `config.py` | configuration et validation de démarrage |
 | `service/app.py` | démarrage, supervision et arrêt de tous les composants, boucle de contrôle |
 | `service/diagnose.py` | diagnostic réseau / services / base / modèle, sans envoyer d'identifiant |
+| `service/watch.py` | supervision en direct dans le terminal (lecture seule) |
 | `collectors/gateway_collector.py` | login, mapping, WebSocket, validation, instantanés |
 | `collectors/outdoor_*.py`, `weather_collector.py` | température extérieure (capteur prioritaire, météo en repli) et contrôle de cohérence |
 | `database/sqlite_client.py` | schéma, écritures, lectures |
@@ -542,7 +543,7 @@ Ne jamais transférer un secret par dépôt public ou messagerie non sécurisée
 
 ### 12.4 Exploitation
 
-`./voltaneum status` (état, dernières mesures, alertes, modèle proposé), `./voltaneum logs`, `./voltaneum stop`, `./voltaneum restart`, `./voltaneum restore`. Une passerelle injoignable est journalisée à la première tentative puis toutes les 20 tentatives (~10 min), pas à chaque essai.
+`./voltaneum watch` (supervision en direct dans le terminal, pour un contrôleur sans environnement graphique), `./voltaneum status` (état, dernières mesures, alertes, modèle proposé), `./voltaneum logs`, `./voltaneum stop`, `./voltaneum restart`, `./voltaneum restore`. Une passerelle injoignable est journalisée à la première tentative puis toutes les 20 tentatives (~10 min), pas à chaque essai.
 
 ---
 
