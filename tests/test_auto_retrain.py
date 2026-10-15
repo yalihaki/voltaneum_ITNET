@@ -30,6 +30,10 @@ class TestJudge:
     def test_reliable_model(self):
         assert judge(_report(0.3, 0.6))[0] is True
 
+    def test_frozen_variables_are_named(self):
+        eligible, reason = judge({"status": "no_actionable_signal", "degenerate_features": ["freq_pompe", "ht01"]})
+        assert not eligible and "fréquence pompe" in reason and "débit HT01" in reason
+
     def test_refused_when_training_refused(self):
         eligible, reason = judge({"status": "insufficient_variance"})
         assert not eligible and "PT02" in reason

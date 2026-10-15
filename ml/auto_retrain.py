@@ -59,6 +59,12 @@ MIN_TEST_SPAN_HORIZONS = 3
 # Au-delà, les mesures instantanées ne suffisent plus à anticiper (charge et météo à venir).
 LONG_HORIZON_WARNING_SECONDS = 2 * 3600
 
+# Noms lisibles des variables d'entrée (messages destinés à l'exploitant).
+_FEATURE_LABELS = {
+    "pt01": "PT01", "pt02": "PT02", "pt03": "PT03", "pt04": "PT04", "ht01": "débit HT01",
+    "freq_pompe": "fréquence pompe", "temp_outdoor": "température extérieure",
+}
+
 _STATUS_REASONS = {
     "insufficient_data": "données insuffisantes (collecte continue trop courte pour cet horizon)",
     "insufficient_variance": "PT02 ne varie pas assez pour juger une prédiction",
@@ -142,6 +148,9 @@ def read_history(model_dir: str = config.MODEL_DIR, limit: int = 30) -> list[dic
 def judge(report: dict) -> tuple[bool, str]:
     """(fiable ?, raison en français) pour un rapport de `train_and_compare`."""
     status = report.get("status")
+    if status == "no_actionable_signal" and report.get("degenerate_features"):
+        names = ", ".join(_FEATURE_LABELS.get(f, f) for f in report["degenerate_features"])
+        return False, f"variable(s) restée(s) figée(s) sur toute la période : {names}"
     if status != "ok":
         return False, _STATUS_REASONS.get(str(status), f"statut {status}")
     best = report.get("best_model")
