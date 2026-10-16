@@ -71,7 +71,7 @@ PT03 / PT04 : seul fait établi, PT03 est toujours plus chaude que PT04 (≈ 0,9
 
 Grandeurs dérivées, enregistrées à chaque instantané :
 
-- `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ;
+- `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ; enregistrée mais ni affichée ni exportée pour l'instant ;
 - `thermal_power_kw` : puissance dissipée **estimée** = débit HT01 × masse volumique × capacité thermique × (PT03 − PT04). Fluide (`OIL_DENSITY_KG_M3`, `OIL_HEAT_CAPACITY_J_KG_K`, valeurs d'une huile minérale typique par défaut) et sondes (`THERMAL_POWER_HOT` / `_COLD`) à confirmer ; tant que `THERMAL_POWER_CONFIRMED=false`, l'interface la présente comme une estimation. Elle n'est pas encore une entrée des modèles.
 
 ### 2.3 Adresses par défaut

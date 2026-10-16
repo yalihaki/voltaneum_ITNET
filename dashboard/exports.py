@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 import config
 from dashboard import data
 
-BOM = "﻿"
+BOM = "\ufeff"  # marque UTF-8 : Excel affiche correctement les accents
+# Grandeurs enregistrées en base mais ni affichées ni exportées pour l'instant.
+HIDDEN_MEASURES = {"humidity_outdoor"}
 
 
 def _local(utc_text: str | None) -> str:
@@ -52,12 +54,16 @@ def _with_local_time(rows: Iterable[tuple], time_index: int = 0) -> Iterator[tup
 def measures(db_path: str, start: float, end: float) -> Iterator[tuple]:
     labels = {k: v[0] for k, v in config.SENSOR_LABELS.items()}
     names = {"ht01": "HT01 débit (m³/h)", "freq_pompe": "fréquence pompe (Hz)", "temp_outdoor": "air extérieur (°C)",
-             "humidity_outdoor": "humidité extérieure (%)", "thermal_power_kw": "puissance dissipée estimée (kW)"}
+             "thermal_power_kw": "puissance dissipée estimée (kW)"}
+    # Mesures exportées : l'humidité est enregistrée mais n'est pas exportée pour l'instant.
+    keep = [i for i, m in enumerate(data.MEASURES) if m not in HIDDEN_MEASURES]
     header = ["date UTC", "heure locale",
-              *[f"{labels[m]} (°C)" if m in labels else names.get(m, m) for m in data.MEASURES],
+              *[f"{labels[data.MEASURES[i]]} (°C)" if data.MEASURES[i] in labels else names.get(data.MEASURES[i], data.MEASURES[i])
+                for i in keep],
               "source air extérieur"]
     yield tuple(header)
-    yield from _with_local_time(data.telemetry_rows(db_path, start, end))
+    for row in _with_local_time(data.telemetry_rows(db_path, start, end)):
+        yield (row[0], row[1], *[row[2 + i] for i in keep], row[2 + len(data.MEASURES)])
 
 
 _CONTROL_HEADERS = {

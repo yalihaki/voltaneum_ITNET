@@ -64,6 +64,8 @@ def test_export_writes_one_csv_per_element(env, capsys, tmp_path):
     assert files == ["alertes", "consignes", "entrainements", "mesures", "predictions"]
     mesures = next(out.glob("voltaneum-mesures-*.csv")).read_text(encoding="utf-8-sig").splitlines()
     assert mesures[0].startswith("date UTC;heure locale;PT01") and len(mesures) == 2
+    assert "humidité" not in mesures[0]                         # enregistrée, mais pas exportée pour l'instant
+    assert len(mesures[0].split(";")) == len(mesures[1].split(";"))   # colonnes alignées
 
 
 def test_export_only_some_elements(env, tmp_path):

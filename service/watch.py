@@ -186,10 +186,8 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     row("Dry cooler", f"{names['pt03']} : {_num(v['pt03'], 1, '°C')}  →  {names['pt04']} : {_num(v['pt04'], 1, '°C')}"
         + (f"  (refroidi de {_num(gap, 1)} °C)" if gap is not None else ""))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
-    humidity = v.get("humidity_outdoor")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
-        f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})"
-        + (f"   humidité {_num(humidity, 0, '%')}" if humidity is not None else ""))
+        f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")
     tp = th.get("thermal_power", {})
     status = "confirmée" if tp.get("confirmed") else "ESTIMATION, fluide et sondes à confirmer"
     row("Puissance", f"{s.bold(_num(v.get('thermal_power_kw'), 1, 'kW'))} dissipée  "

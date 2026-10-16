@@ -17,7 +17,6 @@ MEASURES: dict[str, tuple[str, str]] = {
     "ht01": ("HT01 · débit circuit huile", "m³/h"),
     "freq_pompe": ("Fréquence pompe / ventilateur", "Hz"),
     "temp_outdoor": ("Température extérieure", "°C"),
-    "humidity_outdoor": ("Humidité extérieure", "%"),
     "thermal_power_kw": ("Puissance dissipée (estimée)", "kW"),
 }
 
@@ -87,7 +86,7 @@ def latest_rows(df: pd.DataFrame, count: int) -> str:
                          .dt.strftime("%d/%m %H:%M:%S"))
     tail = tail.rename(columns={"timestamp": "heure locale", "temp_outdoor": "ext", "freq_pompe": "freq_Hz",
                                 "ht01": "ht01_m3h", "temp_outdoor_source": "source ext",
-                                "humidity_outdoor": "hum_%", "thermal_power_kw": "P_kW"})
+                                "thermal_power_kw": "P_kW"})
     return tail.to_string(index=False, na_rep="—", float_format=lambda v: f"{v:.2f}")
 
 
@@ -113,6 +112,6 @@ def print_summary(db_path: str, rows: int = 10, hours: float | None = None, csv_
         print(f"\nDernières mesures ({min(rows, len(df))} sur {len(df)}) :")
         print(latest_rows(df, rows))
     if csv_path:
-        df.to_csv(csv_path, sep=";", index=False)
+        df.drop(columns=["humidity_outdoor"], errors="ignore").to_csv(csv_path, sep=";", index=False)
         print(f"\nExport CSV : {csv_path} ({len(df)} lignes, horodatage UTC, séparateur « ; »)")
     return 0

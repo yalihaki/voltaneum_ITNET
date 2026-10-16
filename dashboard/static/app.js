@@ -265,7 +265,6 @@
     if (v.temp_outdoor == null) teHint.textContent = 'ni capteur ni météo';
     else if (src === 'weather') { teHint.append(el('span', 'chip warn', 'météo'), document.createTextNode(' repli API, pas de capteur')); }
     else if (src === 'sensor') { teHint.append(el('span', 'chip ok', 'capteur'), document.createTextNode(' mesure locale')); }
-    if (v.humidity_outdoor != null) teHint.append(document.createTextNode(' · humidité ' + num(v.humidity_outdoor, 0) + ' %'));
 
     // Puissance dissipée estimée (débit × écart de température)
     const tpw = tile('thermal_power_kw');
@@ -696,16 +695,14 @@
     ],
   });
   const histPower = chart('chart-hist-power', {
-    label: 'Puissance et humidité', unit: 'kW', rightUnit: '%', digits: 1, rightDigits: 0, minSpan: 2, rightMinSpan: 10,
-    rightInclude: [0, 100], group: histGroup,
+    label: 'Puissance dissipée estimée', unit: 'kW', digits: 1, minSpan: 2, group: histGroup,
     series: [
       { key: 'thermal_power_kw', label: LABELS.thermal_power_kw, color: COLORS.thermal_power_kw, width: 1.6, area: true },
-      { key: 'humidity_outdoor', label: LABELS.humidity_outdoor, color: COLORS.humidity_outdoor, width: 1.2, dash: [3, 3], axis: 'right' },
     ],
-    emptyText: 'Pas encore de puissance ni d\'humidité enregistrées sur cette période',
+    emptyText: 'Pas encore de puissance enregistrée sur cette période',
   });
-  const HIST_KEYS = [...TEMP_KEYS, 'freq_pompe', 'ht01', 'thermal_power_kw', 'humidity_outdoor'];
-  const chartOf = k => TEMP_KEYS.includes(k) ? histTemp : (k === 'thermal_power_kw' || k === 'humidity_outdoor') ? histPower : histFlow;
+  const HIST_KEYS = [...TEMP_KEYS, 'freq_pompe', 'ht01', 'thermal_power_kw'];
+  const chartOf = k => TEMP_KEYS.includes(k) ? histTemp : k === 'thermal_power_kw' ? histPower : histFlow;
   const histChips = $('#hist-series');
   for (const k of HIST_KEYS) {
     const lab = el('label'); lab.style.color = `var(${COLORS[k]})`;
@@ -734,7 +731,7 @@
   });
   // Exports CSV : un fichier par élément, sur la période choisie.
   const EXPORT_LIST = [
-    ['mesures', 'Mesures', 'toutes les sondes, débit, fréquence, air, puissance'],
+    ['mesures', 'Mesures', 'toutes les sondes, débit, fréquence, air extérieur, puissance'],
     ['consignes', 'Consignes PID', 'chaque cycle, ses termes et le message MQTT exact'],
     ['alertes', 'Alertes', 'niveau, règle, message, e-mail envoyé'],
     ['predictions', 'Prédictions', 'valeur prédite, mesure à l\'échéance, erreur'],

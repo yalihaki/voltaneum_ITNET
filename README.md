@@ -102,7 +102,7 @@ capteur extérieur (cas actuel, `OUTDOOR_SENSOR_MODE=none`), la température vie
 
 **Mesures.** PT02 = huile du bain (grandeur régulée), PT01 = huile du circuit, PT03 / PT04 =
 côté chaud / côté froid du dry cooler (air ou huile : à confirmer ; noms modifiables dans
-`.env`). S'y ajoutent l'humidité extérieure (API météo) et la **puissance dissipée estimée**
+`.env`). S'y ajoute la **puissance dissipée estimée**
 (débit × écart PT03 − PT04 × propriétés du fluide), affichée comme estimation tant que le fluide
 et les sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 
