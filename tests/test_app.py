@@ -397,6 +397,26 @@ class TestControlTick:
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
         assert message["outdoor_band"] == "inconnue" and message["fan_min_freq_hz"] is None
 
+    def test_cold_air_advice_is_published_and_logged(self, app):
+        """Air à 5 °C, PT02 un peu au-dessus de la cible : l'air seul suffit, ventilateur arrêté."""
+        app.start()
+        FakeOutdoorSensor.value = 5.0
+        feed_measurements(app, t_oil=config.TARGET_TEMP + 0.5)
+        app._control_tick(1.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["cooling_mode"] == "air_exterieur" and message["cooling_mode_reason"]
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            (logged,) = conn.execute("SELECT cooling_mode FROM control_log").fetchone()
+        assert logged == "air_exterieur"
+
+    def test_warm_air_advice_is_the_fan(self, app):
+        app.start()
+        FakeOutdoorSensor.value = 20.0
+        feed_measurements(app, t_oil=config.TARGET_TEMP + 0.5)
+        app._control_tick(1.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["cooling_mode"] == "ventilateur"
+
     def test_pid_percent_can_be_switched_off_without_losing_the_conditions(self, app, monkeypatch):
         monkeypatch.setattr(config, "PUBLISH_PID_SETPOINT", False)
         app.start()

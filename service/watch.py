@@ -250,6 +250,14 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         row("Conditions", f"air {band} · ventilateur marche > {_num(cool['fan_on_above_temp'])} °C, "
             f"arrêt < {_num(cool['fan_off_below_temp'])} °C · fréquence min. "
             f"{_num(cool['fan_min_freq_hz'], 0, 'Hz') if cool['fan_min_freq_hz'] is not None else 'non conseillée'}")
+    ctl = snap.get("control") or {}
+    if ctl.get("cooling_mode"):
+        names = {"aucun": "aucun refroidissement", "air_exterieur": "AIR EXTÉRIEUR SEUL (ventilateur arrêté)",
+                 "ventilateur": "VENTILATEUR"}
+        label = names.get(ctl["cooling_mode"], ctl["cooling_mode"])
+        row("Conseil", s.bold(label) if ctl["cooling_mode"] != "aucun" else label)
+        if ctl.get("cooling_mode_reason"):
+            row("", ctl["cooling_mode_reason"])
     lines.append(rule)
 
     end = time.time()

@@ -152,7 +152,9 @@ heures, le modèle ne connaît ni la charge à venir ni la météo prévue.
 Publiés toutes les 60 s (QoS 0, non retenus) quand un broker est joignable :
 
 - `voltaneum/control/cooling_conditions` (contrat principal) : cible, seuil critique, bande
-  extérieure, seuils de marche / arrêt du ventilateur, fréquence minimale conseillée, validité 180 s ;
+  extérieure, seuils de marche / arrêt du ventilateur, fréquence minimale conseillée, validité 180 s,
+  et conseil `cooling_mode` : par air froid (< 10 °C), demande faible et assez d'écart avec PT02,
+  « air_exterieur » (ventilateur arrêté, la circulation naturelle suffit), sinon « ventilateur » ;
 - `voltaneum/control/setpoint` (informatif) : `{"percent", "mode", "ts"}` ;
 - `voltaneum/telemetry`, `voltaneum/prediction`, `voltaneum/model_health`.
 

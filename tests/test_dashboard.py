@@ -138,7 +138,7 @@ def test_pid_settings_document_every_published_field():
     assert topics["setpoint"]["topic"] == "voltaneum/control/setpoint"
     assert {f["name"] for f in topics["setpoint"]["fields"]} == {"percent", "mode", "ts"}
     from control.cooling_advice import compute_cooling_conditions
-    published = set(compute_cooling_conditions(40.0, 15.0)) | {"t_outdoor_source", "ts"}
+    published = set(compute_cooling_conditions(40.0, 15.0)) | {"t_outdoor_source", "cooling_mode", "cooling_mode_reason", "ts"}
     assert {f["name"] for f in topics["conditions"]["fields"]} == published
 
 

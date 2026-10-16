@@ -74,6 +74,7 @@ _CONTROL_HEADERS = {
     "feedforward_outdoor": "anticipation météo (%)", "raw_output": "somme avant bornage (%)",
     "outdoor_band": "bande air extérieur", "fan_on_above": "ventilateur marche au-dessus de (°C)",
     "fan_off_below": "ventilateur arrêt en dessous de (°C)", "fan_min_freq_hz": "fréquence min. conseillée (Hz)",
+    "cooling_mode": "conseil air seul / ventilateur", "cooling_mode_reason": "raison du conseil",
     "mqtt_setpoint": "message MQTT consigne (exact)", "mqtt_conditions": "message MQTT conditions (exact)",
     "mqtt_sent": "consigne transmise (1 oui, 0 échec, vide désactivé)",
 }

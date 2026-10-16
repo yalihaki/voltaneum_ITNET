@@ -110,6 +110,9 @@ CREATE TABLE IF NOT EXISTS control_log (
     fan_on_above REAL,
     fan_off_below REAL,
     fan_min_freq_hz REAL,
+    -- Conseil « air froid seul ou ventilateur » (control/cooling_mode.py) et sa raison.
+    cooling_mode TEXT,
+    cooling_mode_reason TEXT,
     -- Messages JSON EXACTS transmis au client MQTT (NULL : non transmis), et résultat de l'envoi
     -- de la consigne : 1 transmis, 0 échec (broker injoignable...), NULL publication désactivée.
     mqtt_setpoint TEXT,
@@ -161,6 +164,10 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
         conn.execute(_CREATE_PREDICTIONS_INDEX_SQL)
         conn.execute(_CREATE_ALERTS_TABLE_SQL)
         conn.execute(_CREATE_CONTROL_TABLE_SQL)
+        control_columns = {row[1] for row in conn.execute("PRAGMA table_info(control_log)")}
+        for column in ("cooling_mode", "cooling_mode_reason"):
+            if column not in control_columns:  # migration des bases existantes, aucune donnée perdue
+                conn.execute(f"ALTER TABLE control_log ADD COLUMN {column} TEXT")  # nosec B608
         conn.execute(_CREATE_CONTROL_INDEX_SQL)
 
     try:
@@ -360,7 +367,7 @@ def log_alert(
 _CONTROL_COLUMNS = (
     "t_oil", "t_target", "t_predicted", "t_outdoor", "t_outdoor_source", "setpoint", "mode", "error",
     "p_term", "i_term", "d_term", "feedforward_prediction", "feedforward_outdoor", "raw_output",
-    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz",
+    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz", "cooling_mode", "cooling_mode_reason",
     "mqtt_setpoint", "mqtt_conditions", "mqtt_sent",
 )
 _INSERT_CONTROL_SQL = (

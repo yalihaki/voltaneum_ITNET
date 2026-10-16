@@ -414,3 +414,14 @@ details.history summary { cursor: pointer; padding: 10px 14px; font-size: 13px; 
 .demo-banner { position: sticky; top: 0; z-index: 50; padding: 6px 16px; text-align: center;
   font-weight: 700; letter-spacing: .04em; font-size: 13px; color: #fff; background: var(--crit); }
 .demo-banner[hidden] { display: none; }
+
+/* Conseil « air extérieur seul » / « ventilateur » */
+.cmode { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: baseline;
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); }
+.cmode[hidden] { display: none; }
+.cmode-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+.cmode small { grid-column: 1 / -1; opacity: .8; }
+.cmode[data-mode="air_exterieur"] { background: var(--ok-bg); border-color: var(--ok); }
+.cmode[data-mode="air_exterieur"] b { color: var(--ok); }
+.cmode[data-mode="ventilateur"] { background: var(--warn-bg); border-color: var(--warn); }
+.cmode[data-mode="ventilateur"] b { color: var(--warn); }

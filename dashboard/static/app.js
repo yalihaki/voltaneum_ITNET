@@ -315,6 +315,18 @@
       $$('#cooling dd').forEach(d => { d.textContent = '—'; });
     }
 
+    // Air froid seul ou ventilateur : dernier conseil calculé par la boucle de contrôle.
+    const cm = $('#cmode'), ctl = s.control;
+    if (ctl && ctl.cooling_mode) {
+      const names = { aucun: 'aucun refroidissement', air_exterieur: 'air extérieur seul (ventilateur arrêté)', ventilateur: 'ventilateur' };
+      cm.hidden = false;
+      cm.dataset.mode = ctl.cooling_mode;
+      $('#cmode-val').textContent = names[ctl.cooling_mode] || ctl.cooling_mode;
+      $('#cmode-why').textContent = ctl.cooling_mode_reason || '';
+    } else {
+      cm.hidden = true;
+    }
+
     renderPid(s);
     renderMl(s);
     onSnapshotForPid(s);

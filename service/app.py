@@ -42,6 +42,7 @@ from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdo
 from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_conditions
 from control.cooling_advice import compute_cooling_conditions
+from control.cooling_mode import advise_cooling_mode
 from control.pid_controller import compute_setpoint_detailed
 from database import sqlite_client
 from database.storage_manager import StorageManager
@@ -84,6 +85,7 @@ class VoltaneumApp:
         self._predictor: DualModelPredictor | None = None
         self._predictor_report_mtime: float | None = None
         self._pid_state: dict = {}
+        self._cooling_mode_state: dict = {}
         self._prediction_used = False
         self._disagreement_reported = False
         self._out_of_domain_reported = False
@@ -310,6 +312,9 @@ class VoltaneumApp:
             pid_state=self._pid_state,
         )
         setpoint, self._pid_state, mode = detail.setpoint, detail.state, detail.mode
+        # Air froid seul ou ventilateur : conseil, l'automate décide.
+        cooling_mode, cooling_reason, self._cooling_mode_state = advise_cooling_mode(
+            t_oil, t_outdoor, setpoint, mode, time.time(), self._cooling_mode_state)
         # 1) Conditions à suivre (contrat principal) : température cible + seuils selon la
         #    température extérieure. Rien n'est publié si la température d'huile est invalide.
         conditions = compute_cooling_conditions(t_oil, t_outdoor)
@@ -317,7 +322,9 @@ class VoltaneumApp:
         if conditions is not None:
             # La source dit si la bande extérieure vient du capteur ou de l'API météo (repli).
             conditions_message = self._publish(
-                config.MQTT_TOPIC_COOLING_CONDITIONS, {**conditions, "t_outdoor_source": outdoor_source})
+                config.MQTT_TOPIC_COOLING_CONDITIONS,
+                {**conditions, "t_outdoor_source": outdoor_source,
+                 "cooling_mode": cooling_mode, "cooling_mode_reason": cooling_reason})
         # 2) Consigne PID en % : INFORMATIVE (suivi, comparaison avec la régulation de l'automate).
         setpoint_message = None
         if config.PUBLISH_PID_SETPOINT:
@@ -335,6 +342,7 @@ class VoltaneumApp:
             "fan_on_above": conditions and conditions["fan_on_above_temp"],
             "fan_off_below": conditions and conditions["fan_off_below_temp"],
             "fan_min_freq_hz": conditions and conditions["fan_min_freq_hz"],
+            "cooling_mode": cooling_mode, "cooling_mode_reason": cooling_reason,
             "mqtt_setpoint": setpoint_message, "mqtt_conditions": conditions_message,
             "mqtt_sent": None if not config.PUBLISH_PID_SETPOINT else int(setpoint_message is not None),
         }, db_path=config.SQLITE_DB_PATH)

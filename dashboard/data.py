@@ -170,7 +170,7 @@ def _latest_predictions(conn: sqlite3.Connection, now: float) -> dict | None:
 _CONTROL_FIELDS = (
     "t_oil", "t_target", "t_predicted", "t_outdoor", "t_outdoor_source", "setpoint", "mode", "error",
     "p_term", "i_term", "d_term", "feedforward_prediction", "feedforward_outdoor", "raw_output",
-    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz",
+    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz", "cooling_mode", "cooling_mode_reason",
 )
 _MQTT_FIELDS = ("mqtt_setpoint", "mqtt_conditions", "mqtt_sent")
 
@@ -373,6 +373,9 @@ def mqtt_formats() -> list[dict]:
                 {"name": "fan_on_above_temp", "type": "nombre", "unit": "°C", "desc": "seuil de marche du ventilateur"},
                 {"name": "fan_off_below_temp", "type": "nombre", "unit": "°C", "desc": "seuil d'arrêt du ventilateur"},
                 {"name": "fan_min_freq_hz", "type": "nombre ou null", "unit": "Hz", "desc": "fréquence minimale conseillée"},
+                {"name": "cooling_mode", "type": "texte", "unit": "",
+                 "desc": "aucun, air_exterieur (ventilateur arrêté, l'air froid suffit) ou ventilateur"},
+                {"name": "cooling_mode_reason", "type": "texte", "unit": "", "desc": "raison du conseil, en clair"},
                 {"name": "t_oil", "type": "nombre", "unit": "°C", "desc": "température PT02 utilisée"},
                 {"name": "t_outdoor", "type": "nombre ou null", "unit": "°C", "desc": "température extérieure utilisée"},
                 {"name": "t_outdoor_source", "type": "texte ou null", "unit": "", "desc": "sensor (capteur) ou weather (API météo)"},
@@ -682,6 +685,11 @@ def settings_summary() -> dict:
             "Seuil critique PT02 (°C)": config.CRITICAL_TEMP,
             "Seuil critique diélectrique PT01 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
             "Hystérésis ventilateur (°C)": config.FAN_HYSTERESIS_CELSIUS,
+            "Air seul possible sous (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP if config.FREE_COOLING_ENABLED else "désactivé",
+            "… retour au ventilateur au-dessus de (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP + config.FREE_COOLING_HYSTERESIS_CELSIUS,
+            "… si écart PT02 − air d'au moins (°C)": config.FREE_COOLING_MIN_GAP_CELSIUS,
+            "… et demande PID d'au plus (%)": config.FREE_COOLING_MAX_DEMAND_PERCENT,
+            "… après au moins (min) en ventilateur": round(config.FREE_COOLING_MIN_DWELL_SECONDS / 60),
             "Pompe en marche au-delà de (Hz)": config.PUMP_RUNNING_MIN_HZ,
             "Débit minimal pompe en marche (m³/h)": config.FLOW_MIN_M3H,
             "Gains PID (Kp / Ki / Kd)": f"{config.PID_KP} / {config.PID_KI} / {config.PID_KD}",
