@@ -409,3 +409,8 @@ details.history summary { cursor: pointer; padding: 10px 14px; font-size: 13px; 
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .syno .flow, .syno .fan { animation: none !important; }
 }
+
+/* Base de démonstration : impossible de la confondre avec l'installation réelle. */
+.demo-banner { position: sticky; top: 0; z-index: 50; padding: 6px 16px; text-align: center;
+  font-weight: 700; letter-spacing: .04em; font-size: 13px; color: #fff; background: var(--crit); }
+.demo-banner[hidden] { display: none; }

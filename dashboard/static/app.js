@@ -1231,6 +1231,11 @@
   // ================================================================ démarrage
   async function start() {
     applyTheme();
+    api('/api/mode').then(m => {
+      if (!m.demo) return;
+      $('#demo-banner').hidden = false;
+      document.title = '[DÉMO, données fictives] ' + document.title;
+    }).catch(() => {});
     tick(); setInterval(tick, 1000);
     try { renderSnapshot(await api('/api/snapshot')); } catch (err) { showDbError(err); }
     if (!state.thresholds) state.thresholds = { snapshot_interval_seconds: 15, stale_after_seconds: 120, valid_ranges: {} };

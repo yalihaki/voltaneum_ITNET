@@ -255,7 +255,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     process = demo.create_demo_database()
     stop = threading.Event()
     threading.Thread(target=demo.run_live_feed, args=(process, stop), daemon=True).start()
-    server = make_server("127.0.0.1", args.port, demo.DEMO_DB_PATH)
+    server = make_server("127.0.0.1", args.port, demo.DEMO_DB_PATH, demo=True)
     print(f"Démonstration (données fictives) : http://localhost:{args.port}   — Ctrl+C pour arrêter")
     try:
         server.serve_forever(poll_interval=0.5)

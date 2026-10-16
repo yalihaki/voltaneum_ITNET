@@ -91,9 +91,11 @@ class DashboardServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], db_path: str,
-                 extra_hosts: tuple[str, ...] = ()) -> None:
+                 extra_hosts: tuple[str, ...] = (), demo: bool = False) -> None:
         super().__init__(address, DashboardHandler)
         self.db_path = db_path
+        # Base FICTIVE (./voltaneum demo) : l'interface l'annonce partout, exports compris.
+        self.demo = demo
         self.stop_event = threading.Event()
         self.stream_slots = threading.BoundedSemaphore(MAX_STREAM_CLIENTS)
         self.allowed_hosts = {"localhost", "127.0.0.1", "[::1]", address[0].lower(), *extra_hosts}
@@ -197,6 +199,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(exports.describe())
             elif route == "/api/settings":
                 self._json(data.settings_summary())
+            elif route == "/api/mode":
+                self._json({"demo": self.server.demo})
             elif route == "/api/export.csv":  # ancienne adresse, conservée
                 self._export("mesures", *_range_from_query(query, time.time()))
             elif route == "/api/stream":
@@ -226,7 +230,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         first = next(chunks)  # erreurs (base absente…) levées AVANT l'envoi des en-têtes
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/csv; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="{exports.filename(name, start, end)}"')
+        self.send_header("Content-Disposition", f'attachment; filename="{"DEMO-FICTIF-" if self.server.demo else ""}{exports.filename(name, start, end)}"')
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         for key, value in SECURITY_HEADERS.items():
@@ -313,5 +317,6 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def make_server(host: str, port: int, db_path: str, extra_hosts: tuple[str, ...] = ()) -> DashboardServer:
-    return DashboardServer((host, port), db_path, extra_hosts)
+def make_server(host: str, port: int, db_path: str, extra_hosts: tuple[str, ...] = (),
+                demo: bool = False) -> DashboardServer:
+    return DashboardServer((host, port), db_path, extra_hosts, demo)
