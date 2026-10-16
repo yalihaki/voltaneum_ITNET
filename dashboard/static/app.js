@@ -755,6 +755,7 @@
     const start = fromLocalInput($('#hist-from').value), end = fromLocalInput($('#hist-to').value);
     if (!(end > start)) { $('#hist-foot').textContent = 'La date de fin doit suivre la date de début.'; return; }
     renderExports(start, end);
+    $('#hist-csv').href = '/api/export/mesures.csv?start=' + Math.round(start) + '&end=' + Math.round(end);
     const box = $('#chart-hist-temp'); box.classList.add('loading');
     try {
       const points = Math.min(2500, Math.max(400, Math.round(box.clientWidth * 1.5)));
