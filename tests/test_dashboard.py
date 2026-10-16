@@ -243,7 +243,7 @@ def test_api_routes(server):
     assert status == 200 and len(json.loads(body)["items"]) == 2
     now_ms = int(time.time() * 1000)
     status, _, body = _get(server + f"/api/control.csv?start={now_ms - 3_600_000}&end={now_ms + 60_000}")
-    assert status == 200 and body.decode().splitlines()[0].startswith("timestamp_utc;t_oil")
+    assert status == 200 and body.decode("utf-8-sig").splitlines()[0].startswith("date UTC;heure locale;PT02 huile (°C);cible (°C)")
     for route in ("/api/alerts", "/api/models", "/api/system", "/api/settings", "/api/pid", "/api/retrain", "/healthz"):
         assert _get(server + route)[0] == 200, route
 
@@ -259,9 +259,31 @@ def test_csv_export(server):
     status, headers, body = _get(server + f"/api/export.csv?start={now_ms - 600_000}&end={now_ms}")
     assert status == 200
     assert "attachment" in headers["Content-Disposition"]
-    lines = body.decode("utf-8").strip().splitlines()
-    assert lines[0].startswith("timestamp_utc;pt01;pt02")
+    text = body.decode("utf-8")
+    assert text.startswith("\ufeff")                                  # BOM : accents corrects dans Excel
+    lines = text.lstrip("\ufeff").strip().splitlines()
+    assert lines[0].startswith("date UTC;heure locale;PT01")
     assert len(lines) > 30
+    assert any("," in cell for cell in lines[-1].split(";")[2:])       # virgule décimale (Excel français)
+    assert "." not in lines[-1].split(";")[3]                          # jamais de point décimal
+
+
+def test_every_element_has_its_own_csv_export(server):
+    now_ms = int(time.time() * 1000)
+    period = f"start={now_ms - 7_200_000}&end={now_ms + 3_600_000}"
+    status, _, body = _get(server + "/api/exports")
+    names = [e["name"] for e in json.loads(body)]
+    assert names == ["mesures", "consignes", "alertes", "predictions", "entrainements"]
+    expected_header = {"mesures": "date UTC", "consignes": "date UTC", "alertes": "date UTC;heure locale;niveau",
+                       "predictions": "prédite le (UTC)", "entrainements": "date (heure locale)"}
+    for name in names:
+        status, headers, body = _get(server + f"/api/export/{name}.csv?{period}")
+        assert status == 200, name
+        assert f"voltaneum-{name}-" in headers["Content-Disposition"]
+        assert body.decode("utf-8-sig").startswith(expected_header[name]), name
+    alerts_csv = _get(server + f"/api/export/alertes.csv?{period}")[2].decode("utf-8-sig")
+    assert "critical_temp" in alerts_csv and "Huile à 56 °C" in alerts_csv
+    assert _get(server + f"/api/export/inconnu.csv?{period}")[0] == 404
 
 
 def test_foreign_host_header_is_refused(server):

@@ -10,6 +10,7 @@
 #   ./voltaneum run          tout au premier plan (Ctrl+C pour arrêter)
 #   ./voltaneum diagnose     réseau, services, base, modèle (lecture seule)
 #   ./voltaneum data         résumé des mesures enregistrées
+#   ./voltaneum export       un fichier CSV par élément (--days 7 | --hours 24 | --all)
 #   ./voltaneum model        modèle proposé par le ré-entraînement : accept | reject | rollback
 #   ./voltaneum retrain      lancer un ré-entraînement maintenant (proposition seulement)
 #   ./voltaneum restore      lister les sauvegardes, ou en restaurer une (après ./voltaneum stop)
@@ -251,8 +252,8 @@ case "$command" in
     status)   cmd_status ;;
     logs)     mkdir -p logs; touch "$LOG"; tail -n 50 -f "$LOG" ;;
     run)      ensure_env; ensure_dotenv; exec "$PY" voltaneum.py run "$@" ;;
-    diagnose|data|model|retrain|demo|restore|watch) ensure_env; exec "$PY" voltaneum.py "$command" "$@" ;;
+    diagnose|data|model|retrain|demo|restore|watch|export) ensure_env; exec "$PY" voltaneum.py "$command" "$@" ;;
     test)     cmd_test ;;
-    help|-h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *)        say "Commande inconnue : $command"; sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    help|-h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)        say "Commande inconnue : $command"; sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

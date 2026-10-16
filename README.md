@@ -38,6 +38,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
 | `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) et 10 dernières lignes (remplace `check_data.py`) ; options `--rows 50`, `--hours 24`, `--csv export.csv` |
+| `./voltaneum export` | **un fichier CSV par élément** (mesures, consignes PID, alertes, prédictions, ré-entraînements) dans `exports/` ; `--days 7` (défaut), `--hours 24`, `--all`, `--only mesures,alertes` |
 | `./voltaneum model` | modèle proposé : `accept`, `reject --note "…"`, `rollback` |
 | `./voltaneum restore` | lister les sauvegardes ; `restore <nom>` pour en restaurer une (après `stop`) |
 | `./voltaneum retrain` | ré-entraîner maintenant (proposition seulement) |
@@ -67,8 +68,12 @@ ssh -N -L 8080:localhost:8080 itnet@controller
 
 Écrans : **Supervision** (mesures en direct, synoptique, tendance et prévision de PT02, consigne
 PID expliquée, prédiction, conditions de refroidissement, alertes, état du système),
-**Historique** (période au choix, export CSV), **Alertes**, **PID** (réglages, messages MQTT
-exacts, consignes envoyées), **Modèles** (ré-entraînement, erreur en production), **Réglages**.
+**Historique** (période au choix, **exports CSV** des cinq éléments sur cette période), **Alertes**
+(export), **PID** (réglages, messages MQTT exacts, consignes envoyées, export), **Modèles**
+(ré-entraînement, erreur en production, exports), **Réglages**.
+
+Exports au format Excel français : séparateur « ; », virgule décimale, UTF-8 avec BOM, heure UTC
+et heure locale sur chaque ligne.
 
 L'interface est en **lecture seule** (base ouverte en mode `ro`) et sans authentification :
 elle écoute sur `127.0.0.1` par défaut (`DASHBOARD_HOST`), à n'ouvrir au réseau que sur un réseau de confiance.

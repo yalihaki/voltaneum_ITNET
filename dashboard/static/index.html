@@ -218,7 +218,6 @@
         <label class="field">Du <input type="datetime-local" id="hist-from" required></label>
         <label class="field">au <input type="datetime-local" id="hist-to" required></label>
         <button class="btn primary" type="submit">Afficher</button>
-        <a class="btn" id="hist-csv" href="#" download>Exporter CSV</a>
       </form>
     </header>
     <div class="chips" id="hist-series" role="group" aria-label="Courbes affichées"></div>
@@ -226,6 +225,11 @@
     <div class="chart-box mid" id="chart-hist-flow"></div>
     <div class="chart-box mid" id="chart-hist-power"></div>
     <p class="chart-foot" id="hist-foot"></p>
+  </section>
+  <section class="panel">
+    <header class="ph"><h2>Exports CSV</h2><small id="exports-period"></small></header>
+    <div class="pb exports" id="exports"></div>
+    <p class="chart-foot">Un fichier par élément, sur la période choisie ci-dessus. Format Excel français : séparateur « ; », virgule décimale, heure UTC et heure locale.</p>
   </section>
   <section class="panel">
     <header class="ph"><h2>Statistiques de la période</h2><small id="hist-stats-note"></small></header>
@@ -250,6 +254,7 @@
           <button type="button" data-level="INFO">Info</button>
         </div>
         <label class="field search"><span class="sr">Rechercher</span><input type="search" id="alert-search" placeholder="Rechercher une règle ou un message"></label>
+        <a class="btn" id="alerts-csv" href="/api/export/alertes.csv?days=365" download>Exporter CSV (1 an)</a>
       </div>
     </header>
     <div class="table-wrap"><table class="table alerts-table" id="alerts-table">
@@ -360,6 +365,10 @@
   <section class="panel">
     <header class="ph">
       <h2>Prédiction comparée à la mesure</h2>
+      <div class="toolbar">
+        <a class="btn" id="predictions-csv" href="#" download>Exporter les prédictions</a>
+        <a class="btn" id="retrain-csv" href="#" download>Exporter les ré-entraînements</a>
+      </div>
       <div class="seg" role="group" aria-label="Période" id="model-range">
         <button type="button" data-min="360">6 h</button>
         <button type="button" data-min="1440" aria-pressed="true">24 h</button>

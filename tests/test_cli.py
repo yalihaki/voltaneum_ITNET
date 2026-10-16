@@ -54,3 +54,21 @@ def test_restore_refused_while_voltaneum_runs(env):
         assert voltaneum.main(["restore", archive.name, "--yes"]) == 1
     finally:
         running.close()
+
+
+def test_export_writes_one_csv_per_element(env, capsys, tmp_path):
+    db, _ = env
+    out = tmp_path / "exports"
+    assert voltaneum.main(["export", "--db", db, "--days", "1", "--dir", str(out)]) == 0
+    files = sorted(p.name.split("-")[1] for p in out.glob("*.csv"))
+    assert files == ["alertes", "consignes", "entrainements", "mesures", "predictions"]
+    mesures = next(out.glob("voltaneum-mesures-*.csv")).read_text(encoding="utf-8-sig").splitlines()
+    assert mesures[0].startswith("date UTC;heure locale;PT01") and len(mesures) == 2
+
+
+def test_export_only_some_elements(env, tmp_path):
+    db, _ = env
+    out = tmp_path / "exports"
+    assert voltaneum.main(["export", "--db", db, "--only", "mesures,alertes", "--dir", str(out)]) == 0
+    assert len(list(out.glob("*.csv"))) == 2
+    assert voltaneum.main(["export", "--db", db, "--only", "bidon", "--dir", str(out)]) == 2

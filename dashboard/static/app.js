@@ -732,10 +732,29 @@
     $$('#hist-presets button').forEach(b => b.setAttribute('aria-pressed', 'false'));
     loadHistory();
   });
+  // Exports CSV : un fichier par élément, sur la période choisie.
+  const EXPORT_LIST = [
+    ['mesures', 'Mesures', 'toutes les sondes, débit, fréquence, air, puissance'],
+    ['consignes', 'Consignes PID', 'chaque cycle, ses termes et le message MQTT exact'],
+    ['alertes', 'Alertes', 'niveau, règle, message, e-mail envoyé'],
+    ['predictions', 'Prédictions', 'valeur prédite, mesure à l\'échéance, erreur'],
+    ['entrainements', 'Ré-entraînements', 'verdict de chaque horizon, décisions'],
+  ];
+  function renderExports(start, end) {
+    const box = $('#exports'); box.replaceChildren();
+    for (const [name, label, hint] of EXPORT_LIST) {
+      const a = el('a', 'export-btn'); a.href = '/api/export/' + name + '.csv?start=' + Math.round(start) + '&end=' + Math.round(end);
+      a.setAttribute('download', '');
+      a.append(el('b', null, '↓ ' + label), el('span', null, hint));
+      box.append(a);
+    }
+    $('#exports-period').textContent = 'du ' + fmtDateTime.format(new Date(start)) + ' au ' + fmtDateTime.format(new Date(end));
+  }
+
   async function loadHistory() {
     const start = fromLocalInput($('#hist-from').value), end = fromLocalInput($('#hist-to').value);
     if (!(end > start)) { $('#hist-foot').textContent = 'La date de fin doit suivre la date de début.'; return; }
-    $('#hist-csv').href = '/api/export.csv?start=' + start + '&end=' + end;
+    renderExports(start, end);
     const box = $('#chart-hist-temp'); box.classList.add('loading');
     try {
       const points = Math.min(2500, Math.max(400, Math.round(box.clientWidth * 1.5)));
@@ -947,7 +966,7 @@
   $('#pid-failed-only').addEventListener('change', () => renderPidTable());
   async function loadPidHistory() {
     const now = Date.now() - state.clockOffset, start = now - pidMinutes * 60e3, end = now + 60e3;
-    $('#pid-csv').href = '/api/control.csv?start=' + Math.round(start) + '&end=' + Math.round(end);
+    $('#pid-csv').href = '/api/export/consignes.csv?start=' + Math.round(start) + '&end=' + Math.round(end);
     const box = $('#chart-pid-history'); box.classList.add('loading');
     try {
       const d = await api('/api/control?start=' + Math.round(start) + '&end=' + Math.round(end) + '&limit=5000');
@@ -1034,7 +1053,14 @@
   legend('#legend-models', [['--s1', 'PT02 mesurée', ''], ['--pred', MODEL_LABELS.random_forest, 'dash'], ['--pred-2', MODEL_LABELS.gradient_boosting, 'dotted']]);
   let modelMinutes = 1440;
   segmented($('#model-range'), b => { modelMinutes = +b.dataset.min; loadModelChart(); });
+  function setModelExports() {
+    const now = Date.now();
+    $('#predictions-csv').href = '/api/export/predictions.csv?start=' + (now - modelMinutes * 60e3) + '&end=' + now;
+    $('#retrain-csv').href = '/api/export/entrainements.csv?days=400';
+  }
+
   async function loadModelChart() {
+    setModelExports();
     const box = $('#chart-models'); box.classList.add('loading');
     try {
       const d = await api('/api/series?minutes=' + modelMinutes + '&points=' + Math.max(300, Math.round(box.clientWidth)));

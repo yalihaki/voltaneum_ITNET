@@ -172,6 +172,7 @@ Dans le même processus : stockage (sauvegarde/purge), monitoring ML, interface 
 | `notifications/alerts.py` | règles d'alerte, moteur dans le processus, e-mail, journal unique |
 | `messaging/mqtt.py` | clients MQTT (authentification, TLS vérifié) |
 | `dashboard/` | interface web en lecture seule (supervision, historique, alertes, PID, modèles, réglages) |
+| `dashboard/exports.py` | exports CSV, un par élément (mesures, consignes, alertes, prédictions, ré-entraînements), interface et `./voltaneum export` |
 
 ---
 

@@ -15,3 +15,4 @@ venv/
 .ruff_cache/
 .DS_Store
 demo_models/
+exports/

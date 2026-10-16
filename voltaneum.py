@@ -5,6 +5,7 @@
     python voltaneum.py model [accept|reject|rollback]
     python voltaneum.py watch                  # supervision en direct dans le terminal
     python voltaneum.py data                   # résumé des mesures en base
+    python voltaneum.py export --days 7        # un CSV par élément dans exports/
     python voltaneum.py diagnose               # réseau, services, base, modèle
     python voltaneum.py restore [sauvegarde]   # lister / restaurer une sauvegarde
     python voltaneum.py demo                   # interface sur données fictives
@@ -167,6 +168,41 @@ def cmd_diagnose(_args: argparse.Namespace) -> int:
     return run_diagnostic()
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    """Un fichier CSV par élément (mesures, consignes, alertes, prédictions, ré-entraînements)."""
+    import time
+
+    from dashboard import exports
+    from dashboard.data import DatabaseUnavailable
+
+    end = time.time()
+    span = 400 * 86400 if args.all else (args.hours * 3600 if args.hours else args.days * 86400)
+    start = end - span
+    names = [n.strip() for n in args.only.split(",")] if args.only else list(exports.EXPORTS)
+    unknown = [n for n in names if n not in exports.EXPORTS]
+    if unknown:
+        print(f"Export inconnu : {', '.join(unknown)} (possibles : {', '.join(exports.EXPORTS)})")
+        return 2
+    folder = Path(args.dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    print(f"Export du {time.strftime('%d/%m/%Y %H:%M', time.localtime(start))} "
+          f"au {time.strftime('%d/%m/%Y %H:%M', time.localtime(end))} dans {folder}/ :")
+    for name in names:
+        label, producer = exports.EXPORTS[name]
+        path = folder / exports.filename(name, start, end)
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as out:
+                count = exports.write_csv(producer(args.db, start, end), out)
+        except DatabaseUnavailable as exc:
+            path.unlink(missing_ok=True)
+            print(f"  {label:<32} impossible : {exc}")
+            return 1
+        print(f"  {label:<32} {count:>8} ligne(s)   {path}")
+    print("Format Excel français (séparateur « ; », virgule décimale). Copier sur votre poste, par exemple :")
+    print(f"  scp {getpass.getuser()}@<serveur>:{folder.resolve()}/*.csv .")
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     from service.watch import run_watch
 
@@ -262,6 +298,16 @@ def build_parser() -> argparse.ArgumentParser:
     data.set_defaults(func=cmd_data)
 
     sub.add_parser("diagnose", help="vérifier réseau, services, base et modèle").set_defaults(func=cmd_diagnose)
+
+    export = sub.add_parser("export", help="un fichier CSV par élément (mesures, consignes, alertes, prédictions, ré-entraînements)")
+    export.add_argument("--db", default=config.SQLITE_DB_PATH)
+    period = export.add_mutually_exclusive_group()
+    period.add_argument("--days", type=float, default=7, help="période en jours (défaut : 7)")
+    period.add_argument("--hours", type=float, help="période en heures")
+    period.add_argument("--all", action="store_true", help="tout l'historique (400 jours au plus)")
+    export.add_argument("--dir", default=str(Path(config.PROJECT_ROOT) / "exports"), help="dossier de sortie")
+    export.add_argument("--only", help="seulement certains éléments, ex. mesures,alertes")
+    export.set_defaults(func=cmd_export)
 
     watch = sub.add_parser("watch", help="supervision en direct dans le terminal (sans navigateur)")
     watch.add_argument("--db", default=config.SQLITE_DB_PATH)

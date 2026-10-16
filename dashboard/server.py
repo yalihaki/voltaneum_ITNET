@@ -16,20 +16,17 @@ Sécurité :
 
 from __future__ import annotations
 
-import csv
-import io
 import ipaddress
 import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from dashboard import data
+from dashboard import data, exports
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +60,18 @@ class BadRequest(ValueError):
 
 
 def _range_from_query(query: dict[str, list[str]], now: float) -> tuple[float, float]:
-    """Période demandée : `minutes=` (jusqu'à maintenant) ou `start=` / `end=` (epoch ms)."""
+    """Période demandée : `minutes=` ou `days=` (jusqu'à maintenant), ou `start=` / `end=` (epoch ms)."""
     try:
         if "start" in query:
             start = float(query["start"][0]) / 1000
             end = float(query.get("end", [str(now * 1000)])[0]) / 1000
+        elif "days" in query:
+            start, end = now - float(query["days"][0]) * 86400, now
         else:
             minutes = float(query.get("minutes", ["120"])[0])
             start, end = now - minutes * 60, now
     except ValueError:
-        raise BadRequest("période invalide (minutes, start et end doivent être des nombres)") from None
+        raise BadRequest("période invalide (minutes, days, start et end doivent être des nombres)") from None
     if not end > start:
         raise BadRequest("la fin de la période doit être postérieure à son début")
     if end - start > data.MAX_RANGE_DAYS * 86400:
@@ -186,12 +185,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif route == "/api/control":
                 start, end = _range_from_query(query, time.time())
                 self._json(data.control_history(self.server.db_path, start, end, _int_param(query, "limit", 500)))
-            elif route == "/api/control.csv":
-                self._control_csv(*_range_from_query(query, time.time()))
+            elif route == "/api/control.csv":  # ancienne adresse, conservée
+                self._export("consignes", *_range_from_query(query, time.time()))
+            elif route.startswith("/api/export/") and route.endswith(".csv"):
+                name = route[len("/api/export/"):-len(".csv")]
+                if name not in exports.EXPORTS:
+                    self._error(HTTPStatus.NOT_FOUND, "export inconnu")
+                else:
+                    self._export(name, *_range_from_query(query, time.time()))
+            elif route == "/api/exports":
+                self._json(exports.describe())
             elif route == "/api/settings":
                 self._json(data.settings_summary())
-            elif route == "/api/export.csv":
-                self._export_csv(*_range_from_query(query, time.time()))
+            elif route == "/api/export.csv":  # ancienne adresse, conservée
+                self._export("mesures", *_range_from_query(query, time.time()))
             elif route == "/api/stream":
                 self._stream()
             elif route == "/healthz":
@@ -213,28 +220,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = (STATIC_DIR / name).read_bytes()
         self._send(HTTPStatus.OK, body, content_type, {"Cache-Control": "no-cache"})
 
-    def _export_csv(self, start: float, end: float) -> None:
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, delimiter=";")
-        writer.writerow(["timestamp_utc", *data.MEASURES, "temp_outdoor_source"])
-        for row in data.telemetry_rows(self.server.db_path, start, end):
-            writer.writerow(row)
-        stamp = datetime.fromtimestamp(start, timezone.utc).strftime("%Y%m%d-%H%M")
-        self._send(
-            HTTPStatus.OK, buffer.getvalue().encode("utf-8"), "text/csv; charset=utf-8",
-            {"Content-Disposition": f'attachment; filename="voltaneum-{stamp}.csv"', "Cache-Control": "no-store"},
-        )
-
-    def _control_csv(self, start: float, end: float) -> None:
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, delimiter=";")
-        for row in data.control_rows(self.server.db_path, start, end):
-            writer.writerow(row)
-        stamp = datetime.fromtimestamp(start, timezone.utc).strftime("%Y%m%d-%H%M")
-        self._send(
-            HTTPStatus.OK, buffer.getvalue().encode("utf-8"), "text/csv; charset=utf-8",
-            {"Content-Disposition": f'attachment; filename="voltaneum-pid-{stamp}.csv"', "Cache-Control": "no-store"},
-        )
+    def _export(self, name: str, start: float, end: float) -> None:
+        """Envoie le CSV d'un élément au fil de l'eau (aucune limite de taille en mémoire)."""
+        chunks = exports.csv_chunks(name, self.server.db_path, start, end)
+        first = next(chunks)  # erreurs (base absente…) levées AVANT l'envoi des en-têtes
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{exports.filename(name, start, end)}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.close_connection = True
+        if self.command == "HEAD":
+            return
+        self.wfile.write(first)
+        for chunk in chunks:
+            self.wfile.write(chunk)
 
     def _stream(self) -> None:
         """Flux SSE : un événement `snapshot` à chaque nouvelle ligne de mesures, `alert` à
