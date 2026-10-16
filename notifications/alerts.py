@@ -382,6 +382,17 @@ class AlertEngine:
         with self._lock:
             self._latest_outdoor_consistency = result
 
+    def report(self, level: str, rule_name: str, message: str) -> None:
+        """Alerte décidée hors des règles (ex. régulation inefficace), avec le même délai entre
+        deux e-mails d'une même règle."""
+        now = time.time()
+        with self._lock:
+            self._state.setdefault("last_sent_at", {})
+            if not _cooldown_elapsed(rule_name, self._state, now):
+                return
+            self._state["last_sent_at"][rule_name] = now
+        self._dispatch([{"level": level, "rule_name": rule_name, "message": message}])
+
     def check_now(self) -> None:
         """Évaluation sans nouvelle mesure : règles liées au temps (passerelle muette)."""
         with self._lock:

@@ -289,14 +289,32 @@ Topics :
 | `voltaneum/telemetry` | collecteur | télémétrie validée |
 | `voltaneum/prediction` | boucle de contrôle | prédictions comparées |
 | `voltaneum/control/cooling_conditions` | boucle de contrôle | température cible et conditions à suivre (contrat principal) |
-| `voltaneum/control/setpoint` | PID | consigne en % indicative (`PUBLISH_PID_SETPOINT`) |
+| `voltaneum/control/setpoint` | étapes | consigne conseillée au ventilateur en % (`percent`), sortie brute du PID (`pid_percent`), `mode`, `phase`, `event` (`PUBLISH_PID_SETPOINT`) |
 | `voltaneum/model_health` | monitoring ML | RMSE glissant |
 
 Le système accepte l'absence temporaire du broker et réessaie avec backoff. L'absence de MQTT ne doit pas empêcher l'écriture SQLite.
 
+#### Régulation par étapes : quand un message est envoyé (`control/supervisor.py`)
+
+Le bain diélectrique est une grosse masse de liquide : il met une dizaine de minutes à réagir. Envoyer une nouvelle consigne chaque minute reviendrait à agir avant d'avoir vu l'effet de la précédente. Le PID est donc **calculé** chaque minute (affiché, journalisé, sert de plancher), mais un message n'est **envoyé** qu'aux étapes :
+
+| Étape | Déclenchement | Message |
+|---|---|---|
+| **repos** | PT02 sous la cible et stable | **aucun** : l'automate régule seul |
+| **activation** | PT02 > cible + `REGULATION_START_ABOVE_TARGET_CELSIUS` (0,5 °C), ou PT02 qui monte d'au moins `REGULATION_HEATING_SLOPE` (0,3 °C / 10 min) près de la cible, ou prédiction ML au-dessus de la cible | un message : **air extérieur seul** si l'air est froid (voir plus bas), sinon **ventilateur** à `max(REGULATION_FAN_START_PERCENT, PID)` |
+| **attente** | pendant `REGULATION_EFFECT_WAIT_SECONDS` (10 min) après chaque message | **aucun** : on laisse au bain le temps de réagir |
+| **maintien** | après l'attente, PT02 baisse d'au moins `REGULATION_COOLING_SLOPE` (0,2 °C / 10 min) | un message, même consigne (garde le message valide côté automate) |
+| **renforcement** | après l'attente, PT02 ne baisse pas | un message : air seul → ventilateur → ventilateur + `REGULATION_STEP_PERCENT` (20 %) ou PID si plus haut, jusqu'à 100 % ; l'air extérieur qui se réchauffe pendant l'air seul fait passer au ventilateur sans attendre |
+| **insuffisant** | 100 % et PT02 ne baisse toujours pas | un message + alerte `cooling_ineffective` : vérifier que le ventilateur tourne, le dry cooler et que l'automate applique la consigne |
+| **fin** | PT02 ≤ cible − `REGULATION_RELEASE_BELOW_TARGET_CELSIUS` (1 °C) et plus rien ne pousse à refroidir | un message (consigne 0 %, `cooling_mode` = `aucun`), retour au repos |
+| **critique** | PT02 > `CRITICAL_TEMP`, à tout moment | un message **immédiat** à 100 %, sans attendre |
+| **renvoi** | le message d'étape précédent n'a pas pu partir (broker injoignable) | renvoyé au cycle suivant |
+
+La consigne au ventilateur ne baisse jamais pendant une demande (pas de va-et-vient) ; elle retombe à 0 à la fin. La **tendance** de PT02 est la pente de la droite ajustée sur toutes les mesures des 10 dernières minutes (`control/trend.py`), car PT02, lue au degré près, ferait croire à un saut de 1 °C en un seul pas. Chaque message porte `valid_for_seconds` = attente + 3 cycles : pendant une demande, un message part au plus tard à chaque vérification, donc il ne périme pas ; au repos, rien n'est envoyé et l'automate reprend sa propre régulation. Après une perte de mesures, les étapes repartent du repos. Valeurs indicatives, à valider avec l'automaticien.
+
 #### Contrat `voltaneum/control/cooling_conditions`
 
-Publié à chaque cycle de contrôle (60 s), sans drapeau « retained » :
+Publié aux étapes seulement (voir ci-dessus), sans drapeau « retained » :
 
 | Champ | Sens |
 |---|---|
@@ -309,13 +327,16 @@ Publié à chaque cycle de contrôle (60 s), sans drapeau « retained » :
 | `t_oil`, `t_outdoor` | mesures utilisées, pour la traçabilité (`t_outdoor` = `null` si inconnue) |
 | `t_outdoor_source` | origine de `t_outdoor` : `sensor` (capteur, prioritaire), `weather` (repli API météo) ou `null` |
 | `valid_for_seconds` | durée de validité (3 × intervalle de contrôle) |
-| `cooling_mode` | conseil : `aucun`, `air_exterieur` (ventilateur arrêté, l'air froid suffit) ou `ventilateur` |
-| `cooling_mode_reason` | raison du conseil, en clair |
+| `phase` | étape : `repos`, `air_exterieur`, `ventilateur` ou `critique` |
+| `event` | pourquoi ce message : `activation`, `maintien`, `renforcement`, `insuffisant`, `critique`, `fin` ou `renvoi` |
+| `command_percent` | consigne conseillée au ventilateur (%) ; 0 au repos et à l'air seul |
+| `cooling_mode` | `aucun`, `air_exterieur` (ventilateur arrêté, l'air froid suffit) ou `ventilateur` |
+| `cooling_mode_reason` | raison de l'étape, en clair |
 | `ts` | horodatage de publication |
 
 Règles : rien n'est publié si PT02 est invalide ou si les mesures sont périmées. La bande marche / arrêt est **centrée** sur la cible décalée : en tout-ou-rien, la température oscille entre les deux seuils et sa moyenne tombe au milieu (avant, marche à 35 °C et arrêt à 33 °C faisaient tenir le bain 1 °C sous la cible ; c'est ce qu'on observait, PT02 ≈ 34 °C). Air froid : le dry cooler refroidit mieux, le ventilateur démarre plus tard (décalage +2 °C) ; air chaud : il a moins de capacité, il démarre plus tôt (−2 °C). `fan_min_freq_hz` concerne le **ventilateur** et ne se compare pas à `freq_pompe`. Les bandes, décalages, hystérésis et fréquences (`OUTDOOR_BANDS`, `FAN_HYSTERESIS_CELSIUS`) sont des **valeurs indicatives non calibrées**, à valider avec l'automaticien ; `validate_config()` refuse une table incohérente (bandes non ordonnées, seuil de marche ≥ seuil critique, fréquence hors de la plage du variateur).
 
-**Air extérieur seul ou ventilateur (`cooling_mode`, `control/cooling_mode.py`).** Par air froid, le dry cooler évacue assez de chaleur **ventilateur arrêté**, par simple circulation naturelle de l'air à travers ses ailettes. Quand le PID demande du refroidissement, le conseil est « air extérieur seul » si, en même temps : l'air est sous `FREE_COOLING_MAX_OUTDOOR_TEMP` (10 °C), l'écart PT02 − air atteint `FREE_COOLING_MIN_GAP_CELSIUS` (15 °C) et la demande ne dépasse pas `FREE_COOLING_MAX_DEMAND_PERCENT` (30 %). Sinon : « ventilateur ». Consigne PID à 0 % : « aucun ». Seuil critique dépassé ou air inconnu : toujours « ventilateur ». Anti-va-et-vient : une hystérésis sur l'air (l'air seul reste permis jusqu'à 10 + `FREE_COOLING_HYSTERESIS_CELSIUS` = 12 °C) ; le passage au ventilateur est immédiat, le retour à l'air seul attend `FREE_COOLING_MIN_DWELL_SECONDS` (10 min). Conseil enregistré dans `control_log` (`cooling_mode`, `cooling_mode_reason`) et affiché dans l'interface et `./voltaneum watch`. Valeurs indicatives, à valider avec l'automaticien ; l'état réel du ventilateur n'étant pas mesuré, Voltaneum ne peut pas vérifier que le conseil est suivi.
+**Air extérieur seul (`control/cooling_mode.py`).** Par air froid, le dry cooler évacue assez de chaleur **ventilateur arrêté**, par simple circulation naturelle de l'air à travers ses ailettes : c'est la première étape proposée à l'activation si l'air est sous `FREE_COOLING_MAX_OUTDOOR_TEMP` (10 °C) et si l'écart PT02 − air atteint `FREE_COOLING_MIN_GAP_CELSIUS` (15 °C). Hystérésis sur l'air : l'air seul reste permis jusqu'à 10 + `FREE_COOLING_HYSTERESIS_CELSIUS` = 12 °C. Si PT02 ne baisse pas après l'attente, ou si l'air se réchauffe, l'étape suivante est le ventilateur. L'état réel du ventilateur n'étant pas mesuré, Voltaneum ne peut pas vérifier que le conseil est suivi : c'est l'étape « insuffisant » qui le révèle.
 
 Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_for_seconds` et retomber sur sa propre régulation ; rester dans ses bornes de variateur ; respecter son mode manuel / automatique, ses arrêts d'urgence et ses temporisations ; limiter la vitesse de variation ; ne jamais être piloté en écriture par ce projet. À ma connaissance, le S7-200 SMART n'a pas de client MQTT natif : un pont est probablement nécessaire (à confirmer).
 
@@ -345,7 +366,7 @@ SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais l
 
 #### `control_log`
 
-Un enregistrement par cycle de contrôle (60 s) : `timestamp`, `t_oil`, `t_target`, `t_predicted` (prédiction combinée réellement utilisée, `NULL` sans modèle), `t_outdoor`, `t_outdoor_source`, `setpoint`, `mode`, `error`, `p_term`, `i_term`, `d_term`, `feedforward_prediction`, `feedforward_outdoor`, `raw_output` (somme avant bornage), `outdoor_band`, `fan_on_above`, `fan_off_below`, `fan_min_freq_hz`, `cooling_mode` et `cooling_mode_reason` (conseil air extérieur seul / ventilateur), `mqtt_setpoint` et `mqtt_conditions` (messages JSON exacts transmis au broker, `NULL` si non transmis), `mqtt_sent` (1 transmis, 0 échec, `NULL` publication désactivée). Rien n'est enregistré quand rien n'est publié (mesures périmées). Purge : même plancher que `predictions_log`.
+Un enregistrement par cycle de contrôle (60 s) : `timestamp`, `t_oil`, `t_target`, `t_predicted` (prédiction combinée réellement utilisée, `NULL` sans modèle), `t_outdoor`, `t_outdoor_source`, `setpoint`, `mode`, `error`, `p_term`, `i_term`, `d_term`, `feedforward_prediction`, `feedforward_outdoor`, `raw_output` (somme avant bornage), `outdoor_band`, `fan_on_above`, `fan_off_below`, `fan_min_freq_hz`, `phase`, `event` (`NULL` : rien à envoyer ce cycle), `command_percent`, `cooling_mode` et `cooling_mode_reason`, `mqtt_setpoint` et `mqtt_conditions` (messages JSON exacts transmis au broker, `NULL` si rien n'est envoyé ou non transmis), `mqtt_sent` (1 transmis, 0 échec, `NULL` rien à envoyer). Chaque cycle est journalisé, qu'un message parte ou non. Rien n'est enregistré quand rien n'est publié (mesures périmées). Purge : même plancher que `predictions_log`.
 
 SQLite utilise WAL et un index sur les timestamps.
 
@@ -530,6 +551,7 @@ Règles :
 - **PT02 figée** (`oil_sensor_frozen`, ATTENTION) : valeur strictement constante pendant `SENSOR_FROZEN_ALERT_MINUTES` **alors que PT01**, sur le même circuit, a varié d'au moins `SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS` (1 °C) ; sans PT01, la durée seule fait foi. PT02 étant lue au degré près, elle reste à 34,0 °C pendant des heures sur un procédé stable : l'ancienne règle (durée seule) donnait une fausse alerte quotidienne ;
 - désaccord entre modèles ;
 - écart entre le capteur extérieur et la météo ;
+- **refroidissement insuffisant** (`cooling_ineffective`, ATTENTION) : régulation par étapes arrivée à 100 % et PT02 qui ne baisse toujours pas après l'attente ; vérifier que le ventilateur tourne, le dry cooler et que l'automate applique la consigne ;
 - dérive d'efficacité : ε = max(écart diélectrique, écart refroidissement) / (diélectrique chaud − refroidissement froid), plage normale inconnue, **désactivée par défaut** (`EFFICIENCY_ALERT_ENABLED`) ;
 - stockage : seuil d'avertissement, purge exécutée ou bloquée, sauvegarde (avant purge ou quotidienne) impossible.
 

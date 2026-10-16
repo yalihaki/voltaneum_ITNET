@@ -17,7 +17,9 @@ def _db(tmp_path, rows=True):
                                          timestamp=ts, db_path=path, temp_outdoor_source="weather")
         sqlite_client.log_control({"t_oil": 36.0, "t_target": 35.0, "setpoint": 42.0, "mode": "pid", "error": 1.0,
                                    "p_term": 10.0, "i_term": 32.0, "d_term": 0.0, "feedforward_prediction": 0.0,
-                                   "feedforward_outdoor": 0.0, "raw_output": 42.0, "mqtt_sent": 0}, db_path=path)
+                                   "feedforward_outdoor": 0.0, "raw_output": 42.0, "mqtt_sent": 0,
+                                   "phase": "ventilateur", "event": "activation", "command_percent": 42.0,
+                                   "cooling_mode": "ventilateur", "cooling_mode_reason": "PT02 à 36,0 °C"}, db_path=path)
         sqlite_client.log_alert("CRITIQUE", "critical_temp", "Huile à 56 °C", email_sent=False, db_path=path)
     return path
 
@@ -28,7 +30,8 @@ def test_screen_shows_measures_pid_and_alerts(tmp_path):
     assert "Diélectrique" in screen and "PT01 40,0 °C" in screen
     assert "Refroidissement" in screen and "PT03 39,0 °C" in screen and "PT04 30,0 °C" in screen
     assert "dissipée" in screen and "ESTIMATION" in screen
-    assert "consigne 42,0 %" in screen and "NON transmise" in screen
+    assert "sortie PID 42,0 %" in screen and "envoyé seulement aux étapes" in screen
+    assert "VENTILATEUR 42 %" in screen and "activation" in screen and "NON transmis" in screen
     assert "critique" in screen and "Huile à 56 °C" in screen
     assert "\033[" not in screen                              # pas de couleurs hors terminal
 

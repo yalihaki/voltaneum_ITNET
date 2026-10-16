@@ -216,16 +216,30 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         mode = MODE_LABELS.get(c["mode"], c["mode"])
         mode = s.crit(mode) if c["mode"] == "safety_bypass" else mode
         stale = c["age_seconds"] > c["interval_seconds"] * 3
-        row("Régulation PID", f"consigne {s.bold(_num(c['setpoint'], 1, '%'))}  {_bar(c['setpoint'] or 0)}  {mode}"
+        row("Régulation PID", f"sortie PID {s.bold(_num(c['setpoint'], 1, '%'))}  {_bar(c['setpoint'] or 0)}  {mode}"
             + (s.warn(f"  (calcul vieux de {_ago(c['age_seconds'])})") if stale else ""))
         if c.get("p_term") is not None:
             ff = (c.get("feedforward_prediction") or 0) + (c.get("feedforward_outdoor") or 0)
             row("", f"écart {_signed(c['error'], 2)} °C → P {_signed(c['p_term'])}  I {_signed(c['i_term'])}  "
                 f"D {_signed(c['d_term'])}  anticipation {_signed(ff)}  = {_num(c['raw_output'], 1)} % avant bornage")
-        sent = {1: s.ok("transmise au broker MQTT"), 0: s.warn("NON transmise (broker injoignable)")}.get(
-            c.get("mqtt_sent"), "publication désactivée")
         gains = " / ".join(f"{c['gains'][k]:g}".replace(".", ",") for k in ("kp", "ki", "kd"))
-        row("", f"gains Kp / Ki / Kd {gains} · consigne {sent}")
+        row("", f"gains Kp / Ki / Kd {gains} · calculé chaque minute, envoyé seulement aux étapes")
+        # Régulation par étapes : étape en cours et dernier message réellement envoyé.
+        if c.get("phase"):
+            phase = {"repos": "repos (rien à envoyer, l'automate régule seul)",
+                     "air_exterieur": "AIR EXTÉRIEUR SEUL (ventilateur arrêté)",
+                     "ventilateur": f"VENTILATEUR {_num(c.get('command_percent'), 0, '%')}",
+                     "critique": s.crit("CRITIQUE : ventilateur 100 %")}.get(c["phase"], c["phase"])
+            row("Étape", s.bold(phase) if c["phase"] != "repos" else phase)
+            if c.get("cooling_mode_reason"):
+                row("", c["cooling_mode_reason"])
+        last = c.get("last_event")
+        if last:
+            when = datetime.fromtimestamp(last["ts"] / 1000).strftime("%d/%m %H:%M")
+            sent = {1: s.ok("transmis"), 0: s.warn("NON transmis (broker injoignable)")}.get(last.get("mqtt_sent"), "")
+            row("Dernier envoi", f"{when} · {last.get('event')} · {sent}")
+        elif c.get("phase"):
+            row("Dernier envoi", s.dim("aucun : PT02 ne s'est pas réchauffée"))
 
     p = snap.get("predictions")
     if not p:
@@ -250,14 +264,6 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         row("Conditions", f"air {band} · ventilateur marche > {_num(cool['fan_on_above_temp'])} °C, "
             f"arrêt < {_num(cool['fan_off_below_temp'])} °C · fréquence min. "
             f"{_num(cool['fan_min_freq_hz'], 0, 'Hz') if cool['fan_min_freq_hz'] is not None else 'non conseillée'}")
-    ctl = snap.get("control") or {}
-    if ctl.get("cooling_mode"):
-        names = {"aucun": "aucun refroidissement", "air_exterieur": "AIR EXTÉRIEUR SEUL (ventilateur arrêté)",
-                 "ventilateur": "VENTILATEUR"}
-        label = names.get(ctl["cooling_mode"], ctl["cooling_mode"])
-        row("Conseil", s.bold(label) if ctl["cooling_mode"] != "aucun" else label)
-        if ctl.get("cooling_mode_reason"):
-            row("", ctl["cooling_mode_reason"])
     lines.append(rule)
 
     end = time.time()

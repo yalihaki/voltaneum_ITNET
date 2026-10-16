@@ -42,7 +42,8 @@ from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdo
 from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_conditions
 from control.cooling_advice import compute_cooling_conditions
-from control.cooling_mode import advise_cooling_mode
+from control.supervisor import decide
+from control.trend import slope_per_10min
 from control.pid_controller import compute_setpoint_detailed
 from database import sqlite_client
 from database.storage_manager import StorageManager
@@ -85,7 +86,8 @@ class VoltaneumApp:
         self._predictor: DualModelPredictor | None = None
         self._predictor_report_mtime: float | None = None
         self._pid_state: dict = {}
-        self._cooling_mode_state: dict = {}
+        self._supervisor_state: dict = {}     # étape de la régulation (control/supervisor.py)
+        self._resend_pending = False          # dernier message d'étape non transmis
         self._prediction_used = False
         self._disagreement_reported = False
         self._out_of_domain_reported = False
@@ -276,6 +278,7 @@ class VoltaneumApp:
             logger.info("Messages de la passerelle de nouveau reçus : publication reprise, PID réinitialisé.")
             self._stale_data_reported = False
             self._pid_state = {}
+            self._supervisor_state = {}   # le dernier message a expiré côté automate : on repart du repos
 
         last_known = collector.snapshot()   # valeurs périmées capteur par capteur déjà remplacées par None
         t_oil = last_known.get(config.TARGET_COLUMN)
@@ -296,6 +299,7 @@ class VoltaneumApp:
                         config.TARGET_COLUMN)
             self._target_stale_reported = False
             self._pid_state = {}
+            self._supervisor_state = {}
 
         # Capteur prioritaire, API météo en repli ; None si aucune des deux n'est disponible.
         t_outdoor, outdoor_source = self.outdoor_temperature.read()
@@ -312,24 +316,44 @@ class VoltaneumApp:
             pid_state=self._pid_state,
         )
         setpoint, self._pid_state, mode = detail.setpoint, detail.state, detail.mode
-        # Air froid seul ou ventilateur : conseil, l'automate décide.
-        cooling_mode, cooling_reason, self._cooling_mode_state = advise_cooling_mode(
-            t_oil, t_outdoor, setpoint, mode, time.time(), self._cooling_mode_state)
-        # 1) Conditions à suivre (contrat principal) : température cible + seuils selon la
-        #    température extérieure. Rien n'est publié si la température d'huile est invalide.
+
+        # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT02 se
+        # réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle chaque minute.
+        now = time.time()
+        slope = slope_per_10min(
+            sqlite_client.recent_values(config.TARGET_COLUMN, now - config.REGULATION_TREND_WINDOW_SECONDS,
+                                        db_path=config.SQLITE_DB_PATH),
+            config.REGULATION_TREND_WINDOW_SECONDS)
+        decision, self._supervisor_state = decide(
+            t_oil, slope, t_outdoor, setpoint, t_oil_predicted if self._prediction_used else None,
+            now, self._supervisor_state)
+        event = decision.event
+        if event is None and self._resend_pending:
+            event = "renvoi"     # le message précédent n'a pas pu partir : on le renvoie
+        if decision.event == "insuffisant" and self.alerts is not None:
+            self.alerts.report("ATTENTION", "cooling_ineffective", decision.reason)
+
         conditions = compute_cooling_conditions(t_oil, t_outdoor)
-        conditions_message = None
-        if conditions is not None:
-            # La source dit si la bande extérieure vient du capteur ou de l'API météo (repli).
+        conditions_message = setpoint_message = None
+        if event is not None and conditions is not None:
+            step = {"phase": decision.phase, "event": event, "cooling_mode": decision.cooling_mode,
+                    "cooling_mode_reason": decision.reason, "command_percent": decision.command_percent}
+            # 1) Conditions et étape en cours (contrat principal).
             conditions_message = self._publish(
-                config.MQTT_TOPIC_COOLING_CONDITIONS,
-                {**conditions, "t_outdoor_source": outdoor_source,
-                 "cooling_mode": cooling_mode, "cooling_mode_reason": cooling_reason})
-        # 2) Consigne PID en % : INFORMATIVE (suivi, comparaison avec la régulation de l'automate).
-        setpoint_message = None
-        if config.PUBLISH_PID_SETPOINT:
-            setpoint_message = self._publish(config.MQTT_TOPIC_SETPOINT, {"percent": setpoint, "mode": mode})
-        # 3) Journal en base (interface de supervision) : la consigne et sa décomposition.
+                config.MQTT_TOPIC_COOLING_CONDITIONS, {**conditions, "t_outdoor_source": outdoor_source, **step})
+            # 2) Consigne conseillée au ventilateur, en % (avec la sortie brute du PID, pour comparaison).
+            if config.PUBLISH_PID_SETPOINT:
+                setpoint_message = self._publish(config.MQTT_TOPIC_SETPOINT, {
+                    "percent": decision.command_percent, "pid_percent": setpoint, "mode": mode,
+                    "phase": decision.phase, "event": event})
+            self._resend_pending = conditions_message is None
+            log = logger.warning if self._resend_pending else logger.info
+            log("Étape %s (%s) : %s%s", decision.phase, event, decision.reason,
+                " — NON transmis, renvoi au prochain cycle" if self._resend_pending else "")
+        else:
+            logger.debug("Rien à envoyer (%s) ; PID %.1f %%.", decision.reason, setpoint)
+
+        # 3) Journal en base (interface) : chaque cycle, publié ou non.
         sqlite_client.log_control({
             "t_oil": t_oil, "t_target": config.TARGET_TEMP,
             "t_predicted": t_oil_predicted if self._prediction_used else None,
@@ -342,15 +366,12 @@ class VoltaneumApp:
             "fan_on_above": conditions and conditions["fan_on_above_temp"],
             "fan_off_below": conditions and conditions["fan_off_below_temp"],
             "fan_min_freq_hz": conditions and conditions["fan_min_freq_hz"],
-            "cooling_mode": cooling_mode, "cooling_mode_reason": cooling_reason,
+            "phase": decision.phase, "event": event, "command_percent": decision.command_percent,
+            "cooling_mode": decision.cooling_mode, "cooling_mode_reason": decision.reason,
             "mqtt_setpoint": setpoint_message, "mqtt_conditions": conditions_message,
-            "mqtt_sent": None if not config.PUBLISH_PID_SETPOINT else int(setpoint_message is not None),
+            # 1 transmis, 0 échec, NULL : rien à envoyer ce cycle.
+            "mqtt_sent": None if event is None else int(conditions_message is not None),
         }, db_path=config.SQLITE_DB_PATH)
-        logger.info(
-            "Consigne suggérée : %.1f %% (mode=%s, PT02=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
-            setpoint, mode, t_oil, config.TARGET_TEMP, t_oil_predicted,
-            "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C ({outdoor_source})",
-        )
 
     # ------------------------------------------------------------------
     # Monitoring des modèles, interface, ré-entraînement nocturne

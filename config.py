@@ -276,19 +276,33 @@ OUTDOOR_BANDS: tuple[tuple[float, str, float, float], ...] = (
 # Écart entre le seuil de marche et le seuil d'arrêt (évite les marche/arrêt rapprochés).
 FAN_HYSTERESIS_CELSIUS: float = 2.0
 
-# Air froid seul ou ventilateur (control/cooling_mode.py) : quand le PID demande du refroidissement
-# par air froid, le dry cooler peut suffire ventilateur ARRÊTÉ (circulation naturelle de l'air).
-# Conseil publié dans cooling_conditions (champ cooling_mode). VALEURS INDICATIVES, à valider.
+# Régulation PAR ÉTAPES (control/supervisor.py) : un conseil n'est publié que lorsqu'il y a
+# quelque chose à dire (PT02 se réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle
+# chaque minute. VALEURS INDICATIVES, à valider avec l'automaticien.
+# Temps laissé au bain pour réagir avant de juger l'effet d'une consigne (s).
+REGULATION_EFFECT_WAIT_SECONDS: float = _env_float("REGULATION_EFFECT_WAIT_SECONDS", 600.0)
+# Fenêtre de calcul de la tendance de PT02 (s).
+REGULATION_TREND_WINDOW_SECONDS: float = _env_float("REGULATION_TREND_WINDOW_SECONDS", 600.0)
+# Démarrage : PT02 au-dessus de la cible de plus de cet écart (°C)...
+REGULATION_START_ABOVE_TARGET_CELSIUS: float = _env_float("REGULATION_START_ABOVE_TARGET_CELSIUS", 0.5)
+# ... ou PT02 qui monte d'au moins cette pente (°C / 10 min) près de la cible.
+REGULATION_HEATING_SLOPE: float = _env_float("REGULATION_HEATING_SLOPE", 0.3)
+# Effet constaté : PT02 baisse d'au moins cette pente (°C / 10 min).
+REGULATION_COOLING_SLOPE: float = _env_float("REGULATION_COOLING_SLOPE", 0.2)
+# Fin de la demande : PT02 revenue à la cible moins cet écart (°C).
+REGULATION_RELEASE_BELOW_TARGET_CELSIUS: float = _env_float("REGULATION_RELEASE_BELOW_TARGET_CELSIUS", 1.0)
+# Consigne de démarrage du ventilateur (%) et pas de renforcement (%) quand PT02 ne baisse pas.
+REGULATION_FAN_START_PERCENT: float = _env_float("REGULATION_FAN_START_PERCENT", 30.0)
+REGULATION_STEP_PERCENT: float = _env_float("REGULATION_STEP_PERCENT", 20.0)
+
+# Air extérieur seul (control/cooling_mode.py), première étape par air froid : le dry cooler peut
+# suffire ventilateur ARRÊTÉ (circulation naturelle de l'air). VALEURS INDICATIVES, à valider.
 FREE_COOLING_ENABLED: bool = _env_bool("FREE_COOLING_ENABLED", True)
 FREE_COOLING_MAX_OUTDOOR_TEMP: float = _env_float("FREE_COOLING_MAX_OUTDOOR_TEMP", 10.0)    # °C
 # Une fois l'air sous le seuil, il faut le dépasser de cet écart pour revenir au ventilateur.
 FREE_COOLING_HYSTERESIS_CELSIUS: float = _env_float("FREE_COOLING_HYSTERESIS_CELSIUS", 2.0)
 # Écart minimal PT02 − air extérieur pour que l'échange naturel suffise (°C).
 FREE_COOLING_MIN_GAP_CELSIUS: float = _env_float("FREE_COOLING_MIN_GAP_CELSIUS", 15.0)
-# Au-delà de cette demande du PID (%), l'air seul ne suffira pas : ventilateur.
-FREE_COOLING_MAX_DEMAND_PERCENT: float = _env_float("FREE_COOLING_MAX_DEMAND_PERCENT", 30.0)
-# Temps minimal en mode ventilateur avant de reconseiller l'air seul (s), contre les va-et-vient.
-FREE_COOLING_MIN_DWELL_SECONDS: float = _env_float("FREE_COOLING_MIN_DWELL_SECONDS", 600.0)
 
 SETPOINT_MIN: float = 0.0
 SETPOINT_MAX: float = 100.0
@@ -534,12 +548,21 @@ def validate_config() -> None:
     _require(FEEDFORWARD_OUTDOOR_HOT_THRESHOLD < TARGET_TEMP,
              "FEEDFORWARD_OUTDOOR_HOT_THRESHOLD doit rester sous TARGET_TEMP : le dry cooler ne peut pas "
              "refroidir sous la température de l'air, l'anticipation doit agir avant.")
-    _require(FREE_COOLING_HYSTERESIS_CELSIUS >= 0 and FREE_COOLING_MIN_GAP_CELSIUS > 0
-             and FREE_COOLING_MIN_DWELL_SECONDS >= 0,
-             "FREE_COOLING_HYSTERESIS_CELSIUS et FREE_COOLING_MIN_DWELL_SECONDS doivent être positifs ou nuls, "
-             "FREE_COOLING_MIN_GAP_CELSIUS strictement positif.")
-    _require(0 < FREE_COOLING_MAX_DEMAND_PERCENT <= SETPOINT_MAX,
-             f"FREE_COOLING_MAX_DEMAND_PERCENT doit être compris entre 0 (exclu) et {SETPOINT_MAX}.")
+    _require(FREE_COOLING_HYSTERESIS_CELSIUS >= 0 and FREE_COOLING_MIN_GAP_CELSIUS > 0,
+             "FREE_COOLING_HYSTERESIS_CELSIUS doit être positif ou nul, FREE_COOLING_MIN_GAP_CELSIUS strictement positif.")
+    for name, value in {
+        "REGULATION_EFFECT_WAIT_SECONDS": REGULATION_EFFECT_WAIT_SECONDS,
+        "REGULATION_TREND_WINDOW_SECONDS": REGULATION_TREND_WINDOW_SECONDS,
+        "REGULATION_HEATING_SLOPE": REGULATION_HEATING_SLOPE, "REGULATION_COOLING_SLOPE": REGULATION_COOLING_SLOPE,
+        "REGULATION_RELEASE_BELOW_TARGET_CELSIUS": REGULATION_RELEASE_BELOW_TARGET_CELSIUS,
+        "REGULATION_STEP_PERCENT": REGULATION_STEP_PERCENT,
+    }.items():
+        _require(value > 0, f"{name} doit être strictement positif, reçu {value}.")
+    _require(REGULATION_START_ABOVE_TARGET_CELSIUS >= 0, "REGULATION_START_ABOVE_TARGET_CELSIUS ne peut pas être négatif.")
+    _require(SETPOINT_MIN < REGULATION_FAN_START_PERCENT <= SETPOINT_MAX,
+             f"REGULATION_FAN_START_PERCENT doit être dans ]{SETPOINT_MIN}, {SETPOINT_MAX}].")
+    _require(REGULATION_EFFECT_WAIT_SECONDS >= CONTROL_LOOP_INTERVAL_SECONDS,
+             "REGULATION_EFFECT_WAIT_SECONDS doit couvrir au moins un cycle de contrôle.")
     _require(SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS > 0, "SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS doit être positif.")
     _require(THERMAL_FLUID_DENSITY_KG_M3 > 0 and THERMAL_FLUID_HEAT_CAPACITY_J_KG_K > 0,
              "THERMAL_FLUID_DENSITY_KG_M3 et THERMAL_FLUID_HEAT_CAPACITY_J_KG_K doivent être positifs.")

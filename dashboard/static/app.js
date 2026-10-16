@@ -318,10 +318,11 @@
     // Air froid seul ou ventilateur : dernier conseil calculé par la boucle de contrôle.
     const cm = $('#cmode'), ctl = s.control;
     if (ctl && ctl.cooling_mode) {
-      const names = { aucun: 'aucun refroidissement', air_exterieur: 'air extérieur seul (ventilateur arrêté)', ventilateur: 'ventilateur' };
+      const names = { repos: 'repos : rien à envoyer', air_exterieur: 'air extérieur seul (ventilateur arrêté)',
+        ventilateur: 'ventilateur ' + num(ctl.command_percent, 0) + ' %', critique: 'CRITIQUE : ventilateur 100 %' };
       cm.hidden = false;
       cm.dataset.mode = ctl.cooling_mode;
-      $('#cmode-val').textContent = names[ctl.cooling_mode] || ctl.cooling_mode;
+      $('#cmode-val').textContent = ctl.phase ? (names[ctl.phase] || ctl.phase) : ctl.cooling_mode;
       $('#cmode-why').textContent = ctl.cooling_mode_reason || '';
     } else {
       cm.hidden = true;
@@ -922,16 +923,16 @@
 
   function lastMessageFor(key) {
     const s = state.snapshot, c = s && !s.empty ? s.control : null;
-    if (key === 'setpoint') {
-      if (!c) return { label: 'Aucun cycle PID enregistré', msg: null };
-      if (c.mqtt_setpoint) return { label: 'Dernier message envoyé · ' + fmtTime.format(new Date(c.ts)), msg: c.mqtt_setpoint, ok: true };
-      if (c.mqtt_sent === 0) return { label: 'Dernier calcul NON transmis (broker injoignable) · contenu qui aurait été envoyé', msg: { percent: c.setpoint, mode: c.mode, ts: c.ts / 1000 }, ok: false };
-      return { label: 'Publication désactivée (PUBLISH_PID_SETPOINT=false) · contenu calculé', msg: { percent: c.setpoint, mode: c.mode, ts: c.ts / 1000 } };
-    }
-    if (key === 'conditions') {
+    // Messages envoyés aux étapes seulement : on montre la dernière étape publiée.
+    const e = c ? c.last_event : null;
+    if (key === 'setpoint' || key === 'conditions') {
       if (!c) return { label: 'Aucun cycle enregistré', msg: null };
-      if (c.mqtt_conditions) return { label: 'Dernier message envoyé · ' + fmtTime.format(new Date(c.ts)), msg: c.mqtt_conditions, ok: true };
-      return { label: 'Dernier message non transmis', msg: null, ok: false };
+      if (!e) return { label: 'Aucun message envoyé : PT02 ne s\'est pas réchauffée, l\'automate régule seul', msg: null };
+      const when = fmtTime.format(new Date(e.ts)) + ' (' + (EVENT_INFO[e.event] || e.event) + ')';
+      const msg = key === 'setpoint' ? e.mqtt_setpoint : e.mqtt_conditions;
+      if (msg) return { label: 'Dernier message envoyé · ' + when, msg, ok: true };
+      if (e.mqtt_sent === 0) return { label: 'Dernière étape NON transmise (broker injoignable) · ' + when, msg: null, ok: false };
+      return { label: 'Publication désactivée (PUBLISH_PID_SETPOINT=false) · ' + when, msg: null };
     }
     const p = s && !s.empty ? s.predictions : null;
     if (!p) return { label: 'Aucune prédiction récente', msg: null };
@@ -947,7 +948,7 @@
     if (!pidSettings) return;
     const t = pidSettings.mqtt.find(x => x.key === pidTopic);
     $('#mqtt-topic-name').textContent = t.topic;
-    $('#mqtt-meta').textContent = t.title + ' · ' + (t.enabled ? 'publié' : 'NON publié (désactivé)') + ' toutes les ' + num(t.every_seconds, 0) + ' s · ' + t.encoding +
+    $('#mqtt-meta').textContent = t.title + ' · ' + (t.enabled ? 'publié' : 'NON publié (désactivé)') + ' ' + (t.when || ('toutes les ' + num(t.every_seconds, 0) + ' s')) + ' · ' + t.encoding +
       ' · QoS ' + t.qos + ' · ' + (t.retain ? 'retenu' : 'non retenu (retain=false)') + ' · broker ' + (pidSettings.broker.tls ? 'TLS' : 'sans TLS') + ', port ' + pidSettings.broker.port;
     const last = lastMessageFor(pidTopic);
     const label = $('#mqtt-msg-label'); label.replaceChildren(document.createTextNode(last.label + ' '));
@@ -963,6 +964,21 @@
   $('#mqtt-copy').addEventListener('click', e => copyText($('#mqtt-topic-name').textContent, e.currentTarget));
   $('#mqtt-copy-json').addEventListener('click', e => copyText($('#mqtt-json').textContent, e.currentTarget));
 
+  // Régulation par étapes : libellés des étapes et des événements (control/supervisor.py).
+  const PHASE_INFO = { repos: 'repos', air_exterieur: 'air extérieur seul', ventilateur: 'ventilateur', critique: 'critique' };
+  const EVENT_INFO = { activation: 'activation', maintien: 'maintien', renforcement: 'renforcement', insuffisant: 'insuffisant',
+    critique: 'critique', fin: 'fin', renvoi: 'renvoi' };
+  function sentChip(r) {
+    if (!r.event) return el('span', 'chip', 'rien à envoyer');
+    return r.mqtt_sent === 1 ? el('span', 'chip ok', 'envoyé · ' + (EVENT_INFO[r.event] || r.event))
+      : el('span', 'chip crit', 'échec · ' + (EVENT_INFO[r.event] || r.event));
+  }
+  function stepText(c) {
+    const phase = PHASE_INFO[c.phase] || c.phase || '—';
+    const pct = c.phase === 'ventilateur' || c.phase === 'critique' ? ' ' + num(c.command_percent, 0) + ' %' : '';
+    return 'étape : ' + phase + pct + (c.cooling_mode_reason ? ' — ' + c.cooling_mode_reason : '');
+  }
+
   function renderPidLive() {
     const s = state.snapshot, c = s && !s.empty ? s.control : null;
     setNumber($('#pl-sp'), c ? c.setpoint : null, 1);
@@ -971,7 +987,7 @@
     $('#pl-when').textContent = c ? fmtTime.format(new Date(c.ts)) + ' (il y a ' + ago(c.age_seconds * 1000) + ')' : '—';
     const mq = $('#pl-mqtt'); mq.replaceChildren();
     if (!c) mq.textContent = '—';
-    else mq.append(c.mqtt_sent === 1 ? el('span', 'chip ok', 'transmis au broker') : c.mqtt_sent === 0 ? el('span', 'chip crit', 'échec : broker injoignable') : el('span', 'chip', 'publication désactivée'));
+    else mq.append(sentChip(c), document.createTextNode(' ' + stepText(c)));
   }
 
   segmented($('#pid-range'), b => { pidMinutes = +b.dataset.min; loadPidHistory(); });
@@ -1015,7 +1031,7 @@
       const tr = el('tr', r.mqtt_sent === 0 ? 'failed' : '');
       const mi = MODE_INFO[r.mode] || { label: r.mode, cls: '' };
       const mode = el('td'); mode.append(el('span', 'chip ' + mi.cls, mi.label));
-      const mq = el('td'); mq.append(r.mqtt_sent === 1 ? el('span', 'chip ok', 'envoyé') : r.mqtt_sent === 0 ? el('span', 'chip crit', 'échec') : el('span', 'chip', 'désactivé'));
+      const mq = el('td'); mq.append(sentChip(r));
       tr.append(el('td', 'n', fmtShort.format(new Date(r.ts))), el('td', 'r', pct(r.setpoint)), mode,
         el('td', 'r', opt(r.t_oil)), el('td', 'r', r.error == null ? '—' : signed(r.error, 2)),
         el('td', 'r', opt(r.p_term)), el('td', 'r', opt(r.i_term)), el('td', 'r', opt(r.d_term)),
@@ -1029,7 +1045,7 @@
         for (const [label, msg, topic] of [['Consigne', r.mqtt_setpoint, pidSettings && pidSettings.mqtt[0].topic], ['Conditions', r.mqtt_conditions, pidSettings && pidSettings.mqtt[1].topic]]) {
           td.append(el('div', 'lbl', label + ' → ' + (topic || '')));
           const pre = el('pre', 'json');
-          if (msg) renderJson(pre, msg); else pre.textContent = r.mqtt_sent === 0 ? 'non transmis (broker injoignable)' : 'non publié';
+          if (msg) renderJson(pre, msg); else pre.textContent = !r.event ? 'rien à envoyer à ce cycle' : r.mqtt_sent === 0 ? 'non transmis (broker injoignable)' : 'non publié (désactivé)';
           td.append(pre);
         }
         d.append(td); tr.after(d);

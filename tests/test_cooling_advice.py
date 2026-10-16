@@ -51,4 +51,4 @@ def test_non_finite_outdoor_is_treated_as_unknown():
 def test_message_carries_target_and_validity():
     c = compute_cooling_conditions(36.0, 20.0)
     assert c["target_temp"] == config.TARGET_TEMP
-    assert c["valid_for_seconds"] == 3 * config.CONTROL_LOOP_INTERVAL_SECONDS
+    assert c["valid_for_seconds"] == config.REGULATION_EFFECT_WAIT_SECONDS + 3 * config.CONTROL_LOOP_INTERVAL_SECONDS

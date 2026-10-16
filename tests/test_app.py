@@ -327,20 +327,25 @@ class TestControlTick:
         assert (band, t_oil, t_outdoor) == ("tempere", 40.0, 15.0)
 
     def test_exact_mqtt_messages_are_logged(self, app):
-        """Le journal garde le message JSON exact transmis au broker, et le résultat de l'envoi."""
+        """Le journal garde le message JSON exact transmis au broker et le résultat de l'envoi ; un
+        message d'étape qui n'a pas pu partir est renvoyé au cycle suivant."""
         app.start()
         feed_measurements(app, t_oil=40.0)
         FakeOutdoorSensor.value = 15.0
-        app._control_tick(60.0)
         app.fake_client.publish_error = OSError("broker injoignable")
-        app._control_tick(60.0)
+        app._control_tick(60.0)                               # activation : échec d'envoi
+        app.fake_client.publish_error = None
+        app._control_tick(60.0)                               # renvoi
+        app._control_tick(60.0)                               # attente de l'effet : rien
         with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
-            rows = conn.execute("SELECT mqtt_setpoint, mqtt_conditions, mqtt_sent FROM control_log ORDER BY id").fetchall()
-        (setpoint_msg, conditions_msg, sent), failed = rows
+            rows = conn.execute("SELECT event, mqtt_setpoint, mqtt_conditions, mqtt_sent FROM control_log "
+                                "ORDER BY id").fetchall()
+        failed, (event, setpoint_msg, conditions_msg, sent), waiting = rows
+        assert failed == ("activation", None, None, 0)
+        assert event == "renvoi" and sent == 1
         assert json.loads(setpoint_msg) == app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)[0]
         assert json.loads(conditions_msg) == app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)[0]
-        assert sent == 1
-        assert failed == (None, None, 0)
+        assert waiting == (None, None, None, None)
 
     def test_publication_disabled_is_logged_as_such(self, app, monkeypatch):
         monkeypatch.setattr(config, "PUBLISH_PID_SETPOINT", False)
@@ -348,7 +353,8 @@ class TestControlTick:
         feed_measurements(app, t_oil=40.0)
         app._control_tick(60.0)
         with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
-            assert conn.execute("SELECT mqtt_setpoint, mqtt_sent FROM control_log").fetchone() == (None, None)
+            # Consigne en % non publiée, mais les conditions (contrat principal) sont parties.
+            assert conn.execute("SELECT mqtt_setpoint, mqtt_sent FROM control_log").fetchone() == (None, 1)
 
     def test_nothing_logged_without_oil_temperature(self, app):
         app.start()
@@ -397,11 +403,36 @@ class TestControlTick:
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
         assert message["outdoor_band"] == "inconnue" and message["fan_min_freq_hz"] is None
 
+    def test_stable_bath_publishes_nothing_but_keeps_logging(self, app):
+        """PT02 sous la cible et stable : aucun message (l'automate régule seul), le PID reste
+        calculé et journalisé chaque minute pour l'interface."""
+        app.start()
+        FakeOutdoorSensor.value = 15.0
+        feed_measurements(app, t_oil=config.TARGET_TEMP - 1)
+        for _ in range(5):
+            app._control_tick(60.0)
+        assert app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS) == []
+        assert app.fake_client.messages(config.MQTT_TOPIC_SETPOINT) == []
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            rows = conn.execute("SELECT phase, event, mqtt_sent FROM control_log").fetchall()
+        assert rows == [("repos", None, None)] * 5
+
+    def test_heating_bath_sends_one_message_then_waits(self, app):
+        app.start()
+        FakeOutdoorSensor.value = 15.0
+        feed_measurements(app, t_oil=config.TARGET_TEMP + 2)
+        for _ in range(5):
+            app._control_tick(60.0)
+        (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
+        assert message["event"] == "activation" and message["phase"] == "ventilateur"
+        (setpoint,) = app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)
+        assert setpoint["percent"] >= config.REGULATION_FAN_START_PERCENT and "pid_percent" in setpoint
+
     def test_cold_air_advice_is_published_and_logged(self, app):
         """Air à 5 °C, PT02 un peu au-dessus de la cible : l'air seul suffit, ventilateur arrêté."""
         app.start()
         FakeOutdoorSensor.value = 5.0
-        feed_measurements(app, t_oil=config.TARGET_TEMP + 0.5)
+        feed_measurements(app, t_oil=config.TARGET_TEMP + 1)
         app._control_tick(1.0)
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
         assert message["cooling_mode"] == "air_exterieur" and message["cooling_mode_reason"]
@@ -412,7 +443,7 @@ class TestControlTick:
     def test_warm_air_advice_is_the_fan(self, app):
         app.start()
         FakeOutdoorSensor.value = 20.0
-        feed_measurements(app, t_oil=config.TARGET_TEMP + 0.5)
+        feed_measurements(app, t_oil=config.TARGET_TEMP + 1)
         app._control_tick(1.0)
         (message,) = app.fake_client.messages(config.MQTT_TOPIC_COOLING_CONDITIONS)
         assert message["cooling_mode"] == "ventilateur"
@@ -488,12 +519,12 @@ class TestControlTick:
 
         monkeypatch.setattr(main_module, "get_outdoor_temperature_http", fake_http)
         app.start()
-        feed_measurements(app)
+        feed_measurements(app, t_oil=40.0)
         app._control_tick(1.0)
         assert app.collector.last_known["temp_outdoor"] == 21.5
         app._control_tick(1.0)                               # panne : pas d'exception, valeur effacée
         assert app.collector.last_known["temp_outdoor"] is None
-        assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 2
+        assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 1   # une seule étape : l'activation
 
 
     def test_mqtt_publish_failure_does_not_break_the_cycle(self, app):
@@ -579,7 +610,7 @@ class TestOutdoorWeatherFallback:
 
     def test_cooling_conditions_report_the_outdoor_source(self, app):
         app.start()
-        feed_measurements(app)
+        feed_measurements(app, t_oil=40.0)
         app.collector.message_age = 1.0
         FakeOutdoorSensor.value, FakeWeather.value = None, 12.0
         app._control_tick(1.0)
@@ -669,7 +700,7 @@ class TestPredictions:
     def test_no_prediction_when_an_input_variable_is_missing(self, app):
         self._install_models(app)
         app.start()
-        feed_measurements(app, t_oil=30.0)
+        feed_measurements(app, t_oil=40.0)
         FakeOutdoorSensor.value = None                       # temp_outdoor est une variable d'entrée
         app._control_tick(1.0)
         assert app.fake_client.messages(config.MQTT_TOPIC_PREDICTION) == []
@@ -679,7 +710,7 @@ class TestPredictions:
         self._install_models(app)
         FakePredictor.fail_on_predict = True
         app.start()
-        feed_measurements(app)
+        feed_measurements(app, t_oil=40.0)
         FakeOutdoorSensor.value = 15.0
         app._control_tick(1.0)
         assert len(app.fake_client.messages(config.MQTT_TOPIC_SETPOINT)) == 1

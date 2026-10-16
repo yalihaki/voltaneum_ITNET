@@ -62,6 +62,8 @@ def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | 
         # Valeurs mesurées, pour la traçabilité côté automate.
         "t_oil": t_oil,
         "t_outdoor": t_outdoor if outdoor_ok else None,
-        # Au-delà de cette durée sans nouveau message, l'automate doit ignorer ces conditions.
-        "valid_for_seconds": 3 * config.CONTROL_LOOP_INTERVAL_SECONDS,
+        # Au-delà de cette durée sans nouveau message, l'automate doit ignorer ces conditions et
+        # reprendre sa propre régulation. Les messages ne partent qu'aux étapes (control/supervisor.py) :
+        # pendant une demande, un message au plus tard à chaque vérification de l'effet.
+        "valid_for_seconds": config.REGULATION_EFFECT_WAIT_SECONDS + 3 * config.CONTROL_LOOP_INTERVAL_SECONDS,
     }

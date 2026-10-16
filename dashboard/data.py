@@ -170,7 +170,8 @@ def _latest_predictions(conn: sqlite3.Connection, now: float) -> dict | None:
 _CONTROL_FIELDS = (
     "t_oil", "t_target", "t_predicted", "t_outdoor", "t_outdoor_source", "setpoint", "mode", "error",
     "p_term", "i_term", "d_term", "feedforward_prediction", "feedforward_outdoor", "raw_output",
-    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz", "cooling_mode", "cooling_mode_reason",
+    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz",
+    "phase", "event", "command_percent", "cooling_mode", "cooling_mode_reason",
 )
 _MQTT_FIELDS = ("mqtt_setpoint", "mqtt_conditions", "mqtt_sent")
 
@@ -214,6 +215,19 @@ def _latest_control(conn: sqlite3.Connection, now: float) -> dict | None:
         "outdoor_hot": config.FEEDFORWARD_OUTDOOR_HOT_THRESHOLD,
     }
     record["published"] = config.PUBLISH_PID_SETPOINT
+    record["effect_wait_seconds"] = config.REGULATION_EFFECT_WAIT_SECONDS
+    # Dernière ÉTAPE publiée (la plupart des cycles n'envoient rien) : sert à afficher le dernier
+    # message réellement envoyé et l'heure de la prochaine vérification.
+    record["last_event"] = None
+    if "event" in columns:
+        sent = conn.execute(
+            f"SELECT CAST(strftime('%s', timestamp) AS INTEGER), {', '.join(columns)} "  # nosec B608
+            "FROM control_log WHERE event IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if sent is not None:
+            last = _control_record(columns, sent[1:])
+            last["ts"] = int(sent[0]) * 1000
+            record["last_event"] = last
     return record
 
 
@@ -352,14 +366,22 @@ def pid_settings() -> dict:
 def mqtt_formats() -> list[dict]:
     """Contrat des messages publiés par la boucle de contrôle (voir service/app.py et le cahier des charges §6.4)."""
     interval = config.CONTROL_LOOP_INTERVAL_SECONDS
-    common = {"qos": 0, "retain": False, "encoding": "JSON UTF-8", "every_seconds": interval}
+    # Publication PAR ÉTAPES (control/supervisor.py) : seulement à l'activation, à chaque vérification
+    # de l'effet pendant une demande, au renforcement, à la fin, et immédiatement au seuil critique.
+    common = {"qos": 0, "retain": False, "encoding": "JSON UTF-8", "every_seconds": interval,
+              "when": (f"aux étapes seulement : activation, puis au plus un message toutes les "
+                       f"{config.REGULATION_EFFECT_WAIT_SECONDS / 60:.0f} min pendant une demande (maintien ou "
+                       "renforcement), fin ; immédiatement au seuil critique ; rien au repos")}
     return [
         {
-            **common, "key": "setpoint", "topic": config.MQTT_TOPIC_SETPOINT, "title": "Consigne PID (informative)",
+            **common, "key": "setpoint", "topic": config.MQTT_TOPIC_SETPOINT, "title": "Consigne conseillée au ventilateur",
             "enabled": config.PUBLISH_PID_SETPOINT,
             "fields": [
-                {"name": "percent", "type": "nombre", "unit": "%", "desc": "consigne de refroidissement suggérée, bornée entre 0 et 100"},
-                {"name": "mode", "type": "texte", "unit": "", "desc": "pid, feedforward (anticipation ajoutée) ou safety_bypass (PT02 au-dessus du seuil critique : 100 %)"},
+                {"name": "percent", "type": "nombre", "unit": "%", "desc": "consigne conseillée au ventilateur pour l'étape en cours (0 : repos ou air extérieur seul) ; ne baisse jamais pendant une demande"},
+                {"name": "pid_percent", "type": "nombre", "unit": "%", "desc": "sortie brute du PID au même instant (plancher de la consigne au ventilateur)"},
+                {"name": "mode", "type": "texte", "unit": "", "desc": "mode du PID : pid, feedforward (anticipation ajoutée) ou safety_bypass (PT02 au-dessus du seuil critique)"},
+                {"name": "phase", "type": "texte", "unit": "", "desc": "étape : repos, air_exterieur, ventilateur ou critique"},
+                {"name": "event", "type": "texte", "unit": "", "desc": "pourquoi ce message : activation, maintien, renforcement, insuffisant, critique, fin ou renvoi"},
                 {"name": "ts", "type": "nombre", "unit": "s", "desc": "horodatage d'envoi (secondes Unix, UTC)"},
             ],
         },
@@ -373,6 +395,9 @@ def mqtt_formats() -> list[dict]:
                 {"name": "fan_on_above_temp", "type": "nombre", "unit": "°C", "desc": "seuil de marche du ventilateur"},
                 {"name": "fan_off_below_temp", "type": "nombre", "unit": "°C", "desc": "seuil d'arrêt du ventilateur"},
                 {"name": "fan_min_freq_hz", "type": "nombre ou null", "unit": "Hz", "desc": "fréquence minimale conseillée"},
+                {"name": "phase", "type": "texte", "unit": "", "desc": "étape : repos, air_exterieur, ventilateur ou critique"},
+                {"name": "event", "type": "texte", "unit": "", "desc": "pourquoi ce message : activation, maintien, renforcement, insuffisant, critique, fin ou renvoi"},
+                {"name": "command_percent", "type": "nombre", "unit": "%", "desc": "consigne conseillée au ventilateur (0 : repos ou air seul)"},
                 {"name": "cooling_mode", "type": "texte", "unit": "",
                  "desc": "aucun, air_exterieur (ventilateur arrêté, l'air froid suffit) ou ventilateur"},
                 {"name": "cooling_mode_reason", "type": "texte", "unit": "", "desc": "raison du conseil, en clair"},
@@ -688,8 +713,13 @@ def settings_summary() -> dict:
             "Air seul possible sous (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP if config.FREE_COOLING_ENABLED else "désactivé",
             "… retour au ventilateur au-dessus de (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP + config.FREE_COOLING_HYSTERESIS_CELSIUS,
             "… si écart PT02 − air d'au moins (°C)": config.FREE_COOLING_MIN_GAP_CELSIUS,
-            "… et demande PID d'au plus (%)": config.FREE_COOLING_MAX_DEMAND_PERCENT,
-            "… après au moins (min) en ventilateur": round(config.FREE_COOLING_MIN_DWELL_SECONDS / 60),
+            "Étapes : effet vérifié après (min)": round(config.REGULATION_EFFECT_WAIT_SECONDS / 60),
+            "Étapes : démarrage si PT02 dépasse la cible de (°C)": config.REGULATION_START_ABOVE_TARGET_CELSIUS,
+            "Étapes : ou si PT02 monte d'au moins (°C / 10 min)": config.REGULATION_HEATING_SLOPE,
+            "Étapes : effet constaté si PT02 baisse d'au moins (°C / 10 min)": config.REGULATION_COOLING_SLOPE,
+            "Étapes : fin quand PT02 revient à la cible moins (°C)": config.REGULATION_RELEASE_BELOW_TARGET_CELSIUS,
+            "Étapes : ventilateur au démarrage (%)": config.REGULATION_FAN_START_PERCENT,
+            "Étapes : renforcement par pas de (%)": config.REGULATION_STEP_PERCENT,
             "Pompe en marche au-delà de (Hz)": config.PUMP_RUNNING_MIN_HZ,
             "Débit minimal pompe en marche (m³/h)": config.FLOW_MIN_M3H,
             "Gains PID (Kp / Ki / Kd)": f"{config.PID_KP} / {config.PID_KI} / {config.PID_KD}",

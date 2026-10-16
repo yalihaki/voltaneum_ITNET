@@ -17,7 +17,8 @@ from pathlib import Path
 
 import config
 from control.cooling_advice import compute_cooling_conditions
-from control.cooling_mode import advise_cooling_mode
+from control.supervisor import decide
+from control.trend import slope_per_10min
 from control.pid_controller import compute_setpoint_detailed
 from control.thermal import estimate_power_kw
 from database import sqlite_client
@@ -46,7 +47,8 @@ class _Process:
         self.oil = 34.0
         self.freq = 25.0
         self.pid_state: dict = {}
-        self.cooling_mode_state: dict = {}
+        self.supervisor_state: dict = {}
+        self.recent: list[tuple[float, float]] = []    # (instant, PT02) : tendance pour les étapes
 
     def outdoor(self, t: float) -> float:
         hour = (t / 3600) % 24
@@ -100,16 +102,24 @@ def _predict(conn, made_at: float, pt02_now: float, pt02_future: float, rng: ran
 
 def _log_control(conn, process: _Process, ts: float, values: dict, predicted: float | None,
                  broker_up: bool = True) -> None:
-    """Un cycle de contrôle calculé avec le VRAI code (control/pid_controller.py), comme la boucle de contrôle."""
+    """Un cycle de contrôle calculé avec le VRAI code (PID, étapes), comme la boucle de contrôle :
+    un message n'est « envoyé » qu'aux étapes."""
     t_oil, t_ext = values["pt02"], values["temp_outdoor"]
     detail = compute_setpoint_detailed(
         t_oil, config.TARGET_TEMP, t_oil if predicted is None else predicted, t_ext,
         config.CONTROL_LOOP_INTERVAL_SECONDS, process.pid_state,
     )
     process.pid_state = detail.state
-    cooling_mode, cooling_reason, process.cooling_mode_state = advise_cooling_mode(
-        t_oil, t_ext, detail.setpoint, detail.mode, ts, process.cooling_mode_state)
+    window = config.REGULATION_TREND_WINDOW_SECONDS
+    process.recent = [(t, v) for t, v in process.recent if t >= ts - window]
+    slope = slope_per_10min(process.recent, window)
+    decision, process.supervisor_state = decide(
+        t_oil, slope, t_ext, detail.setpoint, predicted, ts, process.supervisor_state)
     cond = compute_cooling_conditions(t_oil, t_ext) or {}
+    event = decision.event
+    step = {"phase": decision.phase, "event": event, "cooling_mode": decision.cooling_mode,
+            "cooling_mode_reason": decision.reason, "command_percent": decision.command_percent}
+    sent = event is not None and broker_up
     record = {
         "t_oil": t_oil, "t_target": config.TARGET_TEMP, "t_predicted": predicted, "t_outdoor": t_ext,
         "t_outdoor_source": "weather", "setpoint": detail.setpoint, "mode": detail.mode, "error": detail.error,
@@ -118,12 +128,13 @@ def _log_control(conn, process: _Process, ts: float, values: dict, predicted: fl
         "feedforward_outdoor": detail.feedforward_outdoor, "raw_output": detail.raw_output,
         "outdoor_band": cond.get("outdoor_band"), "fan_on_above": cond.get("fan_on_above_temp"),
         "fan_off_below": cond.get("fan_off_below_temp"), "fan_min_freq_hz": cond.get("fan_min_freq_hz"),
-        "cooling_mode": cooling_mode, "cooling_mode_reason": cooling_reason,
+        **step,
         # Mêmes messages que la boucle de contrôle (_publish) ; aucun broker réel n'est contacté.
-        "mqtt_setpoint": json.dumps({"percent": detail.setpoint, "mode": detail.mode, "ts": ts}) if broker_up else None,
-        "mqtt_conditions": json.dumps({**cond, "t_outdoor_source": "weather", "cooling_mode": cooling_mode,
-                                       "cooling_mode_reason": cooling_reason, "ts": ts}) if broker_up and cond else None,
-        "mqtt_sent": int(broker_up),
+        "mqtt_setpoint": json.dumps({"percent": decision.command_percent, "pid_percent": detail.setpoint,
+                                     "mode": detail.mode, "phase": decision.phase, "event": event,
+                                     "ts": ts}) if sent else None,
+        "mqtt_conditions": json.dumps({**cond, "t_outdoor_source": "weather", **step, "ts": ts}) if sent and cond else None,
+        "mqtt_sent": None if event is None else int(broker_up),
     }
     columns = ["timestamp", *record]
     conn.execute(
@@ -178,9 +189,12 @@ def create_demo_database(path: str = DEMO_DB_PATH) -> _Process:
             predicted = round(future + rng.gauss(0, 0.3), 2)
             # Broker « indisponible » 25 minutes il y a 30 h : envois en échec, pour le rendu.
             broker_up = not (now - 30 * 3600 < ts < now - 30 * 3600 + 1500)
+            lookback = int(config.REGULATION_TREND_WINDOW_SECONDS // interval) + 1
+            control_process.recent = [(t, v["pt02"]) for t, v in snapshots[max(0, i - lookback):i + 1]]
             _log_control(conn, control_process, ts, values, predicted, broker_up)
         process.pid_state = control_process.pid_state
-        process.cooling_mode_state = control_process.cooling_mode_state
+        process.supervisor_state = control_process.supervisor_state
+        process.recent = control_process.recent
         alerts = [
             (now - 6 * 86400, "INFO", "storage_backup", "Sauvegarde quotidienne effectuée", 0),
             (now - 5.2 * 86400, "CRITIQUE", "telemetry_lost", "Perte de télémétrie : aucune mesure depuis 300 s", 1),
@@ -228,6 +242,7 @@ def run_live_feed(process: _Process, stop: threading.Event, path: str = DEMO_DB_
     while not stop.wait(interval):
         now = time.time()
         values = process.step(now, interval)
+        process.recent.append((now, values["pt02"]))
         with sqlite_client.connect(path) as conn:
             _insert(conn, now, values)
             if count % 4 == 0:

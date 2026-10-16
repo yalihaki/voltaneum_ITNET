@@ -119,6 +119,7 @@ estimation tant que débit, fluide et sondes ne sont pas confirmés (`THERMAL_PO
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
 | `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |
 | `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT01 a bougé d'au moins 1 °C |
+| `cooling_ineffective` | ATTENTION | consigne au maximum et PT02 ne baisse toujours pas (ventilateur, dry cooler ou automate à vérifier) |
 | `model_disagreement` | ATTENTION | les deux modèles divergent (la prédiction n'est alors pas utilisée) |
 | `outdoor_sensor_weather_mismatch` | ATTENTION | capteur extérieur et météo très différents |
 | `storage_*` | ATTENTION / CRITIQUE | stockage presque plein, purge, sauvegarde impossible (dont la quotidienne) |
@@ -149,13 +150,19 @@ heures, le modèle ne connaît ni la charge à venir ni la météo prévue.
 
 ## 7. Régulation et messages MQTT
 
-Publiés toutes les 60 s (QoS 0, non retenus) quand un broker est joignable :
+**Régulation par étapes.** Le PID est calculé chaque minute, mais un message n'est envoyé qu'aux
+étapes : rien au repos ; **activation** quand PT02 dépasse la cible, monte, ou est prédite au-dessus
+(air extérieur seul si l'air est sous 10 °C, sinon ventilateur) ; puis **10 min d'attente** pour voir
+l'effet ; **maintien** si PT02 baisse, sinon **renforcement** (air seul → ventilateur → +20 % →
+100 %, puis alerte « refroidissement insuffisant ») ; **fin** quand PT02 revient 1 °C sous la cible ;
+**critique** (100 %) immédiatement au-delà de 55 °C. Détail : cahier des charges §6.4.
 
-- `voltaneum/control/cooling_conditions` (contrat principal) : cible, seuil critique, bande
-  extérieure, seuils de marche / arrêt du ventilateur, fréquence minimale conseillée, validité 180 s,
-  et conseil `cooling_mode` : par air froid (< 10 °C), demande faible et assez d'écart avec PT02,
-  « air_exterieur » (ventilateur arrêté, la circulation naturelle suffit), sinon « ventilateur » ;
-- `voltaneum/control/setpoint` (informatif) : `{"percent", "mode", "ts"}` ;
+Messages (QoS 0, non retenus, quand un broker est joignable) :
+
+- `voltaneum/control/cooling_conditions` (contrat principal) : étape (`phase`, `event`,
+  `command_percent`, `cooling_mode` et sa raison), cible, seuil critique, bande extérieure, seuils
+  de marche / arrêt du ventilateur, fréquence minimale conseillée, validité 13 min ;
+- `voltaneum/control/setpoint` : `{"percent", "pid_percent", "mode", "phase", "event", "ts"}` ;
 - `voltaneum/telemetry`, `voltaneum/prediction`, `voltaneum/model_health`.
 
 Le format exact et les derniers messages envoyés sont dans l'onglet **PID**. Gains par défaut :

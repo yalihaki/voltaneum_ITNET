@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -110,7 +111,11 @@ CREATE TABLE IF NOT EXISTS control_log (
     fan_on_above REAL,
     fan_off_below REAL,
     fan_min_freq_hz REAL,
-    -- Conseil « air froid seul ou ventilateur » (control/cooling_mode.py) et sa raison.
+    -- Régulation par étapes (control/supervisor.py) : phase, événement publié ce cycle (NULL :
+    -- rien à envoyer), consigne conseillée au ventilateur, conseil air seul / ventilateur et raison.
+    phase TEXT,
+    event TEXT,
+    command_percent REAL,
     cooling_mode TEXT,
     cooling_mode_reason TEXT,
     -- Messages JSON EXACTS transmis au client MQTT (NULL : non transmis), et résultat de l'envoi
@@ -165,9 +170,10 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
         conn.execute(_CREATE_ALERTS_TABLE_SQL)
         conn.execute(_CREATE_CONTROL_TABLE_SQL)
         control_columns = {row[1] for row in conn.execute("PRAGMA table_info(control_log)")}
-        for column in ("cooling_mode", "cooling_mode_reason"):
+        for column, sql_type in (("phase", "TEXT"), ("event", "TEXT"), ("command_percent", "REAL"),
+                                 ("cooling_mode", "TEXT"), ("cooling_mode_reason", "TEXT")):
             if column not in control_columns:  # migration des bases existantes, aucune donnée perdue
-                conn.execute(f"ALTER TABLE control_log ADD COLUMN {column} TEXT")  # nosec B608
+                conn.execute(f"ALTER TABLE control_log ADD COLUMN {column} {sql_type}")  # nosec B608
         conn.execute(_CREATE_CONTROL_INDEX_SQL)
 
     try:
@@ -367,7 +373,8 @@ def log_alert(
 _CONTROL_COLUMNS = (
     "t_oil", "t_target", "t_predicted", "t_outdoor", "t_outdoor_source", "setpoint", "mode", "error",
     "p_term", "i_term", "d_term", "feedforward_prediction", "feedforward_outdoor", "raw_output",
-    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz", "cooling_mode", "cooling_mode_reason",
+    "outdoor_band", "fan_on_above", "fan_off_below", "fan_min_freq_hz",
+    "phase", "event", "command_percent", "cooling_mode", "cooling_mode_reason",
     "mqtt_setpoint", "mqtt_conditions", "mqtt_sent",
 )
 _INSERT_CONTROL_SQL = (
@@ -387,3 +394,21 @@ def log_control(record: dict, db_path: str = SQLITE_DB_PATH) -> None:
             conn.execute(_INSERT_CONTROL_SQL, tuple(record.get(column) for column in _CONTROL_COLUMNS))
     except sqlite3.Error:
         logger.exception("Échec d'écriture dans control_log")
+
+
+def recent_values(column: str, since_epoch: float, db_path: str = SQLITE_DB_PATH) -> list[tuple[float, float]]:
+    """(instant en s, valeur) de `column` depuis `since_epoch`, pour le calcul de tendance.
+    Liste vide si la base est indisponible (la régulation continue sans tendance)."""
+    if column not in ("pt01", "pt02", "pt03", "pt04"):
+        raise ValueError(f"colonne non autorisée : {column}")
+    try:
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                f"SELECT CAST(strftime('%s', timestamp) AS REAL), {column} FROM telemetry "  # nosec B608
+                f"WHERE timestamp >= ? AND {column} IS NOT NULL ORDER BY timestamp",
+                (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(since_epoch)),),
+            ).fetchall()
+    except sqlite3.Error:
+        logger.exception("Lecture de la tendance de %s impossible", column)
+        return []
+    return [(float(t), float(v)) for t, v in rows]
