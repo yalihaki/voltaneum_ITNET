@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable
 
 import config
-from collectors.weather_collector import get_outdoor_temperature
+from collectors.weather_collector import get_outdoor_conditions
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,13 @@ class OutdoorTemperatureSource:
     def __init__(
         self,
         read_sensor: Callable[[], float | None],
-        fetch_weather: Callable[[], float] = get_outdoor_temperature,
+        fetch_weather: Callable[[], float | tuple[float, float | None]] = get_outdoor_conditions,
     ) -> None:
         self._read_sensor = read_sensor
         self._fetch_weather = fetch_weather
         self._lock = threading.Lock()
         self._weather_value: float | None = None
+        self._weather_humidity: float | None = None
         self._weather_value_at: float | None = None
         self._weather_attempted_at: float | None = None
         self._last_source: str | None = None
@@ -69,13 +70,24 @@ class OutdoorTemperatureSource:
                 or now - self._weather_attempted_at >= config.OUTDOOR_WEATHER_FALLBACK_REFRESH_SECONDS):
             self._weather_attempted_at = now  # même en cas d'échec : pas de rafale d'appels
             try:
-                self._weather_value = self._fetch_weather()
+                result = self._fetch_weather()
+                # Accepte une température seule, ou (température, humidité).
+                self._weather_value, self._weather_humidity = result if isinstance(result, tuple) else (result, None)
                 self._weather_value_at = now
             except Exception as exc:
                 logger.warning("API météo indisponible pour le repli de température extérieure : %s", exc)
         if self._weather_value_at is None or now - self._weather_value_at > config.OUTDOOR_SENSOR_MAX_AGE_SECONDS:
             return None
         return self._weather_value
+
+    def humidity(self) -> float | None:
+        """Humidité relative extérieure (%) de la dernière réponse météo encore valable, ou None."""
+        with self._lock:
+            if self._weather_value_at is None:
+                return None
+            if time.monotonic() - self._weather_value_at > config.OUTDOOR_SENSOR_MAX_AGE_SECONDS:
+                return None
+            return self._weather_humidity
 
     def _log_source_change(self, source: str | None) -> None:
         if source == self._last_source:

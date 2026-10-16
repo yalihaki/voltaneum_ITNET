@@ -27,6 +27,7 @@ import requests
 import websocket
 
 import config
+from control.thermal import estimate_power_kw
 from database import sqlite_client
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class GatewayCollector:
         db_path: str = config.SQLITE_DB_PATH,
         outdoor_temperature: Callable[[], tuple[float | None, str | None]] | None = None,
         on_snapshot: Callable[[dict], None] | None = None,
+        outdoor_humidity: Callable[[], float | None] | None = None,
     ) -> None:
         self.manage_api_url = manage_api_url
         self.iot_api_url = iot_api_url
@@ -112,6 +114,8 @@ class GatewayCollector:
         self.outdoor_temperature = outdoor_temperature
         # Appelé avec chaque instantané enregistré (moteur d'alertes du processus principal).
         self.on_snapshot = on_snapshot
+        # Humidité extérieure (%) de l'API météo, enregistrée avec chaque instantané (None = absente).
+        self.outdoor_humidity = outdoor_humidity
 
         self.token: str | None = None
         self.keynode_to_column: dict[str, str] = {}
@@ -447,6 +451,13 @@ class GatewayCollector:
         self._refresh_outdoor_temperature()
         snapshot = self.snapshot()
         outdoor_source = self.source_of("temp_outdoor") if snapshot.get("temp_outdoor") is not None else None
+        humidity = None
+        if self.outdoor_humidity is not None:
+            try:
+                humidity = self.outdoor_humidity()
+            except Exception:
+                logger.exception("Humidité extérieure indisponible pour cet instantané")
+        power = estimate_power_kw(snapshot)
         sqlite_client.insert_reading(
             pt01=snapshot.get("pt01"),
             pt02=snapshot.get("pt02"),
@@ -456,17 +467,20 @@ class GatewayCollector:
             freq_pompe=snapshot.get("freq_pompe"),
             temp_outdoor=snapshot.get("temp_outdoor"),
             temp_outdoor_source=outdoor_source,
+            humidity_outdoor=humidity,
+            thermal_power_kw=power,
             db_path=self.db_path,
         )
+        extras = {"temp_outdoor_source": outdoor_source, "humidity_outdoor": humidity, "thermal_power_kw": power}
 
         if self.on_snapshot is not None:
             try:
-                self.on_snapshot({**snapshot, "temp_outdoor_source": outdoor_source})
+                self.on_snapshot({**snapshot, **extras})
             except Exception:
                 logger.exception("Traitement de l'instantané (alertes) en échec")
         if self.mqtt_client is not None:
             try:
-                payload = json.dumps({**snapshot, "temp_outdoor_source": outdoor_source, "ts": time.time()})
+                payload = json.dumps({**snapshot, **extras, "ts": time.time()})
                 self.mqtt_client.publish(config.MQTT_TOPIC_TELEMETRY, payload)
             except Exception as exc:
                 # Une panne MQTT ne doit jamais faire perdre la donnée déjà

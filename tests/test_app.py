@@ -169,7 +169,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "DualModelPredictor", FakePredictor)
     monkeypatch.setattr(main_module, "create_client", lambda client_id: client)
     FakeWeather.value, FakeWeather.calls = None, 0   # météo injoignable par défaut (jamais de vrai appel réseau)
-    monkeypatch.setattr(main_module, "get_outdoor_temperature", FakeWeather())
+    monkeypatch.setattr(main_module, "get_outdoor_conditions", FakeWeather())
     application = main_module.VoltaneumApp()
     application.fake_client = client
     yield application

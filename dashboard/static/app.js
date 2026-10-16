@@ -6,13 +6,17 @@
   // ================================================================ outils
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  // Noms des sondes : valeurs par défaut identiques à config.py, remplacées par celles du serveur
+  // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
-    pt01: 'PT01 · bain d\'huile', pt02: 'PT02 · huile régulée', pt03: 'PT03 · dry cooler', pt04: 'PT04 · dry cooler',
+    pt01: 'PT01 · huile, circuit', pt02: 'PT02 · huile du bain (régulée)',
+    pt03: 'PT03 · dry cooler, entrée (chaud)', pt04: 'PT04 · dry cooler, sortie (refroidi)',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
+    thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };
-  const UNITS = { pt01: '°C', pt02: '°C', pt03: '°C', pt04: '°C', ht01: 'm³/h', freq_pompe: 'Hz', temp_outdoor: '°C' };
-  const DIGITS = { pt01: 1, pt02: 1, pt03: 1, pt04: 1, ht01: 2, freq_pompe: 1, temp_outdoor: 1 };
-  const COLORS = { pt01: '--s2', pt02: '--s1', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7' };
+  const UNITS = { pt01: '°C', pt02: '°C', pt03: '°C', pt04: '°C', ht01: 'm³/h', freq_pompe: 'Hz', temp_outdoor: '°C', thermal_power_kw: 'kW', humidity_outdoor: '%' };
+  const DIGITS = { pt01: 1, pt02: 1, pt03: 1, pt04: 1, ht01: 2, freq_pompe: 1, temp_outdoor: 1, thermal_power_kw: 1, humidity_outdoor: 0 };
+  const COLORS = { pt01: '--s2', pt02: '--s1', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7', thermal_power_kw: '--s2', humidity_outdoor: '--s7' };
   const MODEL_LABELS = { random_forest: 'Forêt aléatoire', gradient_boosting: 'Gradient boosting', baseline_persistence: 'Persistance (référence)' };
   const MODEL_COLORS = { random_forest: '--pred', gradient_boosting: '--pred-2' };
 
@@ -176,6 +180,24 @@
     }
   }
 
+  // ================================================================ noms des sondes
+  // Les noms viennent du serveur (config.SENSOR_LABELS, réglables dans .env) : synoptique, tuile
+  // PT02, courbes et légendes de l'historique affichent tous le même nom.
+  let labelsApplied = '';
+  function applyLabels(labels) {
+    if (!labels) return;
+    const signature = JSON.stringify(labels);
+    if (signature === labelsApplied) return;
+    labelsApplied = signature;
+    for (const [key, l] of Object.entries(labels)) {
+      LABELS[key] = l.long;
+      const tag = $('.tag[data-key="' + key + '"] .lbl-pt'); if (tag) tag.textContent = l.short;
+      const chipText = $('.chip-label[data-key="' + key + '"]'); if (chipText) chipText.textContent = l.long;
+    }
+    if (labels.pt02) $('#lbl-pt02').textContent = labels.pt02.long;
+    for (const c of allCharts) for (const serie of c.o.series) if (labels[serie.key]) serie.label = labels[serie.key].long;
+  }
+
   // ================================================================ supervision : instantané
   function renderSnapshot(s) {
     state.snapshot = s;
@@ -243,8 +265,23 @@
     if (v.temp_outdoor == null) teHint.textContent = 'ni capteur ni météo';
     else if (src === 'weather') { teHint.append(el('span', 'chip warn', 'météo'), document.createTextNode(' repli API, pas de capteur')); }
     else if (src === 'sensor') { teHint.append(el('span', 'chip ok', 'capteur'), document.createTextNode(' mesure locale')); }
+    if (v.humidity_outdoor != null) teHint.append(document.createTextNode(' · humidité ' + num(v.humidity_outdoor, 0) + ' %'));
+
+    // Puissance dissipée estimée (débit × écart de température)
+    const tpw = tile('thermal_power_kw');
+    setNumber($('.v', tpw), v.thermal_power_kw, 1);
+    tpw.className = 'tile' + (v.thermal_power_kw == null ? ' absent' : '');
+    const tpConf = th.thermal_power || {};
+    const tpHint = $('.hint', tpw); tpHint.replaceChildren();
+    if (v.thermal_power_kw == null) tpHint.textContent = 'débit ou températures absents';
+    else {
+      tpHint.append(tpConf.confirmed ? el('span', 'chip ok', 'confirmé') : el('span', 'chip warn', 'estimation'),
+        document.createTextNode(' ' + (tpConf.hot || 'pt03').toUpperCase() + ' − ' + (tpConf.cold || 'pt04').toUpperCase() + ' × débit'));
+    }
     setPill('#pill-ext', src === 'sensor' ? 'ok' : src === 'weather' ? 'warn' : '', src === 'sensor' ? 'Air ext. : capteur' : src === 'weather' ? 'Air ext. : météo' : 'Air ext. : absent');
     $('#pill-ext').hidden = false;
+
+    applyLabels(th.labels);
 
     // Synoptique
     const syno = $('#syno');
@@ -658,17 +695,28 @@
       { key: 'ht01', label: LABELS.ht01, color: COLORS.ht01, width: 1.5, axis: 'right' },
     ],
   });
+  const histPower = chart('chart-hist-power', {
+    label: 'Puissance et humidité', unit: 'kW', rightUnit: '%', digits: 1, rightDigits: 0, minSpan: 2, rightMinSpan: 10,
+    rightInclude: [0, 100], group: histGroup,
+    series: [
+      { key: 'thermal_power_kw', label: LABELS.thermal_power_kw, color: COLORS.thermal_power_kw, width: 1.6, area: true },
+      { key: 'humidity_outdoor', label: LABELS.humidity_outdoor, color: COLORS.humidity_outdoor, width: 1.2, dash: [3, 3], axis: 'right' },
+    ],
+    emptyText: 'Pas encore de puissance ni d\'humidité enregistrées sur cette période',
+  });
+  const HIST_KEYS = [...TEMP_KEYS, 'freq_pompe', 'ht01', 'thermal_power_kw', 'humidity_outdoor'];
+  const chartOf = k => TEMP_KEYS.includes(k) ? histTemp : (k === 'thermal_power_kw' || k === 'humidity_outdoor') ? histPower : histFlow;
   const histChips = $('#hist-series');
-  for (const k of [...TEMP_KEYS, 'freq_pompe', 'ht01']) {
+  for (const k of HIST_KEYS) {
     const lab = el('label'); lab.style.color = `var(${COLORS[k]})`;
     const input = el('input'); input.type = 'checkbox'; input.checked = true; input.id = 'hist-' + k; input.dataset.key = k;
-    const txt = el('span', null, LABELS[k]); txt.style.color = 'var(--fg)';
+    const txt = el('span', 'chip-label', LABELS[k]); txt.style.color = 'var(--fg)'; txt.dataset.key = k;
     lab.append(input, el('i'), txt);
     histChips.append(lab);
   }
   histChips.addEventListener('change', e => {
     const k = e.target.dataset.key; if (!k) return;
-    (TEMP_KEYS.includes(k) ? histTemp : histFlow).setHidden(k, !e.target.checked);
+    chartOf(k).setHidden(k, !e.target.checked);
   });
   const toLocalInput = ms => { const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60e3); return d.toISOString().slice(0, 16); };
   const fromLocalInput = s => new Date(s).getTime();
@@ -698,6 +746,7 @@
       histTemp.o.thresholds = state.thresholds ? [{ value: state.thresholds.critical_temp, color: '--crit', label: 'critique ' + num(state.thresholds.critical_temp, 0) + ' °C', dash: [], offscale: true }, { value: state.thresholds.target_temp, color: '--ok', label: 'cible ' + num(state.thresholds.target_temp, 0) + ' °C' }] : [];
       histTemp.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series, band: banded ? { t: d.t, lo: d.pt02_min, hi: d.pt02_max } : null });
       histFlow.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series });
+      histPower.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series });
       $('#hist-foot').textContent = d.count.toLocaleString('fr-FR') + ' mesures · ' +
         (banded ? 'moyennes par tranches de ' + ago(d.bucket_seconds * 1000) + ' (enveloppe min / max de PT02 en transparence)' : 'toutes les mesures affichées');
       renderStats(d, banded);
@@ -707,8 +756,8 @@
   }
   function renderStats(d, banded) {
     const body = $('#hist-stats tbody'); body.replaceChildren();
-    for (const k of [...TEMP_KEYS, 'freq_pompe', 'ht01']) {
-      const vals = d.series[k].filter(v => v != null);
+    for (const k of HIST_KEYS) {
+      const vals = (d.series[k] || []).filter(v => v != null);
       const tr = el('tr');
       const name = el('td'); const sw = el('i', 'sw'); sw.style.background = `var(${COLORS[k]})`; name.append(sw, document.createTextNode(LABELS[k]));
       tr.append(name);
@@ -1144,6 +1193,8 @@
       const ranges = {};
       for (const [k, [lo, hi]] of Object.entries(d.valid_ranges)) ranges[LABELS[k] || k] = num(lo, 0) + ' … ' + num(hi, 0) + ' ' + (UNITS[k] || '');
       section('Plages de mesure acceptées', ranges);
+      if (d.sensors) section('Sondes (noms modifiables dans .env : PT01_LABEL…)', d.sensors);
+      if (d.thermal) section('Puissance dissipée estimée', d.thermal);
     } catch (err) {
       $('#settings').replaceChildren(el('p', 'callout warn', 'Impossible de charger les réglages : ' + err.message));
     }

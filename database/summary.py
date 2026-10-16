@@ -9,15 +9,16 @@ from pathlib import Path
 
 import pandas as pd
 
+import config
+
 # Mesures résumées en bas de l'affichage : colonne -> (libellé, unité).
 MEASURES: dict[str, tuple[str, str]] = {
-    "pt01": ("PT01 - température circuit huile", "°C"),
-    "pt02": ("PT02 - température huile (cible)", "°C"),
-    "pt03": ("PT03 - température dry cooler", "°C"),
-    "pt04": ("PT04 - température dry cooler", "°C"),
-    "ht01": ("HT01 - débit circuit huile", "m³/h"),
+    **{column: (labels[0], "°C") for column, labels in config.SENSOR_LABELS.items()},
+    "ht01": ("HT01 · débit circuit huile", "m³/h"),
     "freq_pompe": ("Fréquence pompe / ventilateur", "Hz"),
     "temp_outdoor": ("Température extérieure", "°C"),
+    "humidity_outdoor": ("Humidité extérieure", "%"),
+    "thermal_power_kw": ("Puissance dissipée (estimée)", "kW"),
 }
 
 
@@ -28,7 +29,7 @@ def summarize(df: pd.DataFrame) -> str:
         f"Résumé par mesure — du {df['timestamp'].min()} au {df['timestamp'].max()} (UTC), "
         f"{len(df)} ligne(s)",
         "",
-        f"{'Mesure':<34} {'Minimum':>12}  {'le':<19}  {'Maximum':>12}  {'le':<19}  "
+        f"{'Mesure':<38} {'Minimum':>12}  {'le':<19}  {'Maximum':>12}  {'le':<19}  "
         f"{'Moyenne':>12}  {'Valeurs':>7}",
         "-" * 130,
     ]
@@ -38,12 +39,12 @@ def summarize(df: pd.DataFrame) -> str:
         values = pd.to_numeric(df[column], errors="coerce")
         valid = values.dropna()
         if valid.empty:
-            lines.append(f"{label:<34} {'aucune valeur':>12}")
+            lines.append(f"{label:<38} {'aucune valeur':>12}")
             continue
         min_at = df.loc[valid.idxmin(), "timestamp"]
         max_at = df.loc[valid.idxmax(), "timestamp"]
         line = (
-            f"{label:<34} {valid.min():>7.1f} {unit:<4}  {min_at:<19}  "
+            f"{label:<38} {valid.min():>7.1f} {unit:<4}  {min_at:<19}  "
             f"{valid.max():>7.1f} {unit:<4}  {max_at:<19}  "
             f"{valid.mean():>7.1f} {unit:<4}  {len(valid):>7}"
         )
@@ -85,7 +86,8 @@ def latest_rows(df: pd.DataFrame, count: int) -> str:
     tail["timestamp"] = (pd.to_datetime(tail["timestamp"], utc=True).dt.tz_convert(_local_tz())
                          .dt.strftime("%d/%m %H:%M:%S"))
     tail = tail.rename(columns={"timestamp": "heure locale", "temp_outdoor": "ext", "freq_pompe": "freq_Hz",
-                                "ht01": "ht01_m3h", "temp_outdoor_source": "source ext"})
+                                "ht01": "ht01_m3h", "temp_outdoor_source": "source ext",
+                                "humidity_outdoor": "hum_%", "thermal_power_kw": "P_kW"})
     return tail.to_string(index=False, na_rep="—", float_format=lambda v: f"{v:.2f}")
 
 

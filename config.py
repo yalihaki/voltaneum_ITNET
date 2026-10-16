@@ -149,6 +149,30 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Noms des mesures, IDENTIQUES sur tous les écrans (interface, terminal, résumé)
+# ---------------------------------------------------------------------------
+# (nom complet, nom court pour le synoptique). Rôles DÉDUITS DES MESURES, à faire confirmer par
+# l'automaticien : PT03 est toujours plus chaude que PT04 (≈ 0,9 °C) et PT04 chute de plusieurs
+# degrés en quelques secondes quand le refroidissement démarre -> PT03 = entrée du dry cooler,
+# PT04 = sortie. Modifiables dans .env (PT01_LABEL, PT01_SHORT, … PT04_SHORT).
+SENSOR_LABELS: dict[str, tuple[str, str]] = {
+    "pt01": (_env_str("PT01_LABEL", "PT01 · huile, circuit"), _env_str("PT01_SHORT", "PT01 · circuit huile")),
+    "pt02": (_env_str("PT02_LABEL", "PT02 · huile du bain (régulée)"), _env_str("PT02_SHORT", "PT02 · bain (régulée)")),
+    "pt03": (_env_str("PT03_LABEL", "PT03 · dry cooler, entrée (chaud)"), _env_str("PT03_SHORT", "PT03 · entrée cooler")),
+    "pt04": (_env_str("PT04_LABEL", "PT04 · dry cooler, sortie (refroidi)"), _env_str("PT04_SHORT", "PT04 · sortie cooler")),
+}
+
+# Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique
+# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Valeurs par défaut d'une huile minérale typique :
+# À CONFIRMER (fluide réel, et circuit sur lequel HT01 mesure le débit). Tant que
+# THERMAL_POWER_CONFIRMED=false, l'interface l'affiche comme une estimation à confirmer.
+OIL_DENSITY_KG_M3: float = _env_float("OIL_DENSITY_KG_M3", 850.0)
+OIL_HEAT_CAPACITY_J_KG_K: float = _env_float("OIL_HEAT_CAPACITY_J_KG_K", 1900.0)
+THERMAL_POWER_HOT: str = _env_str("THERMAL_POWER_HOT", "pt03").lower()
+THERMAL_POWER_COLD: str = _env_str("THERMAL_POWER_COLD", "pt04").lower()
+THERMAL_POWER_CONFIRMED: bool = _env_bool("THERMAL_POWER_CONFIRMED", False)
+
+# ---------------------------------------------------------------------------
 # Machine learning
 # ---------------------------------------------------------------------------
 MODEL_DIR: str = _env_path("MODEL_DIR", "models")
@@ -452,6 +476,11 @@ def validate_config() -> None:
             _require(not path or os.path.isfile(path), f"{name} introuvable : {path!r}.")
 
     # Capteur extérieur
+    _require({THERMAL_POWER_HOT, THERMAL_POWER_COLD} <= {"pt01", "pt02", "pt03", "pt04"}
+             and THERMAL_POWER_HOT != THERMAL_POWER_COLD,
+             "THERMAL_POWER_HOT et THERMAL_POWER_COLD doivent être deux sondes différentes parmi pt01..pt04.")
+    _require(OIL_DENSITY_KG_M3 > 0 and OIL_HEAT_CAPACITY_J_KG_K > 0,
+             "OIL_DENSITY_KG_M3 et OIL_HEAT_CAPACITY_J_KG_K doivent être positifs.")
     _require(0.0 < STORAGE_DISK_MAX_SHARE <= 1.0, "STORAGE_DISK_MAX_SHARE doit être compris entre 0 et 1.")
     _require(not RETRAIN_AT or _valid_hhmm(RETRAIN_AT), f"RETRAIN_AT doit être au format HH:MM, reçu {RETRAIN_AT!r}.")
     _require(OIL_SENSOR_MISSING_ALERT_SECONDS > 0 and SENSOR_FROZEN_ALERT_MINUTES >= 0,

@@ -47,20 +47,22 @@ PLAUSIBLE_TEMP_MIN = -50.0
 PLAUSIBLE_TEMP_MAX = 55.0
 
 
-def get_outdoor_temperature(lat: float = LATITUDE, lon: float = LONGITUDE) -> float:
-    """Interroge Open-Meteo et retourne la température actuelle en °C.
+PLAUSIBLE_HUMIDITY_MIN = 0.0
+PLAUSIBLE_HUMIDITY_MAX = 100.0
 
-    Lève une exception explicite en cas d'échec (réseau, réponse
-    inattendue, valeur hors plage physiquement plausible) — ne retourne
-    JAMAIS une valeur inventée en cas d'échec (règle non négociable n°6 :
-    pas d'échec silencieux).
+
+def get_outdoor_conditions(lat: float = LATITUDE, lon: float = LONGITUDE) -> tuple[float, float | None]:
+    """Interroge Open-Meteo : (température en °C, humidité relative en % ou None).
+
+    Lève une exception explicite si la TEMPÉRATURE manque ou est implausible (règle n°6 : jamais
+    de valeur inventée). L'humidité est facultative : absente ou hors plage, elle vaut None.
     """
     params: dict[str, Any] = {
         "latitude": lat,
         "longitude": lon,
         "current_weather": "true",
+        "current": "relative_humidity_2m",
     }
-
     try:
         response = requests.get(OPEN_METEO_URL, params=params, timeout=10)
         response.raise_for_status()
@@ -81,15 +83,12 @@ def get_outdoor_temperature(lat: float = LATITUDE, lon: float = LONGITUDE) -> fl
             f"Format de réponse météo inattendu (clé 'current_weather.temperature' "
             f"absente). Corps reçu : {payload!r}"
         )
-
-    temperature = current_weather["temperature"]
     try:
-        temperature = float(temperature)
+        temperature = float(current_weather["temperature"])
     except (TypeError, ValueError) as exc:
         raise RuntimeError(
-            f"Température météo non numérique reçue : {temperature!r}"
+            f"Température météo non numérique reçue : {current_weather['temperature']!r}"
         ) from exc
-
     if not (PLAUSIBLE_TEMP_MIN <= temperature <= PLAUSIBLE_TEMP_MAX):
         raise RuntimeError(
             f"Température météo hors plage plausible ({PLAUSIBLE_TEMP_MIN}°C à "
@@ -97,4 +96,15 @@ def get_outdoor_temperature(lat: float = LATITUDE, lon: float = LONGITUDE) -> fl
             f"parsing ou d'unité (l'API renvoie-t-elle bien du Celsius ?)."
         )
 
-    return temperature
+    humidity: float | None = None
+    current = payload.get("current")
+    raw_humidity = current.get("relative_humidity_2m") if isinstance(current, dict) else None
+    if isinstance(raw_humidity, (int, float)) and not isinstance(raw_humidity, bool):
+        value = float(raw_humidity)
+        humidity = value if PLAUSIBLE_HUMIDITY_MIN <= value <= PLAUSIBLE_HUMIDITY_MAX else None
+    return temperature, humidity
+
+
+def get_outdoor_temperature(lat: float = LATITUDE, lon: float = LONGITUDE) -> float:
+    """Température extérieure actuelle (°C) ; voir `get_outdoor_conditions`."""
+    return get_outdoor_conditions(lat, lon)[0]

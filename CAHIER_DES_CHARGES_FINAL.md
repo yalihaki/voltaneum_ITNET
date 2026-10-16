@@ -46,10 +46,10 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | température circuit bain d'huile | `pt01` |
-| `PT02` | température cible à prédire | `pt02` |
-| `PT03` | température circuit dry cooler | `pt03` |
-| `PT04` | température circuit dry cooler | `pt04` |
+| `PT01` | huile, circuit | `pt01` |
+| `PT02` | huile du bain, **grandeur régulée** (et prédite) | `pt02` |
+| `PT03` | dry cooler, **entrée** (huile chaude) | `pt03` |
+| `PT04` | dry cooler, **sortie** (huile refroidie) | `pt04` |
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
@@ -66,6 +66,13 @@ Plages de validité (`config.SENSOR_VALID_RANGES`) :
 La borne haute des sondes de température est **volontairement supérieure au seuil critique** (55 °C) : une borne à 55 °C rejetterait toute mesure supérieure comme « hors plage », et l'alerte critique comme le bypass du PID ne verraient jamais une surchauffe réelle. `validate_config()` refuse de démarrer si la borne haute de `pt02` ne dépasse pas `CRITICAL_TEMP`.
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
+
+Rôles de PT03 / PT04 **déduits des mesures**, à faire confirmer par l'automaticien : PT03 est toujours plus chaude que PT04 (≈ 0,9 °C en moyenne) et PT04 chute de plusieurs degrés en quelques secondes au démarrage du refroidissement. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+
+Grandeurs dérivées, enregistrées à chaque instantané :
+
+- `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ;
+- `thermal_power_kw` : puissance dissipée **estimée** = débit HT01 × masse volumique × capacité thermique × (PT03 − PT04). Fluide (`OIL_DENSITY_KG_M3`, `OIL_HEAT_CAPACITY_J_KG_K`, valeurs d'une huile minérale typique par défaut) et sondes (`THERMAL_POWER_HOT` / `_COLD`) à confirmer ; tant que `THERMAL_POWER_CONFIRMED=false`, l'interface la présente comme une estimation. Elle n'est pas encore une entrée des modèles.
 
 ### 2.3 Adresses par défaut
 
@@ -300,7 +307,7 @@ SMTP utilise STARTTLS, un timeout et une gestion d'erreur qui n'arrête jamais l
 
 #### `telemetry`
 
-`id`, `timestamp`, `pt01`, `pt02`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`, `temp_outdoor_source` (`sensor` / `weather`, ajoutée automatiquement aux bases existantes).
+`id`, `timestamp`, `pt01`, `pt02`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`, `temp_outdoor_source` (`sensor` / `weather`), `humidity_outdoor`, `thermal_power_kw` (colonnes ajoutées automatiquement aux bases existantes, sans perte).
 
 #### `predictions_log`
 

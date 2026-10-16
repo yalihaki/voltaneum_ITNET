@@ -18,6 +18,7 @@ from pathlib import Path
 import config
 from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint_detailed
+from control.thermal import estimate_power_kw
 from database import sqlite_client
 
 logger = logging.getLogger(__name__)
@@ -67,11 +68,13 @@ class _Process:
 
 
 def _insert(conn, ts: float, values: dict) -> None:
+    hour = (ts / 3600) % 24
+    humidity = round(70 - 18 * math.sin((hour - 9) / 24 * 2 * math.pi), 0)   # plus sec l'après-midi
     conn.execute(
         "INSERT INTO telemetry (timestamp, pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, "
-        "temp_outdoor_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'weather')",
+        "temp_outdoor_source, humidity_outdoor, thermal_power_kw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'weather', ?, ?)",
         (_utc(ts), values["pt01"], values["pt02"], values["pt03"], values["pt04"], values["ht01"],
-         values["freq_pompe"], values["temp_outdoor"]),
+         values["freq_pompe"], values["temp_outdoor"], humidity, estimate_power_kw(values)),
     )
 
 

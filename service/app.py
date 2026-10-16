@@ -40,7 +40,7 @@ from collectors.gateway_collector import GatewayCollector
 from collectors.outdoor_consistency_checker import OutdoorConsistencyChecker
 from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
 from collectors.outdoor_temperature import OutdoorTemperatureSource
-from collectors.weather_collector import get_outdoor_temperature
+from collectors.weather_collector import get_outdoor_conditions
 from control.cooling_advice import compute_cooling_conditions
 from control.pid_controller import compute_setpoint_detailed
 from database import sqlite_client
@@ -94,10 +94,10 @@ class VoltaneumApp:
 
         # Température extérieure : capteur prioritaire, API météo en repli. Partagée entre le
         # collecteur (chaque instantané, 15 s) et la boucle de contrôle (cache commun).
-        # `get_outdoor_temperature` est résolu à l'appel (remplaçable dans les tests).
+        # `get_outdoor_conditions` est résolu à l'appel (remplaçable dans les tests).
         self.outdoor_temperature = OutdoorTemperatureSource(
             read_sensor=self._read_outdoor_temperature,
-            fetch_weather=lambda: get_outdoor_temperature(),
+            fetch_weather=lambda: get_outdoor_conditions(),
         )
 
     # ------------------------------------------------------------------
@@ -118,6 +118,7 @@ class VoltaneumApp:
             mqtt_client=self.mqtt_client, db_path=config.SQLITE_DB_PATH,
             outdoor_temperature=self.outdoor_temperature.read,
             on_snapshot=self.alerts.on_telemetry,
+            outdoor_humidity=self.outdoor_temperature.humidity,
         )
         self.storage_manager = StorageManager(db_path=config.SQLITE_DB_PATH)
         self.outdoor_consistency_checker = OutdoorConsistencyChecker(

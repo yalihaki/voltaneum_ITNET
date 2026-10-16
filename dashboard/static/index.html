@@ -40,7 +40,7 @@
 <section class="view" data-view="supervision" aria-label="Supervision">
   <div class="tiles" id="tiles">
     <article class="tile" data-key="pt02">
-      <span class="lbl">PT02 · Huile régulée</span>
+      <span class="lbl" id="lbl-pt02">PT02 · huile du bain (régulée)</span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
     </article>
@@ -57,6 +57,11 @@
     <article class="tile" data-key="ht01">
       <span class="lbl">HT01 · Débit huile</span>
       <span class="val"><span class="v num">—</span><u>m³/h</u></span>
+      <span class="sub hint"></span>
+    </article>
+    <article class="tile" data-key="thermal_power_kw">
+      <span class="lbl">Puissance dissipée</span>
+      <span class="val"><span class="v num">—</span><u>kW</u></span>
       <span class="sub hint"></span>
     </article>
     <article class="tile" data-key="temp_outdoor">
@@ -96,13 +101,13 @@
             <text class="t-lbl" x="660" y="96" text-anchor="middle">Dry</text>
             <text class="t-lbl" x="660" y="112" text-anchor="middle">cooler</text>
 
-            <g class="tag" data-key="pt01"><rect class="tagbox" x="170" y="56" width="120" height="44" rx="4"/><text class="t-tag" x="180" y="73">PT01 · bain d'huile</text><text class="t-val" x="180" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt02"><rect class="tagbox" x="166" y="146" width="126" height="44" rx="4"/><text class="t-tag" x="176" y="163">PT02 · régulée</text><text class="t-val" x="176" y="182"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt03"><rect class="tagbox" x="370" y="56" width="128" height="44" rx="4"/><text class="t-tag" x="380" y="73">PT03 · dry cooler</text><text class="t-val" x="380" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt04"><rect class="tagbox" x="430" y="238" width="128" height="44" rx="4"/><text class="t-tag" x="440" y="255">PT04 · dry cooler</text><text class="t-val" x="440" y="274"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="302" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="312" y="163">Fréquence</text><text class="t-val" x="312" y="182"><tspan class="v">—</tspan> Hz</text></g>
-            <g class="tag" data-key="ht01"><rect class="tagbox" x="412" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="422" y="163">HT01 · débit</text><text class="t-val" x="422" y="182"><tspan class="v">—</tspan> m³/h</text></g>
-            <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="556" y="8" width="150" height="42" rx="4"/><text class="t-tag" x="566" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="566" y="42"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt01"><rect class="tagbox" x="170" y="56" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="180" y="73">PT01</text><text class="t-val" x="180" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt02"><rect class="tagbox" x="154" y="146" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="164" y="163">PT02</text><text class="t-val" x="164" y="182"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt03"><rect class="tagbox" x="356" y="56" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="366" y="73">PT03</text><text class="t-val" x="366" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt04"><rect class="tagbox" x="360" y="238" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="370" y="255">PT04</text><text class="t-val" x="370" y="274"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="314" y="146" width="96" height="44" rx="4"/><text class="t-tag" x="324" y="163">Fréquence</text><text class="t-val" x="324" y="182"><tspan class="v">—</tspan> Hz</text></g>
+            <g class="tag" data-key="ht01"><rect class="tagbox" x="416" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="426" y="163">HT01 · débit</text><text class="t-val" x="426" y="182"><tspan class="v">—</tspan> m³/h</text></g>
+            <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="548" y="8" width="164" height="42" rx="4"/><text class="t-tag" x="558" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="558" y="42"><tspan class="v">—</tspan> °C</text></g>
             <text class="t-tag" x="40" y="294">lecture seule · aucune commande vers l'automate</text>
           </svg>
         </div>
@@ -219,6 +224,7 @@
     <div class="chips" id="hist-series" role="group" aria-label="Courbes affichées"></div>
     <div class="chart-box tall" id="chart-hist-temp"></div>
     <div class="chart-box mid" id="chart-hist-flow"></div>
+    <div class="chart-box mid" id="chart-hist-power"></div>
     <p class="chart-foot" id="hist-foot"></p>
   </section>
   <section class="panel">

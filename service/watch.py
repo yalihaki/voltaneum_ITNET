@@ -173,18 +173,27 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     lines.append(rule)
 
     v = snap["values"]
+    names = {k: lab[0] for k, lab in config.SENSOR_LABELS.items()}
     pt02 = v["pt02"]
     pt02_txt = _num(pt02, 1, "°C")
     if pt02 is not None and pt02 > th["critical_temp"]:
         pt02_txt = s.crit(pt02_txt + " CRITIQUE")
     trend = snap.get("pt02_trend_10min")
-    row("Huile (PT02)", f"{s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
+    row("Huile régulée", f"{names['pt02']} : {s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
-    row("Températures", f"PT01 {_num(v['pt01'], 1, '°C')}   PT03 {_num(v['pt03'], 1, '°C')}   "
-        f"PT04 {_num(v['pt04'], 1, '°C')}")
+    row("Circuit huile", f"{names['pt01']} : {_num(v['pt01'], 1, '°C')}")
+    gap = v["pt03"] - v["pt04"] if v["pt03"] is not None and v["pt04"] is not None else None
+    row("Dry cooler", f"{names['pt03']} : {_num(v['pt03'], 1, '°C')}  →  {names['pt04']} : {_num(v['pt04'], 1, '°C')}"
+        + (f"  (refroidi de {_num(gap, 1)} °C)" if gap is not None else ""))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
+    humidity = v.get("humidity_outdoor")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
-        f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")
+        f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})"
+        + (f"   humidité {_num(humidity, 0, '%')}" if humidity is not None else ""))
+    tp = th.get("thermal_power", {})
+    status = "confirmée" if tp.get("confirmed") else "ESTIMATION, fluide et sondes à confirmer"
+    row("Puissance", f"{s.bold(_num(v.get('thermal_power_kw'), 1, 'kW'))} dissipée  "
+        + s.dim(f"(débit × {tp.get('hot', 'pt03').upper()}−{tp.get('cold', 'pt04').upper()} ; {status})"))
     lines.append(rule)
 
     c = snap.get("control")
@@ -245,6 +254,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     for label, values, unit, digits in (
         (f"PT02 · {minutes} min", series["series"]["pt02"], "°C", 1),
         (f"Fréquence · {minutes} min", series["series"]["freq_pompe"], "Hz", 0),
+        (f"Puissance · {minutes} min", series["series"]["thermal_power_kw"], "kW", 1),
         (f"Consigne · {minutes} min", control["setpoint"], "%", 0),
     ):
         line, lo, hi = sparkline(values, graph_w)

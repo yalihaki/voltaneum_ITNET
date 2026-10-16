@@ -69,9 +69,11 @@ def run_diagnostic() -> int:
           + (" joignable" if error is None else " injoignable : rien n'est publié pour l'automate, le reste fonctionne"))
     if config.OUTDOOR_WEATHER_FALLBACK_ENABLED:
         try:
-            from collectors.weather_collector import get_outdoor_temperature
+            from collectors.weather_collector import get_outdoor_conditions
 
-            _line(OK, "API météo", f"{get_outdoor_temperature():.1f} °C à ({config.LATITUDE}, {config.LONGITUDE})")
+            temperature, humidity = get_outdoor_conditions()
+            hum = f", humidité {humidity:.0f} %" if humidity is not None else ", humidité indisponible"
+            _line(OK, "API météo", f"{temperature:.1f} °C{hum} à ({config.LATITUDE}, {config.LONGITUDE})")
         except Exception as exc:  # réseau, format
             _line(WARN, "API météo", f"indisponible ({exc})")
     from notifications.alerts import smtp_configured

@@ -26,7 +26,15 @@ from control.cooling_advice import compute_cooling_conditions
 # dans ce module) ; toutes les valeurs passent en paramètres SQL.
 
 # Colonnes mesurées de `telemetry`, dans l'ordre d'affichage.
-MEASURES: tuple[str, ...] = ("pt01", "pt02", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor")
+MEASURES: tuple[str, ...] = ("pt01", "pt02", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor",
+                              "humidity_outdoor", "thermal_power_kw")
+
+
+def _measure_sql(conn: sqlite3.Connection, template: str = "{}") -> str:
+    """Expressions SQL des mesures ; NULL pour une colonne absente (base d'une version
+    précédente, pas encore migrée) au lieu d'une erreur."""
+    present = {row[1] for row in conn.execute("PRAGMA table_info(telemetry)")}
+    return ", ".join(template.format(name) if name in present else "NULL" for name in MEASURES)
 MODELS: tuple[str, ...] = ("random_forest", "gradient_boosting")
 
 # Nombre maximal de points renvoyés pour une courbe : au-delà, les mesures sont moyennées par
@@ -88,7 +96,7 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry)")}
         source_col = "temp_outdoor_source" if "temp_outdoor_source" in columns else "NULL"
         row = conn.execute(
-            f"SELECT id, CAST(strftime('%s', timestamp) AS INTEGER), {', '.join(MEASURES)}, {source_col} "  # nosec B608
+            f"SELECT id, CAST(strftime('%s', timestamp) AS INTEGER), {_measure_sql(conn)}, {source_col} "  # nosec B608
             "FROM telemetry ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row is None:
@@ -412,8 +420,8 @@ def telemetry_series(db_path: str, start: float, end: float,
     """
     max_points = max(10, min(int(max_points), MAX_POINTS_LIMIT))
     bucket = _bucket_seconds(start, end, max_points)
-    averages = ", ".join(f"AVG({name})" for name in MEASURES)
     with connect_readonly(db_path) as conn:
+        averages = _measure_sql(conn, "AVG({})")
         rows = conn.execute(
             f"SELECT CAST(MIN(strftime('%s', timestamp)) AS INTEGER), {averages}, "  # nosec B608
             "MIN(pt02), MAX(pt02), COUNT(*) FROM telemetry "
@@ -474,7 +482,7 @@ def telemetry_rows(db_path: str, start: float, end: float) -> Iterator[tuple]:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry)")}
         source_col = "temp_outdoor_source" if "temp_outdoor_source" in columns else "NULL"
         cursor = conn.execute(
-            f"SELECT timestamp, {', '.join(MEASURES)}, {source_col} FROM telemetry "  # nosec B608
+            f"SELECT timestamp, {_measure_sql(conn)}, {source_col} FROM telemetry "  # nosec B608
             "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp",
             (_utc_text(start), _utc_text(end)),
         )
@@ -647,6 +655,17 @@ def thresholds() -> dict:
         "stale_after_seconds": config.CONTROL_MAX_DATA_AGE_SECONDS,
         "snapshot_interval_seconds": config.SNAPSHOT_INTERVAL_SECONDS,
         "valid_ranges": {k: list(v) for k, v in config.SENSOR_VALID_RANGES.items()},
+        "labels": {k: {"long": long, "short": short} for k, (long, short) in config.SENSOR_LABELS.items()},
+        "thermal_power": thermal_power_settings(),
+    }
+
+
+def thermal_power_settings() -> dict:
+    """Paramètres de l'estimation de puissance (affichés avec la valeur, pour qu'elle reste lisible)."""
+    return {
+        "confirmed": config.THERMAL_POWER_CONFIRMED,
+        "hot": config.THERMAL_POWER_HOT, "cold": config.THERMAL_POWER_COLD,
+        "density": config.OIL_DENSITY_KG_M3, "heat_capacity": config.OIL_HEAT_CAPACITY_J_KG_K,
     }
 
 
@@ -693,4 +712,13 @@ def settings_summary() -> dict:
             "Alertes conservées au moins (jours)": config.ALERTS_RETENTION_DAYS,
         },
         "valid_ranges": {k: list(v) for k, v in config.SENSOR_VALID_RANGES.items()},
+        "sensors": {long: column.upper() for column, (long, _short) in config.SENSOR_LABELS.items()},
+        "thermal": {
+            "Calcul": "débit HT01 × masse volumique × capacité thermique × écart de température",
+            "Écart de température utilisé": f"{config.SENSOR_LABELS[config.THERMAL_POWER_HOT][0]} − "
+                                            f"{config.SENSOR_LABELS[config.THERMAL_POWER_COLD][0]}",
+            "Masse volumique du fluide (kg/m³)": config.OIL_DENSITY_KG_M3,
+            "Capacité thermique (J/kg/K)": config.OIL_HEAT_CAPACITY_J_KG_K,
+            "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION à confirmer (fluide et sondes)",
+        },
     }

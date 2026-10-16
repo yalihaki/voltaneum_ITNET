@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS telemetry (
     ht01 REAL,
     freq_pompe REAL,
     temp_outdoor REAL,
-    temp_outdoor_source TEXT
+    temp_outdoor_source TEXT,
+    humidity_outdoor REAL,
+    thermal_power_kw REAL
 );
 """
 
@@ -150,8 +152,10 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
         conn.execute(_CREATE_TABLE_SQL)
         # Migration des bases créées avant l'ajout de la colonne (aucune donnée perdue).
         columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry)")}
-        if "temp_outdoor_source" not in columns:
-            conn.execute("ALTER TABLE telemetry ADD COLUMN temp_outdoor_source TEXT")
+        for column, sql_type in (("temp_outdoor_source", "TEXT"), ("humidity_outdoor", "REAL"),
+                                 ("thermal_power_kw", "REAL")):
+            if column not in columns:  # migration des bases existantes, aucune donnée perdue
+                conn.execute(f"ALTER TABLE telemetry ADD COLUMN {column} {sql_type}")  # nosec B608
         conn.execute(_CREATE_INDEX_SQL)
         conn.execute(_CREATE_PREDICTIONS_TABLE_SQL)
         conn.execute(_CREATE_PREDICTIONS_INDEX_SQL)
@@ -178,6 +182,8 @@ def insert_reading(
     timestamp: str | None = None,
     db_path: str = SQLITE_DB_PATH,
     temp_outdoor_source: str | None = None,
+    humidity_outdoor: float | None = None,
+    thermal_power_kw: float | None = None,
 ) -> None:
     """Insère un instantané complet dans la table `telemetry`.
 
@@ -185,25 +191,17 @@ def insert_reading(
     CURRENT_TIMESTAMP (heure UTC du serveur au moment de l'insertion).
     `temp_outdoor_source` indique d'où vient `temp_outdoor` ("sensor" ou "weather").
     """
+    values = (pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source,
+              humidity_outdoor, thermal_power_kw)
+    columns = ("pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source, "
+               "humidity_outdoor, thermal_power_kw")
     with connect(db_path) as conn:
         if timestamp is None:
-            conn.execute(
-                """
-                INSERT INTO telemetry
-                    (pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source),
-            )
+            conn.execute(f"INSERT INTO telemetry ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",  # nosec B608
+                         values)
         else:
-            conn.execute(
-                """
-                INSERT INTO telemetry
-                    (timestamp, pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (timestamp, pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, temp_outdoor_source),
-            )
+            conn.execute(f"INSERT INTO telemetry (timestamp, {columns}) "  # nosec B608
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (timestamp, *values))
 
 
 def get_dataframe(start_ts: str, end_ts: str, db_path: str = SQLITE_DB_PATH) -> pd.DataFrame:
