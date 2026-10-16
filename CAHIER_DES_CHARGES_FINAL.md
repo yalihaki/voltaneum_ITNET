@@ -46,10 +46,10 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | **liquide de refroidissement** (boucle du dry cooler) | `pt01` |
-| `PT02` | **liquide de refroidissement**, grandeur régulée (et prédite) | `pt02` |
-| `PT03` | **liquide diélectrique** (cuve où baignent les équipements) | `pt03` |
-| `PT04` | **liquide diélectrique** | `pt04` |
+| `PT01` | **liquide diélectrique** (cuve où baignent les équipements) | `pt01` |
+| `PT02` | **liquide diélectrique**, grandeur régulée (et prédite) | `pt02` |
+| `PT03` | **liquide de refroidissement** (boucle du dry cooler) | `pt03` |
+| `PT04` | **liquide de refroidissement** | `pt04` |
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
@@ -67,12 +67,12 @@ La borne haute des sondes de température est **volontairement supérieure au se
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
-Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT03, PT04) et le **liquide de refroidissement** de la boucle du dry cooler (PT01, PT02). Restent à préciser : l'aller et le retour de chaque paire, et le circuit de la pompe (`PUMP`) et du débitmètre HT01. La puissance estimée (PT03 − PT04 par défaut) n'est valable que si HT01 mesure le débit du circuit diélectrique. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT01, PT02 — PT02 régulée) et le **liquide de refroidissement** de la boucle du dry cooler (PT03, PT04). Restent à préciser : l'aller et le retour de chaque paire, et le circuit de la pompe (`PUMP`) et du débitmètre HT01. La puissance estimée (PT03 − PT04 par défaut) n'est valable que si HT01 mesure le débit de la boucle de refroidissement (sinon `THERMAL_POWER_HOT=pt02`, `THERMAL_POWER_COLD=pt01` et les propriétés du diélectrique). Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
 
 Grandeurs dérivées, enregistrées à chaque instantané :
 
 - `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ; enregistrée mais ni affichée ni exportée pour l'instant ;
-- `thermal_power_kw` : puissance dissipée **estimée** = débit HT01 × masse volumique × capacité thermique × (PT03 − PT04). Fluide (`OIL_DENSITY_KG_M3`, `OIL_HEAT_CAPACITY_J_KG_K`, valeurs d'une huile minérale typique par défaut) et sondes (`THERMAL_POWER_HOT` / `_COLD`) à confirmer ; tant que `THERMAL_POWER_CONFIRMED=false`, l'interface la présente comme une estimation. Elle n'est pas encore une entrée des modèles.
+- `thermal_power_kw` : puissance dissipée **estimée** = débit HT01 × masse volumique × capacité thermique × (PT03 − PT04). Fluide (`THERMAL_FLUID_DENSITY_KG_M3`, `THERMAL_FLUID_HEAT_CAPACITY_J_KG_K`, valeurs d'une huile minérale typique par défaut) et sondes (`THERMAL_POWER_HOT` / `_COLD`) à confirmer ; tant que `THERMAL_POWER_CONFIRMED=false`, l'interface la présente comme une estimation. Elle n'est pas encore une entrée des modèles.
 
 ### 2.3 Adresses par défaut
 
@@ -497,7 +497,7 @@ Le moteur d'alertes tourne **dans le processus principal** : il est alimenté di
 Règles :
 
 - PT02 critique (`critical_temp`, CRITIQUE, immédiate) ;
-- **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, immédiate) : PT03 ou PT04 au-delà de `DIELECTRIC_CRITICAL_TEMP` (55 °C par défaut) — c'est la température qui protège les équipements immergés ;
+- **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, immédiate) : PT01 au-delà de `DIELECTRIC_CRITICAL_TEMP` (PT02, aussi diélectrique, relève du seuil critique de la grandeur régulée) (55 °C par défaut) — c'est la température qui protège les équipements immergés ;
 - **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
 - perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - **PT02 absente** alors que la passerelle émet (`oil_sensor_missing`, ATTENTION, après `OIL_SENSOR_MISSING_ALERT_SECONDS`) : aucune consigne n'est alors publiée ;

@@ -9,8 +9,8 @@
   // Noms des sondes : valeurs par défaut identiques à config.py, remplacées par celles du serveur
   // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
-    pt01: 'PT01 · liquide de refroidissement', pt02: 'PT02 · liquide de refroidissement (régulé)',
-    pt03: 'PT03 · liquide diélectrique', pt04: 'PT04 · liquide diélectrique',
+    pt01: 'PT01 · liquide diélectrique', pt02: 'PT02 · liquide diélectrique (régulé)',
+    pt03: 'PT03 · liquide de refroidissement', pt04: 'PT04 · liquide de refroidissement',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
     thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };
@@ -367,7 +367,7 @@
       add(', au-dessus du seuil critique de ' + num(s.thresholds.critical_temp) + ' °C : refroidissement maximal demandé, sans calcul PID.');
     } else {
       const e = c.error;
-      add('PT02 (liquide de refroidissement) est à '); add(num(c.t_oil) + ' °C', true);
+      add('PT02 (liquide diélectrique) est à '); add(num(c.t_oil) + ' °C', true);
       add(Math.abs(e) < 0.05 ? ', exactement à la cible : ' : ', soit ' + num(Math.abs(e)) + ' °C ' + (e > 0 ? 'au-dessus' : 'en dessous') + ' de la cible de ' + num(c.t_target) + ' °C. ');
       add('Le PID suggère '); add(pct(c.setpoint), true); add(' de refroidissement');
       const reasons = [];

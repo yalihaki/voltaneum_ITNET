@@ -12,8 +12,8 @@ from database import sqlite_client
 
 
 def test_power_from_flow_and_temperature_difference(monkeypatch):
-    monkeypatch.setattr(config, "OIL_DENSITY_KG_M3", 850.0)
-    monkeypatch.setattr(config, "OIL_HEAT_CAPACITY_J_KG_K", 1900.0)
+    monkeypatch.setattr(config, "THERMAL_FLUID_DENSITY_KG_M3", 850.0)
+    monkeypatch.setattr(config, "THERMAL_FLUID_HEAT_CAPACITY_J_KG_K", 1900.0)
     # 10,4 m³/h et 1 °C d'écart PT03 - PT04 : 10,4/3600 × 850 × 1900 × 1 ≈ 4,67 kW
     power = estimate_power_kw({"ht01": 10.4, "pt03": 33.5, "pt04": 32.5})
     assert power == pytest.approx(4.665, abs=0.01)

@@ -195,17 +195,18 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
             alerts.append({"level": level, "rule_name": rule_name, "message": message})
             state["last_sent_at"][rule_name] = now
 
-    # --- CRITIQUE : grandeur régulée (PT02, liquide de refroidissement) au-delà du seuil critique ---
+    # --- CRITIQUE : grandeur régulée (PT02, liquide diélectrique) au-delà du seuil critique ---
     # Immédiat : aucune confirmation multi-cycles (sécurité du procédé).
     t_oil = _number(telemetry, "pt02")
     if t_oil is not None and t_oil > config.CRITICAL_TEMP:
         emit("CRITIQUE", "critical_temp",
-             f"PT02 (liquide de refroidissement) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
+             f"PT02 (liquide diélectrique) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
 
-    # --- CRITIQUE : liquide diélectrique (cuve, PT03 / PT04) au-delà de son seuil ---
-    # C'est le liquide dans lequel baignent les équipements : sa température les protège.
-    # Immédiat, comme le seuil critique de PT02.
-    overheated = [(column.upper(), value) for column in ("pt03", "pt04")
+    # --- CRITIQUE : autres sondes du liquide diélectrique (cuve) au-delà de leur seuil ---
+    # C'est le liquide dans lequel baignent les équipements : sa température les protège. PT02
+    # (diélectrique, grandeur régulée) relève déjà de la règle précédente. Immédiat.
+    dielectric = [c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN]
+    overheated = [(column.upper(), value) for column in dielectric
                   if (value := _number(telemetry, column)) is not None and value > config.DIELECTRIC_CRITICAL_TEMP]
     if overheated:
         detail = ", ".join(f"{name} = {value:.1f} °C" for name, value in overheated)

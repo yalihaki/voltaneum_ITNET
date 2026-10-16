@@ -40,7 +40,7 @@
 <section class="view" data-view="supervision" aria-label="Supervision">
   <div class="tiles" id="tiles">
     <article class="tile" data-key="pt02">
-      <span class="lbl" id="lbl-pt02">PT02 · liquide de refroidissement (régulé)</span>
+      <span class="lbl" id="lbl-pt02">PT02 · liquide diélectrique (régulé)</span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
     </article>
@@ -76,47 +76,48 @@
       <section class="panel">
         <header class="ph"><h2>Synoptique</h2><small id="syno-age"></small></header>
         <div class="pb syno-wrap">
-          <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : cuve et liquide diélectrique (PT03, PT04), échangeur, boucle de liquide de refroidissement (PT01, PT02) et dry cooler">
-            <!-- Boucle du liquide diélectrique (cuve <-> échangeur) -->
-            <path class="pipe diel" d="M144 110 H300"/>
-            <path class="flow" d="M144 110 H300"/>
-            <path class="pipe diel" d="M300 220 H144"/>
-            <path class="flow" d="M300 220 H144"/>
-            <!-- Boucle du liquide de refroidissement (échangeur <-> dry cooler) -->
-            <path class="pipe cool" d="M360 110 H560"/>
-            <path class="flow" d="M360 110 H560"/>
-            <path class="pipe cool" d="M560 220 H360"/>
-            <path class="flow" d="M560 220 H360"/>
+          <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : dry cooler et boucle de liquide de refroidissement (PT03, PT04) à gauche, échangeur, liquide diélectrique (PT01, PT02) et cuve à droite">
+            <!-- Boucle du liquide de refroidissement (dry cooler <-> échangeur), à gauche -->
+            <path class="pipe cool" d="M200 110 H356"/>
+            <path class="flow" d="M200 110 H356"/>
+            <path class="pipe cool" d="M356 220 H200"/>
+            <path class="flow" d="M356 220 H200"/>
+            <!-- Boucle du liquide diélectrique (échangeur <-> cuve), à droite -->
+            <path class="pipe diel" d="M416 110 H616"/>
+            <path class="flow" d="M416 110 H616"/>
+            <path class="pipe diel" d="M616 220 H416"/>
+            <path class="flow" d="M616 220 H416"/>
 
-            <rect class="equip" x="24" y="70" width="120" height="190" rx="6"/>
-            <rect class="liquid" x="28" y="128" width="112" height="128" rx="3"/>
-            <text class="t-lbl" x="84" y="96" text-anchor="middle">Cuve</text>
-            <text class="t-lbl" x="84" y="112" text-anchor="middle">diélectrique</text>
+            <rect class="equip" x="50" y="60" width="150" height="190" rx="6"/>
+            <path class="fins" d="M68 150 h114 M68 170 h114 M68 190 h114 M68 210 h114 M68 230 h114"/>
+            <circle class="fan-ring" cx="150" cy="92" r="24"/>
+            <g class="fan" id="fan"><path class="glyph" d="M150 92 L150 72 Q160 82 150 92 Z M150 92 L170 92 Q160 102 150 92 Z M150 92 L150 112 Q140 102 150 92 Z M150 92 L130 92 Q140 82 150 92 Z"/></g>
+            <text class="t-lbl" x="90" y="96" text-anchor="middle">Dry</text>
+            <text class="t-lbl" x="90" y="112" text-anchor="middle">cooler</text>
 
-            <rect class="equip" x="300" y="80" width="60" height="170" rx="4"/>
-            <path class="plates" d="M312 92 V238 M324 92 V238 M336 92 V238 M348 92 V238"/>
-            <text class="t-hx" x="330" y="266" text-anchor="middle">échangeur</text>
+            <rect class="equip" x="356" y="80" width="60" height="170" rx="4"/>
+            <path class="plates" d="M368 92 V238 M380 92 V238 M392 92 V238 M404 92 V238"/>
+            <text class="t-hx" x="386" y="266" text-anchor="middle">échangeur</text>
 
-            <rect class="equip" x="560" y="60" width="150" height="190" rx="6"/>
-            <path class="fins" d="M578 150 h114 M578 170 h114 M578 190 h114 M578 210 h114 M578 230 h114"/>
-            <circle class="fan-ring" cx="610" cy="92" r="24"/>
-            <g class="fan" id="fan"><path class="glyph" d="M610 92 L610 72 Q620 82 610 92 Z M610 92 L630 92 Q620 102 610 92 Z M610 92 L610 112 Q600 102 610 92 Z M610 92 L590 92 Q600 82 610 92 Z"/></g>
-            <text class="t-lbl" x="670" y="96" text-anchor="middle">Dry</text>
-            <text class="t-lbl" x="670" y="112" text-anchor="middle">cooler</text>
+            <rect class="equip" x="616" y="70" width="120" height="190" rx="6"/>
+            <rect class="liquid" x="620" y="128" width="112" height="128" rx="3"/>
+            <text class="t-lbl" x="676" y="96" text-anchor="middle">Cuve</text>
+            <text class="t-lbl" x="676" y="112" text-anchor="middle">diélectrique</text>
 
-            <text class="t-loop" x="222" y="168" text-anchor="middle">liquide diélectrique</text>
-            <text class="t-loop" x="460" y="168" text-anchor="middle">liquide de refroidissement</text>
+            <text class="t-loop" x="278" y="160" text-anchor="middle">liquide de</text>
+            <text class="t-loop" x="278" y="176" text-anchor="middle">refroidissement</text>
+            <text class="t-loop" x="516" y="168" text-anchor="middle">liquide diélectrique</text>
 
-            <g class="tag" data-key="pt03"><rect class="tagbox" x="152" y="56" width="146" height="44" rx="4"/><text class="t-tag lbl-pt" x="162" y="73">PT03</text><text class="t-val" x="162" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt04"><rect class="tagbox" x="152" y="232" width="146" height="44" rx="4"/><text class="t-tag lbl-pt" x="162" y="249">PT04</text><text class="t-val" x="162" y="268"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt01"><rect class="tagbox" x="370" y="56" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="380" y="73">PT01</text><text class="t-val" x="380" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt02"><rect class="tagbox" x="370" y="232" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="380" y="249">PT02</text><text class="t-val" x="380" y="268"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="548" y="8" width="164" height="42" rx="4"/><text class="t-tag" x="558" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="558" y="42"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt03"><rect class="tagbox" x="210" y="56" width="140" height="44" rx="4"/><text class="t-tag lbl-pt" x="220" y="73">PT03</text><text class="t-val" x="220" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt04"><rect class="tagbox" x="210" y="232" width="140" height="44" rx="4"/><text class="t-tag lbl-pt" x="220" y="249">PT04</text><text class="t-val" x="220" y="268"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt01"><rect class="tagbox" x="424" y="56" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="434" y="73">PT01</text><text class="t-val" x="434" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt02"><rect class="tagbox" x="424" y="232" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="434" y="249">PT02</text><text class="t-val" x="434" y="268"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="50" y="8" width="160" height="42" rx="4"/><text class="t-tag" x="60" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="60" y="42"><tspan class="v">—</tspan> °C</text></g>
 
             <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="24" y="284" width="118" height="40" rx="4"/><text class="t-tag" x="34" y="300">Pompe</text><text class="t-val" x="34" y="318"><tspan class="v">—</tspan> Hz</text></g>
             <g class="tag" data-key="ht01"><rect class="tagbox" x="150" y="284" width="130" height="40" rx="4"/><text class="t-tag" x="160" y="300">HT01 · débit</text><text class="t-val" x="160" y="318"><tspan class="v">—</tspan> m³/h</text></g>
             <text class="t-tag" x="290" y="312">circuit de la pompe et de HT01 : à confirmer</text>
-            <text class="t-tag" x="736" y="324" text-anchor="end">lecture seule · aucune commande</text>
+            <text class="t-tag" x="736" y="30" text-anchor="end">lecture seule · aucune commande</text>
           </svg>
         </div>
       </section>

@@ -378,7 +378,7 @@ class TestAlertEngine:
 
     def test_critical_temperature_from_a_snapshot(self):
         engine, delivered = self._engine()
-        engine.on_telemetry({"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert ("CRITIQUE", "critical_temp") in delivered
 
     def test_watchdog_alerts_when_gateway_silent_since_startup(self):
@@ -397,7 +397,7 @@ class TestAlertEngine:
         for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
             monkeypatch.setattr(config, name, "x")
         engine, delivered = self._engine([False, True])
-        hot = {"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0}
+        hot = {"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0}
         engine.on_telemetry(hot)
         engine.on_telemetry(hot)                       # immédiatement : pas de rafale
         assert len(delivered) == 1
@@ -425,7 +425,7 @@ class TestAsynchronousSending:
 
         engine = AlertEngine(deliver=slow_deliver, watchdog_interval_seconds=60)
         started = time.monotonic()
-        engine.on_telemetry({"pt01": 70.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert time.monotonic() - started < 0.1                  # retour immédiat
         worker = threading.Thread(target=engine.run_forever, daemon=True)
         worker.start()
@@ -444,16 +444,16 @@ class TestDielectricCriticalTemperature:
 
     def test_alert_names_the_overheated_probe(self):
         state = _fresh_state()
-        alerts_ = evaluate_rules({"pt02": 34.0, "pt03": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt04": 40.0, "ts": 1.0},
+        alerts_ = evaluate_rules({"pt01": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt02": 34.0, "pt03": 80.0, "ts": 1.0},
                                  None, state)
         assert _names(alerts_) == ["dielectric_critical_temp"]
-        assert alerts_[0]["level"] == "CRITIQUE" and "PT03" in alerts_[0]["message"] and "PT04" not in alerts_[0]["message"]
+        assert alerts_[0]["level"] == "CRITIQUE" and "PT01" in alerts_[0]["message"] and "PT03" not in alerts_[0]["message"]
 
     def test_no_alert_at_or_below_threshold(self):
         state = _fresh_state()
         at = config.DIELECTRIC_CRITICAL_TEMP
-        assert evaluate_rules({"pt02": 34.0, "pt03": at, "pt04": at - 1, "ts": 1.0}, None, state) == []
+        assert evaluate_rules({"pt01": at, "pt02": 34.0, "pt03": at + 20, "ts": 1.0}, None, state) == []
 
     def test_missing_values_never_alert(self):
         state = _fresh_state()
-        assert evaluate_rules({"pt02": 34.0, "pt03": None, "pt04": "x", "ts": 1.0}, None, state) == []
+        assert evaluate_rules({"pt01": None, "pt02": 34.0, "ts": 1.0}, None, state) == []

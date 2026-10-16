@@ -25,5 +25,5 @@ def estimate_power_kw(values: dict) -> float | None:
         return None
     if not all(math.isfinite(v) for v in (flow, hot, cold)):
         return None
-    watts = flow / 3600.0 * config.OIL_DENSITY_KG_M3 * config.OIL_HEAT_CAPACITY_J_KG_K * (hot - cold)
+    watts = flow / 3600.0 * config.THERMAL_FLUID_DENSITY_KG_M3 * config.THERMAL_FLUID_HEAT_CAPACITY_J_KG_K * (hot - cold)
     return round(watts / 1000.0, 3)

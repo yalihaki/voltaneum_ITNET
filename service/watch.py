@@ -180,14 +180,18 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     trend = snap.get("pt02_trend_10min")
     row("Régulée (PT02)", f"{s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
-    row("Refroidissement", f"PT01 {_num(v['pt01'], 1, '°C')}   PT02 {_num(v['pt02'], 1, '°C')}"
-        + (f"   (écart {_num(abs(v['pt02'] - v['pt01']), 1)} °C)" if v["pt01"] is not None and v["pt02"] is not None else ""))
-    diel = [x for x in (v["pt03"], v["pt04"]) if x is not None]
-    diel_max = max(diel) if diel else None
-    diel_txt = f"PT03 {_num(v['pt03'], 1, '°C')}   PT04 {_num(v['pt04'], 1, '°C')}"
-    if diel_max is not None and diel_max > th.get("dielectric_critical_temp", th["critical_temp"]):
+    def pair(columns: tuple[str, ...]) -> str:
+        text = "   ".join(f"{c.upper()} {_num(v[c], 1, '°C')}" for c in columns)
+        known = [v[c] for c in columns if v[c] is not None]
+        return text + (f"   (écart {_num(max(known) - min(known), 1)} °C)" if len(columns) == 2 == len(known) else "")
+
+    # Liquide diélectrique (cuve) : seuil critique sur les sondes autres que PT02 (PT02 a le sien).
+    others = [v[c] for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN and v[c] is not None]
+    diel_txt = pair(config.DIELECTRIC_COLUMNS)
+    if others and max(others) > th.get("dielectric_critical_temp", th["critical_temp"]):
         diel_txt = s.crit(diel_txt + "  CRITIQUE")
-    row("Diélectrique", diel_txt + (f"   (écart {_num(abs(v['pt03'] - v['pt04']), 1)} °C)" if len(diel) == 2 else ""))
+    row("Diélectrique", diel_txt)
+    row("Refroidissement", pair(config.COOLANT_COLUMNS))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
         f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")

@@ -367,7 +367,7 @@ def mqtt_formats() -> list[dict]:
             **common, "key": "conditions", "topic": config.MQTT_TOPIC_COOLING_CONDITIONS,
             "title": "Conditions de refroidissement (contrat principal)", "enabled": True,
             "fields": [
-                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de PT02 (liquide de refroidissement)"},
+                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de PT02 (liquide diélectrique)"},
                 {"name": "critical_temp", "type": "nombre", "unit": "°C", "desc": "seuil critique"},
                 {"name": "outdoor_band", "type": "texte", "unit": "", "desc": "froid, tempere, chaud ou inconnue"},
                 {"name": "fan_on_above_temp", "type": "nombre", "unit": "°C", "desc": "seuil de marche du ventilateur"},
@@ -666,7 +666,7 @@ def thermal_power_settings() -> dict:
     return {
         "confirmed": config.THERMAL_POWER_CONFIRMED,
         "hot": config.THERMAL_POWER_HOT, "cold": config.THERMAL_POWER_COLD,
-        "density": config.OIL_DENSITY_KG_M3, "heat_capacity": config.OIL_HEAT_CAPACITY_J_KG_K,
+        "density": config.THERMAL_FLUID_DENSITY_KG_M3, "heat_capacity": config.THERMAL_FLUID_HEAT_CAPACITY_J_KG_K,
     }
 
 
@@ -680,7 +680,7 @@ def settings_summary() -> dict:
         "process": {
             "Température cible PT02 (°C)": config.TARGET_TEMP,
             "Seuil critique PT02 (°C)": config.CRITICAL_TEMP,
-            "Seuil critique diélectrique PT03 / PT04 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
+            "Seuil critique diélectrique PT01 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
             "Hystérésis ventilateur (°C)": config.FAN_HYSTERESIS_CELSIUS,
             "Pompe en marche au-delà de (Hz)": config.PUMP_RUNNING_MIN_HZ,
             "Débit minimal pompe en marche (m³/h)": config.FLOW_MIN_M3H,
@@ -719,8 +719,8 @@ def settings_summary() -> dict:
             "Calcul": "débit HT01 × masse volumique × capacité thermique × écart de température",
             "Écart de température utilisé": f"{config.SENSOR_LABELS[config.THERMAL_POWER_HOT][0]} − "
                                             f"{config.SENSOR_LABELS[config.THERMAL_POWER_COLD][0]}",
-            "Masse volumique du fluide (kg/m³)": config.OIL_DENSITY_KG_M3,
-            "Capacité thermique (J/kg/K)": config.OIL_HEAT_CAPACITY_J_KG_K,
+            "Masse volumique du fluide (kg/m³)": config.THERMAL_FLUID_DENSITY_KG_M3,
+            "Capacité thermique (J/kg/K)": config.THERMAL_FLUID_HEAT_CAPACITY_J_KG_K,
             "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION à confirmer (fluide et sondes)",
         },
     }
