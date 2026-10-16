@@ -40,7 +40,7 @@
 <section class="view" data-view="supervision" aria-label="Supervision">
   <div class="tiles" id="tiles">
     <article class="tile" data-key="pt02">
-      <span class="lbl" id="lbl-pt02">PT02 · huile du bain (régulée)</span>
+      <span class="lbl" id="lbl-pt02">PT02 · liquide de refroidissement (régulé)</span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
     </article>
@@ -55,7 +55,7 @@
       <span class="sub"><span class="meter" aria-hidden="true"><span></span></span></span>
     </article>
     <article class="tile" data-key="ht01">
-      <span class="lbl">HT01 · Débit huile</span>
+      <span class="lbl">HT01 · Débit</span>
       <span class="val"><span class="v num">—</span><u>m³/h</u></span>
       <span class="sub hint"></span>
     </article>
@@ -76,39 +76,47 @@
       <section class="panel">
         <header class="ph"><h2>Synoptique</h2><small id="syno-age"></small></header>
         <div class="pb syno-wrap">
-          <svg class="syno" id="syno" viewBox="0 0 760 300" role="img" aria-label="Schéma de l'installation avec les sondes PT01 à PT04, la pompe, le débitmètre HT01 et le dry cooler">
-            <path class="pipe hot" d="M150 110 H520"/>
-            <path class="flow" d="M150 110 H520"/>
-            <path class="pipe cold" d="M520 220 H150"/>
-            <path class="flow" d="M520 220 H150"/>
+          <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : cuve et liquide diélectrique (PT03, PT04), échangeur, boucle de liquide de refroidissement (PT01, PT02) et dry cooler">
+            <!-- Boucle du liquide diélectrique (cuve <-> échangeur) -->
+            <path class="pipe diel" d="M144 110 H300"/>
+            <path class="flow" d="M144 110 H300"/>
+            <path class="pipe diel" d="M300 220 H144"/>
+            <path class="flow" d="M300 220 H144"/>
+            <!-- Boucle du liquide de refroidissement (échangeur <-> dry cooler) -->
+            <path class="pipe cool" d="M360 110 H560"/>
+            <path class="flow" d="M360 110 H560"/>
+            <path class="pipe cool" d="M560 220 H360"/>
+            <path class="flow" d="M560 220 H360"/>
 
-            <rect class="equip" x="40" y="70" width="110" height="190" rx="6"/>
-            <rect class="oil" x="44" y="130" width="102" height="126" rx="3"/>
-            <text class="t-lbl" x="95" y="96" text-anchor="middle">Bain</text>
-            <text class="t-lbl" x="95" y="112" text-anchor="middle">d'huile</text>
+            <rect class="equip" x="24" y="70" width="120" height="190" rx="6"/>
+            <rect class="liquid" x="28" y="128" width="112" height="128" rx="3"/>
+            <text class="t-lbl" x="84" y="96" text-anchor="middle">Cuve</text>
+            <text class="t-lbl" x="84" y="112" text-anchor="middle">diélectrique</text>
 
-            <circle class="equip" cx="270" cy="220" r="22"/>
-            <path class="glyph" d="M258 208 L286 220 L258 232 Z"/>
-            <text class="t-lbl" x="270" y="264" text-anchor="middle">Pompe</text>
+            <rect class="equip" x="300" y="80" width="60" height="170" rx="4"/>
+            <path class="plates" d="M312 92 V238 M324 92 V238 M336 92 V238 M348 92 V238"/>
+            <text class="t-hx" x="330" y="266" text-anchor="middle">échangeur</text>
 
-            <circle class="equip" cx="400" cy="220" r="14"/>
-            <text class="t-tag glyph-text" x="400" y="224" text-anchor="middle">FT</text>
+            <rect class="equip" x="560" y="60" width="150" height="190" rx="6"/>
+            <path class="fins" d="M578 150 h114 M578 170 h114 M578 190 h114 M578 210 h114 M578 230 h114"/>
+            <circle class="fan-ring" cx="610" cy="92" r="24"/>
+            <g class="fan" id="fan"><path class="glyph" d="M610 92 L610 72 Q620 82 610 92 Z M610 92 L630 92 Q620 102 610 92 Z M610 92 L610 112 Q600 102 610 92 Z M610 92 L590 92 Q600 82 610 92 Z"/></g>
+            <text class="t-lbl" x="670" y="96" text-anchor="middle">Dry</text>
+            <text class="t-lbl" x="670" y="112" text-anchor="middle">cooler</text>
 
-            <rect class="equip" x="520" y="60" width="160" height="190" rx="6"/>
-            <path class="fins" d="M540 150 h120 M540 170 h120 M540 190 h120 M540 210 h120 M540 230 h120"/>
-            <circle class="fan-ring" cx="600" cy="92" r="24"/>
-            <g class="fan" id="fan"><path class="glyph" d="M600 92 L600 72 Q610 82 600 92 Z M600 92 L620 92 Q610 102 600 92 Z M600 92 L600 112 Q590 102 600 92 Z M600 92 L580 92 Q590 82 600 92 Z"/></g>
-            <text class="t-lbl" x="660" y="96" text-anchor="middle">Dry</text>
-            <text class="t-lbl" x="660" y="112" text-anchor="middle">cooler</text>
+            <text class="t-loop" x="222" y="168" text-anchor="middle">liquide diélectrique</text>
+            <text class="t-loop" x="460" y="168" text-anchor="middle">liquide de refroidissement</text>
 
-            <g class="tag" data-key="pt01"><rect class="tagbox" x="170" y="56" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="180" y="73">PT01</text><text class="t-val" x="180" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt02"><rect class="tagbox" x="154" y="146" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="164" y="163">PT02</text><text class="t-val" x="164" y="182"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt03"><rect class="tagbox" x="356" y="56" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="366" y="73">PT03</text><text class="t-val" x="366" y="92"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="pt04"><rect class="tagbox" x="360" y="238" width="154" height="44" rx="4"/><text class="t-tag lbl-pt" x="370" y="255">PT04</text><text class="t-val" x="370" y="274"><tspan class="v">—</tspan> °C</text></g>
-            <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="314" y="146" width="96" height="44" rx="4"/><text class="t-tag" x="324" y="163">Fréquence</text><text class="t-val" x="324" y="182"><tspan class="v">—</tspan> Hz</text></g>
-            <g class="tag" data-key="ht01"><rect class="tagbox" x="416" y="146" width="100" height="44" rx="4"/><text class="t-tag" x="426" y="163">HT01 · débit</text><text class="t-val" x="426" y="182"><tspan class="v">—</tspan> m³/h</text></g>
+            <g class="tag" data-key="pt03"><rect class="tagbox" x="152" y="56" width="146" height="44" rx="4"/><text class="t-tag lbl-pt" x="162" y="73">PT03</text><text class="t-val" x="162" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt04"><rect class="tagbox" x="152" y="232" width="146" height="44" rx="4"/><text class="t-tag lbl-pt" x="162" y="249">PT04</text><text class="t-val" x="162" y="268"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt01"><rect class="tagbox" x="370" y="56" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="380" y="73">PT01</text><text class="t-val" x="380" y="92"><tspan class="v">—</tspan> °C</text></g>
+            <g class="tag" data-key="pt02"><rect class="tagbox" x="370" y="232" width="180" height="44" rx="4"/><text class="t-tag lbl-pt" x="380" y="249">PT02</text><text class="t-val" x="380" y="268"><tspan class="v">—</tspan> °C</text></g>
             <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="548" y="8" width="164" height="42" rx="4"/><text class="t-tag" x="558" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="558" y="42"><tspan class="v">—</tspan> °C</text></g>
-            <text class="t-tag" x="40" y="294">lecture seule · aucune commande vers l'automate</text>
+
+            <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="24" y="284" width="118" height="40" rx="4"/><text class="t-tag" x="34" y="300">Pompe</text><text class="t-val" x="34" y="318"><tspan class="v">—</tspan> Hz</text></g>
+            <g class="tag" data-key="ht01"><rect class="tagbox" x="150" y="284" width="130" height="40" rx="4"/><text class="t-tag" x="160" y="300">HT01 · débit</text><text class="t-val" x="160" y="318"><tspan class="v">—</tspan> m³/h</text></g>
+            <text class="t-tag" x="290" y="312">circuit de la pompe et de HT01 : à confirmer</text>
+            <text class="t-tag" x="736" y="324" text-anchor="end">lecture seule · aucune commande</text>
           </svg>
         </div>
       </section>
@@ -174,7 +182,7 @@
             <div class="band" data-band="chaud"><b>Chaud</b><span>≥ 25 °C</span></div>
           </div>
           <dl class="kv" id="cooling">
-            <dt>Température cible huile</dt><dd data-k="target_temp">—</dd>
+            <dt>Température cible (PT02)</dt><dd data-k="target_temp">—</dd>
             <dt>Ventilateur : marche au-dessus de</dt><dd data-k="fan_on_above_temp">—</dd>
             <dt>Ventilateur : arrêt en dessous de</dt><dd data-k="fan_off_below_temp">—</dd>
             <dt>Fréquence minimale conseillée</dt><dd data-k="fan_min_freq_hz">—</dd>
@@ -326,7 +334,7 @@
     <div class="counts compact-counts" id="pid-summary"></div>
     <div class="chart-box mid" id="chart-pid-history"></div>
     <div class="table-wrap tall-table"><table class="table pid-table" id="pid-table">
-      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r">Huile</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
+      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r">PT02</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
       <tbody><tr><td colspan="12" class="empty">Chargement…</td></tr></tbody>
     </table></div>
     <p class="chart-foot">Cliquez une ligne pour voir le message JSON exact transmis au broker.</p>

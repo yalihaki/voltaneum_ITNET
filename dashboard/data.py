@@ -359,7 +359,7 @@ def mqtt_formats() -> list[dict]:
             "enabled": config.PUBLISH_PID_SETPOINT,
             "fields": [
                 {"name": "percent", "type": "nombre", "unit": "%", "desc": "consigne de refroidissement suggérée, bornée entre 0 et 100"},
-                {"name": "mode", "type": "texte", "unit": "", "desc": "pid, feedforward (anticipation ajoutée) ou safety_bypass (huile au-dessus du seuil critique : 100 %)"},
+                {"name": "mode", "type": "texte", "unit": "", "desc": "pid, feedforward (anticipation ajoutée) ou safety_bypass (PT02 au-dessus du seuil critique : 100 %)"},
                 {"name": "ts", "type": "nombre", "unit": "s", "desc": "horodatage d'envoi (secondes Unix, UTC)"},
             ],
         },
@@ -367,13 +367,13 @@ def mqtt_formats() -> list[dict]:
             **common, "key": "conditions", "topic": config.MQTT_TOPIC_COOLING_CONDITIONS,
             "title": "Conditions de refroidissement (contrat principal)", "enabled": True,
             "fields": [
-                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de l'huile"},
+                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de PT02 (liquide de refroidissement)"},
                 {"name": "critical_temp", "type": "nombre", "unit": "°C", "desc": "seuil critique"},
                 {"name": "outdoor_band", "type": "texte", "unit": "", "desc": "froid, tempere, chaud ou inconnue"},
                 {"name": "fan_on_above_temp", "type": "nombre", "unit": "°C", "desc": "seuil de marche du ventilateur"},
                 {"name": "fan_off_below_temp", "type": "nombre", "unit": "°C", "desc": "seuil d'arrêt du ventilateur"},
                 {"name": "fan_min_freq_hz", "type": "nombre ou null", "unit": "Hz", "desc": "fréquence minimale conseillée"},
-                {"name": "t_oil", "type": "nombre", "unit": "°C", "desc": "température d'huile utilisée"},
+                {"name": "t_oil", "type": "nombre", "unit": "°C", "desc": "température PT02 utilisée"},
                 {"name": "t_outdoor", "type": "nombre ou null", "unit": "°C", "desc": "température extérieure utilisée"},
                 {"name": "t_outdoor_source", "type": "texte ou null", "unit": "", "desc": "sensor (capteur) ou weather (API météo)"},
                 {"name": "valid_for_seconds", "type": "nombre", "unit": "s", "desc": f"durée de validité ({3 * interval:g} s) : au-delà, l'automate ignore le message"},
@@ -649,6 +649,7 @@ def thresholds() -> dict:
     return {
         "target_temp": config.TARGET_TEMP,
         "critical_temp": config.CRITICAL_TEMP,
+        "dielectric_critical_temp": config.DIELECTRIC_CRITICAL_TEMP,
         "fan_hysteresis": config.FAN_HYSTERESIS_CELSIUS,
         "pump_running_min_hz": config.PUMP_RUNNING_MIN_HZ,
         "flow_min_m3h": config.FLOW_MIN_M3H,
@@ -677,8 +678,9 @@ def settings_summary() -> dict:
     """
     return {
         "process": {
-            "Température cible huile (°C)": config.TARGET_TEMP,
-            "Seuil critique huile (°C)": config.CRITICAL_TEMP,
+            "Température cible PT02 (°C)": config.TARGET_TEMP,
+            "Seuil critique PT02 (°C)": config.CRITICAL_TEMP,
+            "Seuil critique diélectrique PT03 / PT04 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
             "Hystérésis ventilateur (°C)": config.FAN_HYSTERESIS_CELSIUS,
             "Pompe en marche au-delà de (Hz)": config.PUMP_RUNNING_MIN_HZ,
             "Débit minimal pompe en marche (m³/h)": config.FLOW_MIN_M3H,

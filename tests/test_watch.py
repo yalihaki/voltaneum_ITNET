@@ -24,8 +24,9 @@ def _db(tmp_path, rows=True):
 
 def test_screen_shows_measures_pid_and_alerts(tmp_path):
     screen = render(_db(tmp_path), minutes=60, width=110)
-    assert "Huile régulée" in screen and "cible 35,0 °C" in screen and "PT01 · huile, circuit : 40,0 °C" in screen
-    assert "PT03 · dry cooler, côté chaud : 39,0 °C" in screen and "refroidi de 9,0 °C" in screen
+    assert "Régulée (PT02)" in screen and "cible 35,0 °C" in screen
+    assert "Refroidissement" in screen and "PT01 40,0 °C" in screen
+    assert "Diélectrique" in screen and "PT03 39,0 °C" in screen and "PT04 30,0 °C" in screen
     assert "dissipée" in screen and "ESTIMATION" in screen
     assert "consigne 42,0 %" in screen and "NON transmise" in screen
     assert "critique" in screen and "Huile à 56 °C" in screen

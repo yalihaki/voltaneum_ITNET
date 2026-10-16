@@ -100,9 +100,9 @@ modèle, le PID tourne sans anticipation. Sans e-mail, les alertes restent dans 
 capteur extérieur (cas actuel, `OUTDOOR_SENSOR_MODE=none`), la température vient de l'API météo
 (interrogée toutes les 10 min, la source est enregistrée).
 
-**Mesures.** PT02 = huile du bain (grandeur régulée), PT01 = huile du circuit, PT03 / PT04 =
-côté chaud / côté froid du dry cooler (air ou huile : à confirmer ; noms modifiables dans
-`.env`). S'y ajoute la **puissance dissipée estimée**
+**Mesures.** Deux circuits séparés par un échangeur (confirmé par l'automaticien) : PT03 / PT04 =
+**liquide diélectrique** de la cuve, PT01 / PT02 = **liquide de refroidissement** de la boucle du
+dry cooler ; PT02 est la grandeur régulée. Noms modifiables dans `.env`. S'y ajoute la **puissance dissipée estimée**
 (débit × écart PT03 − PT04 × propriétés du fluide), affichée comme estimation tant que le fluide
 et les sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 
@@ -111,6 +111,7 @@ et les sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 | Règle | Niveau | Déclenchement |
 |---|---|---|
 | `critical_temp` | CRITIQUE | PT02 > `CRITICAL_TEMP` (immédiat) |
+| `dielectric_critical_temp` | CRITIQUE | PT03 ou PT04 (diélectrique) > `DIELECTRIC_CRITICAL_TEMP` (immédiat) |
 | `pump_without_flow` | CRITIQUE | fréquence > 5 Hz et débit < 0,5 m³/h, confirmé |
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
 | `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |

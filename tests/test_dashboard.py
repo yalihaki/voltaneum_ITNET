@@ -243,7 +243,7 @@ def test_api_routes(server):
     assert status == 200 and len(json.loads(body)["items"]) == 2
     now_ms = int(time.time() * 1000)
     status, _, body = _get(server + f"/api/control.csv?start={now_ms - 3_600_000}&end={now_ms + 60_000}")
-    assert status == 200 and body.decode("utf-8-sig").splitlines()[0].startswith("date UTC;heure locale;PT02 huile (°C);cible (°C)")
+    assert status == 200 and body.decode("utf-8-sig").splitlines()[0].startswith("date UTC;heure locale;PT02 (°C);cible (°C)")
     for route in ("/api/alerts", "/api/models", "/api/system", "/api/settings", "/api/pid", "/api/retrain", "/healthz"):
         assert _get(server + route)[0] == 200, route
 

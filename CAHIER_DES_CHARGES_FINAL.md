@@ -46,10 +46,10 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | huile, circuit | `pt01` |
-| `PT02` | huile du bain, **grandeur régulée** (et prédite) | `pt02` |
-| `PT03` | dry cooler, **côté chaud** (air ou huile : à confirmer) | `pt03` |
-| `PT04` | dry cooler, **côté froid** (air ou huile : à confirmer) | `pt04` |
+| `PT01` | **liquide de refroidissement** (boucle du dry cooler) | `pt01` |
+| `PT02` | **liquide de refroidissement**, grandeur régulée (et prédite) | `pt02` |
+| `PT03` | **liquide diélectrique** (cuve où baignent les équipements) | `pt03` |
+| `PT04` | **liquide diélectrique** | `pt04` |
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
@@ -67,7 +67,7 @@ La borne haute des sondes de température est **volontairement supérieure au se
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
-PT03 / PT04 : seul fait établi, PT03 est toujours plus chaude que PT04 (≈ 0,9 °C en moyenne). Reste à confirmer par l'automaticien s'il s'agit de températures d'huile (entrée / sortie) ou d'air (sortie / entrée d'air) ; PT04 restant 15 à 20 °C au-dessus de l'air extérieur, une température de fluide est plus probable. La puissance estimée n'est valable que pour des températures de fluide. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT03, PT04) et le **liquide de refroidissement** de la boucle du dry cooler (PT01, PT02). Restent à préciser : l'aller et le retour de chaque paire, et le circuit de la pompe (`PUMP`) et du débitmètre HT01. La puissance estimée (PT03 − PT04 par défaut) n'est valable que si HT01 mesure le débit du circuit diélectrique. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
 
 Grandeurs dérivées, enregistrées à chaque instantané :
 
@@ -496,7 +496,8 @@ Le moteur d'alertes tourne **dans le processus principal** : il est alimenté di
 
 Règles :
 
-- température huile critique (`critical_temp`, CRITIQUE, immédiate) ;
+- PT02 critique (`critical_temp`, CRITIQUE, immédiate) ;
+- **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, immédiate) : PT03 ou PT04 au-delà de `DIELECTRIC_CRITICAL_TEMP` (55 °C par défaut) — c'est la température qui protège les équipements immergés ;
 - **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
 - perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - **PT02 absente** alors que la passerelle émet (`oil_sensor_missing`, ATTENTION, après `OIL_SENSOR_MISSING_ALERT_SECONDS`) : aucune consigne n'est alors publiée ;

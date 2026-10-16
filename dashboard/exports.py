@@ -67,9 +67,9 @@ def measures(db_path: str, start: float, end: float) -> Iterator[tuple]:
 
 
 _CONTROL_HEADERS = {
-    "t_oil": "PT02 huile (°C)", "t_target": "cible (°C)", "t_predicted": "prédiction utilisée (°C)",
+    "t_oil": "PT02 (°C)", "t_target": "cible (°C)", "t_predicted": "prédiction utilisée (°C)",
     "t_outdoor": "air extérieur (°C)", "t_outdoor_source": "source air extérieur", "setpoint": "consigne (%)",
-    "mode": "mode", "error": "écart huile - cible (°C)", "p_term": "terme P (%)", "i_term": "terme I (%)",
+    "mode": "mode", "error": "écart PT02 - cible (°C)", "p_term": "terme P (%)", "i_term": "terme I (%)",
     "d_term": "terme D (%)", "feedforward_prediction": "anticipation ML (%)",
     "feedforward_outdoor": "anticipation météo (%)", "raw_output": "somme avant bornage (%)",
     "outdoor_band": "bande air extérieur", "fan_on_above": "ventilateur marche au-dessus de (°C)",

@@ -2,7 +2,7 @@
 
 Les règles (`evaluate_rules`) sont des fonctions pures, évaluées à chaque instantané de mesures
 (15 s) et toutes les 30 s par un chien de garde (perte de télémétrie). Le moteur ne dépend
-d'AUCUN broker MQTT : une alerte critique (huile au-delà du seuil, pompe sans débit, passerelle
+d'AUCUN broker MQTT : une alerte critique (température au-delà du seuil, pompe sans débit, passerelle
 muette) part même si le broker est absent ou en panne.
 
 Toute alerte passe par `deliver_alert` : une ligne dans `alerts_log` (visible dans l'interface)
@@ -122,7 +122,7 @@ def _number(payload: dict | None, key: str) -> float | None:
 
 def _compute_efficiency(telemetry: dict) -> float | None:
     """Efficacité approximative de l'échangeur : proportion de la chute de
-    température côté bain d'huile par rapport à l'écart maximal disponible
+    température d'une sonde par rapport à l'écart maximal disponible
     avec le circuit dry cooler. Retourne None si les données nécessaires
     manquent ou si le dénominateur est ~0 (pas d'écart de température, donc
     pas d'échange thermique mesurable, division non pertinente).
@@ -195,12 +195,23 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
             alerts.append({"level": level, "rule_name": rule_name, "message": message})
             state["last_sent_at"][rule_name] = now
 
-    # --- CRITIQUE : température du bain d'huile au-delà du seuil critique ---
+    # --- CRITIQUE : grandeur régulée (PT02, liquide de refroidissement) au-delà du seuil critique ---
     # Immédiat : aucune confirmation multi-cycles (sécurité du procédé).
     t_oil = _number(telemetry, "pt02")
     if t_oil is not None and t_oil > config.CRITICAL_TEMP:
         emit("CRITIQUE", "critical_temp",
-             f"T_bain = {t_oil:.1f}°C > seuil {config.CRITICAL_TEMP:.0f}°C")
+             f"PT02 (liquide de refroidissement) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
+
+    # --- CRITIQUE : liquide diélectrique (cuve, PT03 / PT04) au-delà de son seuil ---
+    # C'est le liquide dans lequel baignent les équipements : sa température les protège.
+    # Immédiat, comme le seuil critique de PT02.
+    overheated = [(column.upper(), value) for column in ("pt03", "pt04")
+                  if (value := _number(telemetry, column)) is not None and value > config.DIELECTRIC_CRITICAL_TEMP]
+    if overheated:
+        detail = ", ".join(f"{name} = {value:.1f} °C" for name, value in overheated)
+        emit("CRITIQUE", "dielectric_critical_temp",
+             f"Liquide diélectrique trop chaud : {detail} > seuil {config.DIELECTRIC_CRITICAL_TEMP:.0f} °C "
+             "— équipements immergés exposés. Vérifier le refroidissement sur site.")
 
     # --- CRITIQUE : fréquence pompe / ventilateur non nulle sans débit ----------
     # Une pompe qui tourne sans débit (vanne fermée, circuit bouché, désamorçage, variateur ou
@@ -255,7 +266,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
         missing_since = state.get("oil_missing_since")
         if missing_since is not None and now - missing_since >= config.OIL_SENSOR_MISSING_ALERT_SECONDS:
             emit("ATTENTION", "oil_sensor_missing",
-                 f"PT02 (huile régulée) sans valeur valide depuis {(now - missing_since) / 60:.0f} min alors que "
+                 f"PT02 (grandeur régulée) sans valeur valide depuis {(now - missing_since) / 60:.0f} min alors que "
                  "la passerelle émet : aucune consigne n'est publiée, l'automate régule seul. "
                  "Vérifier la sonde et le point sur la passerelle.")
         unchanged_since = state.get("oil_unchanged_since")

@@ -9,8 +9,8 @@
   // Noms des sondes : valeurs par défaut identiques à config.py, remplacées par celles du serveur
   // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
-    pt01: 'PT01 · huile, circuit', pt02: 'PT02 · huile du bain (régulée)',
-    pt03: 'PT03 · dry cooler, côté chaud', pt04: 'PT04 · dry cooler, côté froid',
+    pt01: 'PT01 · liquide de refroidissement', pt02: 'PT02 · liquide de refroidissement (régulé)',
+    pt03: 'PT03 · liquide diélectrique', pt04: 'PT04 · liquide diélectrique',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
     thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };
@@ -363,11 +363,11 @@
     const why = $('#pid-why'); why.replaceChildren();
     const add = (text, bold) => why.append(bold ? el('b', null, text) : document.createTextNode(text));
     if (c.mode === 'safety_bypass') {
-      add('L\'huile est à '); add(num(c.t_oil) + ' °C', true);
+      add('PT02 est à '); add(num(c.t_oil) + ' °C', true);
       add(', au-dessus du seuil critique de ' + num(s.thresholds.critical_temp) + ' °C : refroidissement maximal demandé, sans calcul PID.');
     } else {
       const e = c.error;
-      add('L\'huile est à '); add(num(c.t_oil) + ' °C', true);
+      add('PT02 (liquide de refroidissement) est à '); add(num(c.t_oil) + ' °C', true);
       add(Math.abs(e) < 0.05 ? ', exactement à la cible : ' : ', soit ' + num(Math.abs(e)) + ' °C ' + (e > 0 ? 'au-dessus' : 'en dessous') + ' de la cible de ' + num(c.t_target) + ' °C. ');
       add('Le PID suggère '); add(pct(c.setpoint), true); add(' de refroidissement');
       const reasons = [];
@@ -376,7 +376,7 @@
       add(reasons.length ? ', dont ' + reasons.join(' et ') + '.' : '.');
       if (c.raw_output != null && c.raw_output > 100.05) add(' Le calcul brut donne ' + pct(c.raw_output) + ', ramené au maximum de 100 %.');
       if (c.raw_output != null && c.raw_output < -0.05) add(' Le calcul brut est négatif (' + pct(c.raw_output) + ') : le PID ne sait que refroidir, la consigne reste à 0 %.');
-      if (c.i_term != null && c.i_term >= 99.9) add(' Le terme intégral est à son maximum : l\'huile est restée longtemps au-dessus de la cible.');
+      if (c.i_term != null && c.i_term >= 99.9) add(' Le terme intégral est à son maximum : PT02 est restée longtemps au-dessus de la cible.');
     }
 
     // Décomposition terme par terme
@@ -411,7 +411,7 @@
     // Entrées du calcul
     const dl = $('#pid-inputs'); dl.replaceChildren();
     const kv = (k, v) => dl.append(el('dt', null, k), el('dd', null, v));
-    kv('Écart huile − cible', c.error == null ? '—' : signed(c.error, 2) + ' °C');
+    kv('Écart PT02 − cible', c.error == null ? '—' : signed(c.error, 2) + ' °C');
     kv('Prédiction utilisée', c.t_predicted == null ? 'aucune (PID seul)' : num(c.t_predicted, 2) + ' °C');
     kv('Air extérieur', c.t_outdoor == null ? 'inconnu' : num(c.t_outdoor) + ' °C' + (c.t_outdoor_source === 'weather' ? ' (météo)' : c.t_outdoor_source === 'sensor' ? ' (capteur)' : ''));
     kv('Fréquence réelle pompe', s.values.freq_pompe == null ? '—' : num(s.values.freq_pompe, 1) + ' Hz (' + pct(fp) + ')');

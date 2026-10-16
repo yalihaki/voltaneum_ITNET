@@ -145,14 +145,17 @@ main { max-width: 1560px; margin: 0 auto; padding: 16px 20px 40px; padding-botto
 
 /* ---------------------------------------------------------------- synoptique */
 .syno-wrap { padding: 10px 14px; }
-.syno { width: 100%; height: auto; display: block; max-height: 340px; }
+.syno { width: 100%; height: auto; display: block; max-height: 370px; }
 .syno text { font-family: var(--f-ui); fill: var(--fg); }
 .syno .t-lbl { font: 600 11.5px var(--f-cond); letter-spacing: .09em; fill: var(--muted); text-transform: uppercase; }
 .syno .t-val { font: 600 15px var(--f-num); fill: var(--fg); transition: opacity .3s; }
 .syno .t-tag { font: 11px var(--f-num); fill: var(--muted); }
 .syno .glyph-text { fill: var(--fg); }
 .syno .equip { fill: var(--panel-2); stroke: var(--fg); stroke-width: 1.5; }
-.syno .oil { fill: var(--pipe-hot); opacity: .16; }
+.syno .liquid { fill: var(--pipe-hot); opacity: .16; }
+.syno .plates { stroke: var(--fins); stroke-width: 2; }
+.syno .t-hx { font: 600 10px var(--f-cond); fill: var(--muted); }
+.syno .t-loop { font: 600 11px var(--f-cond); letter-spacing: .06em; fill: var(--faint); text-transform: uppercase; }
 .syno .glyph { fill: var(--fg); }
 .syno .fins { stroke: var(--fins); stroke-width: 2; }
 .syno .fan-ring { fill: none; stroke: var(--fg); stroke-width: 1.5; }
@@ -161,7 +164,7 @@ main { max-width: 1560px; margin: 0 auto; padding: 16px 20px 40px; padding-botto
 .syno .tag.crit .tagbox { stroke: var(--crit); stroke-width: 2.5; fill: var(--crit-bg); }
 .syno .tag.absent .t-val { fill: var(--faint); }
 .syno .pipe { fill: none; stroke-width: 6; stroke-linecap: round; }
-.syno .hot { stroke: var(--pipe-hot); } .syno .cold { stroke: var(--pipe-cold); }
+.syno .diel { stroke: var(--pipe-hot); } .syno .cool { stroke: var(--pipe-cold); }
 .syno .flow { fill: none; stroke: var(--panel); stroke-width: 2; stroke-dasharray: 4 14; animation: flow 1.2s linear infinite; }
 .syno .fan { transform-box: fill-box; transform-origin: center; animation: spin 1.6s linear infinite; }
 .syno.no-flow .flow, .syno.fan-off .fan { animation-play-state: paused; }

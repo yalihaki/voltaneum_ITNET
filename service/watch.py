@@ -173,18 +173,21 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     lines.append(rule)
 
     v = snap["values"]
-    names = {k: lab[0] for k, lab in config.SENSOR_LABELS.items()}
     pt02 = v["pt02"]
     pt02_txt = _num(pt02, 1, "°C")
     if pt02 is not None and pt02 > th["critical_temp"]:
         pt02_txt = s.crit(pt02_txt + " CRITIQUE")
     trend = snap.get("pt02_trend_10min")
-    row("Huile régulée", f"{names['pt02']} : {s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
+    row("Régulée (PT02)", f"{s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
-    row("Circuit huile", f"{names['pt01']} : {_num(v['pt01'], 1, '°C')}")
-    gap = v["pt03"] - v["pt04"] if v["pt03"] is not None and v["pt04"] is not None else None
-    row("Dry cooler", f"{names['pt03']} : {_num(v['pt03'], 1, '°C')}  →  {names['pt04']} : {_num(v['pt04'], 1, '°C')}"
-        + (f"  (refroidi de {_num(gap, 1)} °C)" if gap is not None else ""))
+    row("Refroidissement", f"PT01 {_num(v['pt01'], 1, '°C')}   PT02 {_num(v['pt02'], 1, '°C')}"
+        + (f"   (écart {_num(abs(v['pt02'] - v['pt01']), 1)} °C)" if v["pt01"] is not None and v["pt02"] is not None else ""))
+    diel = [x for x in (v["pt03"], v["pt04"]) if x is not None]
+    diel_max = max(diel) if diel else None
+    diel_txt = f"PT03 {_num(v['pt03'], 1, '°C')}   PT04 {_num(v['pt04'], 1, '°C')}"
+    if diel_max is not None and diel_max > th.get("dielectric_critical_temp", th["critical_temp"]):
+        diel_txt = s.crit(diel_txt + "  CRITIQUE")
+    row("Diélectrique", diel_txt + (f"   (écart {_num(abs(v['pt03'] - v['pt04']), 1)} °C)" if len(diel) == 2 else ""))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
         f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")

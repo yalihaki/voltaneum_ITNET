@@ -137,13 +137,13 @@ MAX_GAP_SECONDS: int = _env_int("MAX_GAP_SECONDS", 60)
 # volontairement AU-DESSUS de CRITICAL_TEMP (55 °C). Une borne haute à 55 °C rejetterait
 # toute mesure > 55 °C comme « hors plage » : l'alerte critique et le bypass de sécurité du
 # PID ne verraient alors JAMAIS une surchauffe réelle. `validate_config()` refuse de démarrer
-# si cette condition n'est pas respectée pour la température d'huile (TARGET_COLUMN).
+# si cette condition n'est pas respectée pour la grandeur régulée (TARGET_COLUMN, PT02).
 SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
-    "pt01": (-20.0, 150.0),      # °C — circuit bain d'huile
-    "pt02": (-20.0, 150.0),      # °C — circuit bain d'huile (grandeur régulée et prédite)
+    "pt01": (-20.0, 150.0),      # °C — liquide de refroidissement
+    "pt02": (-20.0, 150.0),      # °C — liquide de refroidissement (grandeur régulée et prédite)
     "pt03": (-20.0, 150.0),      # °C — circuit dry cooler
     "pt04": (-20.0, 150.0),      # °C — circuit dry cooler
-    "ht01": (0.0, 15.0),         # m³/h — débit du circuit bain d'huile
+    "ht01": (0.0, 15.0),         # m³/h — débit (circuit à confirmer : diélectrique ou refroidissement)
     "freq_pompe": (0.0, 50.0),   # Hz — fréquence pompe / ventilateur (variateur)
     "temp_outdoor": (-20.0, 55.0),  # °C — capteur extérieur indépendant
 }
@@ -151,21 +151,23 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
 # ---------------------------------------------------------------------------
 # Noms des mesures, IDENTIQUES sur tous les écrans (interface, terminal, résumé)
 # ---------------------------------------------------------------------------
-# (nom complet, nom court pour le synoptique). PT03 / PT04 : noms NEUTRES tant que l'automaticien
-# n'a pas confirmé s'il s'agit de températures d'huile (entrée / sortie) ou d'air (sortie /
-# entrée d'air). Seul fait établi par les mesures : PT03 est le côté chaud, PT04 le côté froid.
-# PT04 reste 15 à 20 °C au-dessus de l'air extérieur (29 à 34 °C contre 7 à 24 °C), ce qui
-# évoque plutôt une température de fluide. Modifiables dans .env (PT01_LABEL … PT04_SHORT).
+# (nom complet, nom court pour le synoptique). Réponse de l'automaticien (16/10/2026) : deux
+# circuits séparés par un échangeur — PT01 / PT02 sur le LIQUIDE DE REFROIDISSEMENT (boucle du
+# dry cooler), PT03 / PT04 sur le LIQUIDE DIÉLECTRIQUE (cuve à immersion). Aller / retour de
+# chaque paire : à confirmer. Modifiables dans .env (PT01_LABEL … PT04_SHORT).
 SENSOR_LABELS: dict[str, tuple[str, str]] = {
-    "pt01": (_env_str("PT01_LABEL", "PT01 · huile, circuit"), _env_str("PT01_SHORT", "PT01 · circuit huile")),
-    "pt02": (_env_str("PT02_LABEL", "PT02 · huile du bain (régulée)"), _env_str("PT02_SHORT", "PT02 · bain (régulée)")),
-    "pt03": (_env_str("PT03_LABEL", "PT03 · dry cooler, côté chaud"), _env_str("PT03_SHORT", "PT03 · cooler chaud")),
-    "pt04": (_env_str("PT04_LABEL", "PT04 · dry cooler, côté froid"), _env_str("PT04_SHORT", "PT04 · cooler froid")),
+    "pt01": (_env_str("PT01_LABEL", "PT01 · liquide de refroidissement"), _env_str("PT01_SHORT", "PT01 · refroidissement")),
+    "pt02": (_env_str("PT02_LABEL", "PT02 · liquide de refroidissement (régulé)"),
+             _env_str("PT02_SHORT", "PT02 · refroid. (régulé)")),
+    "pt03": (_env_str("PT03_LABEL", "PT03 · liquide diélectrique"), _env_str("PT03_SHORT", "PT03 · diélectrique")),
+    "pt04": (_env_str("PT04_LABEL", "PT04 · liquide diélectrique"), _env_str("PT04_SHORT", "PT04 · diélectrique")),
 }
 
 # Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique
-# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Valeurs par défaut d'une huile minérale typique :
-# À CONFIRMER (fluide réel, et circuit sur lequel HT01 mesure le débit). Tant que
+# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Par défaut : PT03 − PT04 (liquide diélectrique) et
+# les propriétés d'un diélectrique typique. Valable SEULEMENT si HT01 mesure le débit du circuit
+# diélectrique ; s'il est sur la boucle de refroidissement, prendre PT01 / PT02 et les propriétés
+# de ce liquide (eau glycolée ≈ 1040 kg/m³, 3800 J/kg/K). À CONFIRMER. Tant que
 # THERMAL_POWER_CONFIRMED=false, l'interface l'affiche comme une estimation à confirmer.
 OIL_DENSITY_KG_M3: float = _env_float("OIL_DENSITY_KG_M3", 850.0)
 OIL_HEAT_CAPACITY_J_KG_K: float = _env_float("OIL_HEAT_CAPACITY_J_KG_K", 1900.0)
@@ -213,6 +215,9 @@ PID_FEEDFORWARD_REFERENCE_HORIZON_SECONDS: int = 600
 CONTROL_LOOP_INTERVAL_SECONDS: float = _env_float("CONTROL_LOOP_INTERVAL_SECONDS", 60.0)
 TARGET_TEMP: float = _env_float("TARGET_TEMP", 35.0)
 CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
+# Seuil critique du LIQUIDE DIÉLECTRIQUE (PT03 / PT04, cuve où baignent les équipements) : c'est
+# lui qui protège le matériel. Par défaut le même que CRITICAL_TEMP ; à fixer avec l'exploitant.
+DIELECTRIC_CRITICAL_TEMP: float = _env_float("DIELECTRIC_CRITICAL_TEMP", CRITICAL_TEMP)
 # Point de départ prudent pour un procédé thermique lent échantillonné toutes les 60 s :
 # Kp = 10 %/°C, temps d'intégration Ti = Kp/Ki = 500 s (≈ 8 cycles), pas de dérivée (sur une
 # mesure à 0,1 °C de résolution échantillonnée à 60 s, elle n'amplifie que le bruit).
@@ -482,6 +487,10 @@ def validate_config() -> None:
              "THERMAL_POWER_HOT et THERMAL_POWER_COLD doivent être deux sondes différentes parmi pt01..pt04.")
     _require(OIL_DENSITY_KG_M3 > 0 and OIL_HEAT_CAPACITY_J_KG_K > 0,
              "OIL_DENSITY_KG_M3 et OIL_HEAT_CAPACITY_J_KG_K doivent être positifs.")
+    dielectric_upper = min(SENSOR_VALID_RANGES["pt03"][1], SENSOR_VALID_RANGES["pt04"][1])
+    _require(0 < DIELECTRIC_CRITICAL_TEMP < dielectric_upper,
+             f"DIELECTRIC_CRITICAL_TEMP ({DIELECTRIC_CRITICAL_TEMP}) doit être positif et sous la borne haute des "
+             f"sondes PT03 / PT04 ({dielectric_upper}) pour qu'une surchauffe reste mesurable.")
     _require(0.0 < STORAGE_DISK_MAX_SHARE <= 1.0, "STORAGE_DISK_MAX_SHARE doit être compris entre 0 et 1.")
     _require(not RETRAIN_AT or _valid_hhmm(RETRAIN_AT), f"RETRAIN_AT doit être au format HH:MM, reçu {RETRAIN_AT!r}.")
     _require(OIL_SENSOR_MISSING_ALERT_SECONDS > 0 and SENSOR_FROZEN_ALERT_MINUTES >= 0,

@@ -437,3 +437,23 @@ class TestAsynchronousSending:
 def test_durable_defect_is_recalled_once_a_day_not_every_30_min():
     assert alerts.cooldown_seconds("oil_sensor_frozen") == 24 * 3600
     assert alerts.cooldown_seconds("critical_temp") == config.ALERT_COOLDOWN_MINUTES * 60
+
+
+class TestDielectricCriticalTemperature:
+    """Le liquide diélectrique (cuve) protège les équipements : alerte CRITIQUE immédiate."""
+
+    def test_alert_names_the_overheated_probe(self):
+        state = _fresh_state()
+        alerts_ = evaluate_rules({"pt02": 34.0, "pt03": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt04": 40.0, "ts": 1.0},
+                                 None, state)
+        assert _names(alerts_) == ["dielectric_critical_temp"]
+        assert alerts_[0]["level"] == "CRITIQUE" and "PT03" in alerts_[0]["message"] and "PT04" not in alerts_[0]["message"]
+
+    def test_no_alert_at_or_below_threshold(self):
+        state = _fresh_state()
+        at = config.DIELECTRIC_CRITICAL_TEMP
+        assert evaluate_rules({"pt02": 34.0, "pt03": at, "pt04": at - 1, "ts": 1.0}, None, state) == []
+
+    def test_missing_values_never_alert(self):
+        state = _fresh_state()
+        assert evaluate_rules({"pt02": 34.0, "pt03": None, "pt04": "x", "ts": 1.0}, None, state) == []
