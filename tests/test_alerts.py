@@ -20,8 +20,11 @@ from notifications.alerts import AlertEngine, _number, evaluate_rules
 N = config.ALERT_CONFIRMATION_CYCLES
 
 
-def _telemetry(pt01=40.0, pt02=38.0, pt03=30.0, ts=1.0) -> dict:
-    return {"pt01": pt01, "pt02": pt02, "pt03": pt03, "ts": ts}
+def _telemetry(pt01=40.0, pt02=38.0, pt03=30.0, ts=1.0, pt04=None) -> dict:
+    values = {"pt01": pt01, "pt02": pt02, "pt03": pt03, "ts": ts}
+    if pt04 is not None:
+        values["pt04"] = pt04
+    return values
 
 
 def _fresh_state() -> dict:
@@ -37,7 +40,7 @@ def _pump(frequency=30.0, flow=0.0, ts=1.0) -> dict:
 
 
 class TestPumpWithoutFlow:
-    """Règle : fréquence pompe/ventilateur non nulle SANS débit -> alerte CRITIQUE confirmée."""
+    """Règle : fréquence pompe non nulle SANS débit -> alerte CRITIQUE confirmée."""
 
     def _feed(self, state, count, **kwargs):
         alerts = []
@@ -147,7 +150,8 @@ class TestTelemetryLost:
 
 
 class TestEfficiencyDrift:
-    BAD = dict(pt01=40.0, pt02=41.0, pt03=30.0)   # efficacité négative : hors plage
+    # Diélectrique 40 -> 30 °C (10 °C d'écart) alors que seuls 2 °C sont disponibles : ε = 5, impossible.
+    BAD = dict(pt02=40.0, pt01=30.0, pt03=35.0, pt04=38.0)
 
     @pytest.fixture(autouse=True)
     def _enabled(self, monkeypatch):
@@ -184,8 +188,15 @@ class TestEfficiencyDrift:
         state = _fresh_state()
         for i in range(N - 1):
             evaluate_rules(_telemetry(**self.BAD, ts=i), None, state)
-        evaluate_rules(_telemetry(pt01=40.0, pt02=36.0, pt03=30.0, ts=99), None, state)
+        evaluate_rules(_telemetry(pt02=40.0, pt01=36.0, pt03=34.0, pt04=30.0, ts=99), None, state)
         assert state["consecutive_counts"]["efficiency_drift"] == 0
+
+    def test_formula_uses_the_hot_and_cold_side_of_each_circuit(self):
+        """Mesures réelles du 15/10/2026 : PT02 34,0 > PT01 33,3 ; PT03 33,0 > PT04 32,1."""
+        from notifications.alerts import _compute_efficiency
+
+        eff = _compute_efficiency({"pt02": 34.0, "pt01": 33.3, "pt03": 33.0, "pt04": 32.1})
+        assert eff == pytest.approx(0.9 / 1.9)
 
 
 class TestModelDisagreement:
@@ -314,10 +325,10 @@ class TestSendEmail:
 class TestOilSensor:
     """PT02 absente ou figée : sans elle, aucune consigne n'est publiée."""
 
-    def _feed(self, state, pt02, at, monkeypatch):
+    def _feed(self, state, pt02, at, monkeypatch, pt01=40.0):
         monkeypatch.setattr(alerts.time, "time", lambda: at)
         state["last_telemetry_ts"] = at              # la passerelle émet (comme AlertEngine.on_telemetry)
-        return evaluate_rules({"pt01": 40.0, "pt02": pt02, "pt03": 30.0, "ts": at}, None, state)
+        return evaluate_rules({"pt01": pt01, "pt02": pt02, "pt03": 30.0, "ts": at}, None, state)
 
     def test_missing_oil_value_alerts_after_delay(self, monkeypatch):
         state = {"started_at": 0.0}
@@ -332,14 +343,29 @@ class TestOilSensor:
         assert "oil_sensor_missing" not in _names(
             self._feed(state, 35.1, 1000.0 + config.OIL_SENSOR_MISSING_ALERT_SECONDS + 5, monkeypatch))
 
-    def test_frozen_value_alerts(self, monkeypatch):
-        """Cas réel : PT02 constante à 34,0 °C sur 652 mesures (point de passerelle douteux)."""
+    def test_frozen_value_alerts_when_pt01_moves(self, monkeypatch):
+        """PT02 bloquée à 34,0 °C alors que PT01, sur le même circuit, bouge de plus d'un degré."""
         state = {"started_at": 0.0}
         start = 10_000.0
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):
-            assert self._feed(state, 34.0, start + minute * 60, monkeypatch) == []
-        frozen = self._feed(state, 34.0, start + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch)
+            assert self._feed(state, 34.0, start + minute * 60, monkeypatch, pt01=32.0 + minute * 0.05) == []
+        frozen = self._feed(state, 34.0, start + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt01=35.0)
         assert _names(frozen) == ["oil_sensor_frozen"] and "34.0" in frozen[0]["message"]
+        assert "PT01" in frozen[0]["message"]
+
+    def test_stable_process_is_not_called_frozen(self, monkeypatch):
+        """PT02 lue au degré près : constante pendant des heures sur un procédé stable (PT01 ±0,2 °C),
+        ce n'est pas une panne — cas réel du 15-16/10/2026."""
+        state = {"started_at": 0.0}
+        for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES * 3):
+            assert self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt01=33.2 + (minute % 3) * 0.1) == []
+
+    def test_frozen_without_reference_falls_back_to_duration(self, monkeypatch):
+        state = {"started_at": 0.0}
+        for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):
+            self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt01=None)
+        frozen = self._feed(state, 34.0, 10_000.0 + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt01=None)
+        assert _names(frozen) == ["oil_sensor_frozen"]
 
     def test_moving_value_never_frozen(self, monkeypatch):
         state = {"started_at": 0.0}

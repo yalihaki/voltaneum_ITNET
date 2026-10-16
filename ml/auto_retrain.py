@@ -10,7 +10,8 @@ anticipation se déclenche sur la prédiction). Tant que le PID n'est pas régl�
 l'automaticien, ce choix reste humain.
 
 Un horizon est jugé FIABLE si :
-  1. `ml/train.py` l'a accepté (assez de collecte continue, PT02 varie, aucune variable figée) ;
+  1. `ml/train.py` l'a accepté (assez de collecte continue, PT02 varie ; une variable figée est
+     écartée des entrées, pas bloquante) ;
   2. son erreur (RMSE) est au moins AUTO_RETRAIN_MIN_GAIN plus faible que la persistance
      (« la température ne bouge pas ») ;
   3. son erreur reste sous AUTO_RETRAIN_MAX_RMSE_CELSIUS.
@@ -68,7 +69,7 @@ _FEATURE_LABELS = {
 _STATUS_REASONS = {
     "insufficient_data": "données insuffisantes (collecte continue trop courte pour cet horizon)",
     "insufficient_variance": "PT02 ne varie pas assez pour juger une prédiction",
-    "no_actionable_signal": "une variable d'entrée est restée figée",
+    "no_actionable_signal": "toutes les variables d'entrée sont restées figées",
     "no_skill": "ne fait pas mieux que la persistance (« la température ne bouge pas »)",
 }
 
@@ -203,8 +204,11 @@ def evaluate_installed(df: pd.DataFrame, model_dir: str = config.MODEL_DIR) -> d
     report = installed_model(model_dir)
     if report is None:
         return None
-    if report.get("features") != list(config.FEATURE_COLUMNS):
+    from ml.predictor import compatible_features
+
+    if not compatible_features(report):
         return None  # entraîné avec d'autres variables : inutilisable, donc « aucun modèle fiable »
+    features = list(report["features"])
     horizon = int(report.get("horizon_seconds", 600))
     best = report.get("best_model", "random_forest")
     try:
@@ -213,12 +217,12 @@ def evaluate_installed(df: pd.DataFrame, model_dir: str = config.MODEL_DIR) -> d
         logger.exception("Modèle installé illisible : %s", best)
         return None
     usable = build_target(df, horizon_seconds=horizon).dropna(
-        subset=config.FEATURE_COLUMNS + ["target_future"])
+        subset=config.FEATURE_COLUMNS + ["target_future"])   # mêmes lignes que l'entraînement
     split_idx = int(len(usable) * 0.8)
     test = usable.iloc[split_idx:]
     if len(test) < 5:
         return None
-    predictions = model.predict(test[config.FEATURE_COLUMNS].to_numpy())
+    predictions = model.predict(test[features].to_numpy())
     truth = test["target_future"].to_numpy()
     rmse = float(np.sqrt(np.mean((predictions - truth) ** 2)))
     baseline = float(np.sqrt(np.mean((test[config.TARGET_COLUMN].to_numpy() - truth) ** 2)))

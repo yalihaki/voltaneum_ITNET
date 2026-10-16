@@ -1,6 +1,6 @@
 # Voltaneum / ITNET
 
-Supervision et aide à la régulation de l'échangeur thermique (bain d'huile → dry cooler) :
+Supervision et aide à la régulation d'un refroidissement par immersion (cuve de liquide diélectrique → échangeur → boucle de refroidissement → dry cooler) :
 collecte des mesures de la passerelle, historique SQLite, alertes, prédiction de PT02,
 conditions de refroidissement et consigne PID **informatives** pour l'automate, interface web.
 
@@ -100,11 +100,14 @@ modèle, le PID tourne sans anticipation. Sans e-mail, les alertes restent dans 
 capteur extérieur (cas actuel, `OUTDOOR_SENSOR_MODE=none`), la température vient de l'API météo
 (interrogée toutes les 10 min, la source est enregistrée).
 
-**Mesures.** Deux circuits séparés par un échangeur (confirmé par l'automaticien) : PT01 / PT02 =
-**liquide diélectrique** de la cuve (PT02 régulée), PT03 / PT04 = **liquide de refroidissement** de la boucle du
-dry cooler ; PT02 est la grandeur régulée. Noms modifiables dans `.env`. S'y ajoute la **puissance dissipée estimée**
-(débit × écart PT03 − PT04 × propriétés du fluide), affichée comme estimation tant que le fluide
-et les sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
+**Mesures et physique.** Les équipements chauffent le **liquide diélectrique** de la cuve ; la pompe
+l'envoie à l'échangeur, où un **liquide de refroidissement** emporte la chaleur vers le dry cooler,
+qui la rend à l'air. PT01 / PT02 = diélectrique (PT02 = bain, grandeur régulée et prédite ; PT01 =
+retour refroidi), PT03 / PT04 = refroidissement (PT03 vers le dry cooler, PT04 en sortie du dry
+cooler). Circuits confirmés par l'automaticien ; côté chaud / froid déduit des mesures (PT02 > PT01 >
+PT03 > PT04), à confirmer. Détail complet : cahier des charges §2.2 bis. S'y ajoute la **puissance
+dissipée estimée** (débit HT01 × écart PT02 − PT01 × propriétés du diélectrique), affichée comme
+estimation tant que débit, fluide et sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 
 ## 5. Alertes
 
@@ -115,7 +118,7 @@ et les sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 | `pump_without_flow` | CRITIQUE | fréquence > 5 Hz et débit < 0,5 m³/h, confirmé |
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
 | `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |
-| `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` |
+| `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT01 a bougé d'au moins 1 °C |
 | `model_disagreement` | ATTENTION | les deux modèles divergent (la prédiction n'est alors pas utilisée) |
 | `outdoor_sensor_weather_mismatch` | ATTENTION | capteur extérieur et météo très différents |
 | `storage_*` | ATTENTION / CRITIQUE | stockage presque plein, purge, sauvegarde impossible (dont la quotidienne) |

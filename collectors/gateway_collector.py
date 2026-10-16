@@ -55,10 +55,11 @@ KEYNAME_TO_COLUMN: dict[str, str] = {
     "PT03": "pt03",
     "PT04": "pt04",
     # À CONFIRMER avec l'automaticien : sur cette passerelle, « PUMP » (Int16, lecture seule) est
-    # supposé être la fréquence pompe / ventilateur ; un point « DIAG Actual frequency VW12 »
-    # (diag_vw12) existe aussi et pourrait être la fréquence réellement mesurée.
+    # la fréquence de la POMPE (30 Hz constants alors que le dry cooler démarre et s'arrête : ce
+    # n'est pas le ventilateur) ; un point « DIAG Actual frequency VW12 » (diag_vw12) existe aussi
+    # et pourrait être la fréquence réellement mesurée.
     "PUMP": "freq_pompe",
-    # Commun aux deux passerelles : débit du circuit bain d'huile.
+    # Commun aux deux passerelles : débit du circuit bain d'huile (liquide diélectrique).
     "HT01": "ht01",
     # Ancien nom supposé dans la spécification initiale (conservé pour compatibilité).
     "Frequence": "freq_pompe",

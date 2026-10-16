@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import config
-from control.cooling_advice import compute_cooling_conditions
+from control.cooling_advice import compute_cooling_conditions, fan_thresholds
 
 # Les requêtes marquées « nosec B608 » n'interpolent que des noms de colonnes CONSTANTS (définis
 # dans ce module) ; toutes les valeurs passent en paramètres SQL.
@@ -689,8 +689,7 @@ def settings_summary() -> dict:
         },
         "bands": [
             {"name": name, "upper": None if math.isinf(upper) else upper, "offset": offset,
-             "fan_on": config.TARGET_TEMP + offset,
-             "fan_off": config.TARGET_TEMP + offset - config.FAN_HYSTERESIS_CELSIUS,
+             "fan_on": fan_thresholds(offset)[0], "fan_off": fan_thresholds(offset)[1],
              "min_freq_hz": freq}
             for upper, name, offset, freq in config.OUTDOOR_BANDS
         ],
@@ -707,6 +706,8 @@ def settings_summary() -> dict:
             "Délai entre deux e-mails (min)": config.ALERT_COOLDOWN_MINUTES,
             "Perte de télémétrie après (s)": config.TELEMETRY_TIMEOUT_SECONDS,
             "Désaccord entre modèles (°C)": config.DISAGREEMENT_THRESHOLD_CELSIUS,
+            "PT02 figée après (min)": config.SENSOR_FROZEN_ALERT_MINUTES,
+            "… si PT01 a bougé d'au moins (°C)": config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS,
         },
         "retention": {
             "Mesures conservées au moins (jours)": config.RETENTION_DAYS,
@@ -715,12 +716,19 @@ def settings_summary() -> dict:
         },
         "valid_ranges": {k: list(v) for k, v in config.SENSOR_VALID_RANGES.items()},
         "sensors": {long: column.upper() for column, (long, _short) in config.SENSOR_LABELS.items()},
+        "flow_direction": {
+            "Diélectrique, côté chaud (bain)": config.DIELECTRIC_HOT_COLUMN.upper(),
+            "Diélectrique, côté froid (retour à la cuve)": config.DIELECTRIC_COLD_COLUMN.upper(),
+            "Refroidissement, côté chaud (vers le dry cooler)": config.COOLANT_HOT_COLUMN.upper(),
+            "Refroidissement, côté froid (sortie du dry cooler)": config.COOLANT_COLD_COLUMN.upper(),
+            "Statut": "déduit des mesures, à confirmer avec l'automaticien",
+        },
         "thermal": {
             "Calcul": "débit HT01 × masse volumique × capacité thermique × écart de température",
             "Écart de température utilisé": f"{config.SENSOR_LABELS[config.THERMAL_POWER_HOT][0]} − "
                                             f"{config.SENSOR_LABELS[config.THERMAL_POWER_COLD][0]}",
             "Masse volumique du fluide (kg/m³)": config.THERMAL_FLUID_DENSITY_KG_M3,
             "Capacité thermique (J/kg/K)": config.THERMAL_FLUID_HEAT_CAPACITY_J_KG_K,
-            "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION à confirmer (fluide et sondes)",
+            "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION à confirmer (circuit de HT01, fluide et sondes)",
         },
     }

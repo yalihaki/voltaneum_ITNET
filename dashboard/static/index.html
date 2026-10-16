@@ -50,7 +50,7 @@
       <span class="sub hint">aucune prédiction récente</span>
     </article>
     <article class="tile" data-key="freq_pompe">
-      <span class="lbl">Fréquence pompe / ventil.</span>
+      <span class="lbl">Fréquence pompe</span>
       <span class="val"><span class="v num">—</span><u>Hz</u></span>
       <span class="sub"><span class="meter" aria-hidden="true"><span></span></span></span>
     </article>
@@ -78,11 +78,14 @@
         <div class="pb syno-wrap">
           <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : dry cooler et boucle de liquide de refroidissement (PT03, PT04) à gauche, échangeur, liquide diélectrique (PT01, PT02) et cuve à droite">
             <!-- Boucle du liquide de refroidissement (dry cooler <-> échangeur), à gauche -->
-            <path class="pipe cool" d="M200 110 H356"/>
-            <path class="flow" d="M200 110 H356"/>
-            <path class="pipe cool" d="M356 220 H200"/>
-            <path class="flow" d="M356 220 H200"/>
+            <!-- Sens déduit des mesures (à confirmer) : PT03 = réchauffé, vers le dry cooler ;
+                 PT04 = refroidi par le dry cooler, vers l'échangeur. -->
+            <path class="pipe cool" d="M356 110 H200"/>
+            <path class="flow" d="M356 110 H200"/>
+            <path class="pipe cool" d="M200 220 H356"/>
+            <path class="flow" d="M200 220 H356"/>
             <!-- Boucle du liquide diélectrique (échangeur <-> cuve), à droite -->
+            <!-- PT01 = refroidi par l'échangeur, retourne à la cuve ; PT02 = bain, vers l'échangeur. -->
             <path class="pipe diel" d="M416 110 H616"/>
             <path class="flow" d="M416 110 H616"/>
             <path class="pipe diel" d="M616 220 H416"/>
@@ -90,7 +93,7 @@
 
             <rect class="equip" x="50" y="60" width="150" height="190" rx="6"/>
             <path class="fins" d="M68 150 h114 M68 170 h114 M68 190 h114 M68 210 h114 M68 230 h114"/>
-            <circle class="fan-ring" cx="150" cy="92" r="24"/>
+            <circle class="fan-ring" cx="150" cy="92" r="24"><title>Ventilateur du dry cooler : état non mesuré</title></circle>
             <g class="fan" id="fan"><path class="glyph" d="M150 92 L150 72 Q160 82 150 92 Z M150 92 L170 92 Q160 102 150 92 Z M150 92 L150 112 Q140 102 150 92 Z M150 92 L130 92 Q140 82 150 92 Z"/></g>
             <text class="t-lbl" x="90" y="96" text-anchor="middle">Dry</text>
             <text class="t-lbl" x="90" y="112" text-anchor="middle">cooler</text>
@@ -115,8 +118,8 @@
             <g class="tag" data-key="temp_outdoor"><rect class="tagbox" x="50" y="8" width="160" height="42" rx="4"/><text class="t-tag" x="60" y="24" id="syno-ext-lbl">Air extérieur</text><text class="t-val" x="60" y="42"><tspan class="v">—</tspan> °C</text></g>
 
             <g class="tag" data-key="freq_pompe"><rect class="tagbox" x="24" y="284" width="118" height="40" rx="4"/><text class="t-tag" x="34" y="300">Pompe</text><text class="t-val" x="34" y="318"><tspan class="v">—</tspan> Hz</text></g>
-            <g class="tag" data-key="ht01"><rect class="tagbox" x="150" y="284" width="130" height="40" rx="4"/><text class="t-tag" x="160" y="300">HT01 · débit</text><text class="t-val" x="160" y="318"><tspan class="v">—</tspan> m³/h</text></g>
-            <text class="t-tag" x="290" y="312">circuit de la pompe et de HT01 : à confirmer</text>
+            <g class="tag" data-key="ht01"><rect class="tagbox" x="150" y="284" width="130" height="40" rx="4"/><text class="t-tag" x="160" y="300">HT01 · débit diél.</text><text class="t-val" x="160" y="318"><tspan class="v">—</tspan> m³/h</text></g>
+            <text class="t-tag" x="290" y="312">pompe et HT01 : circuit diélectrique (à confirmer)</text>
             <text class="t-tag" x="736" y="30" text-anchor="end">lecture seule · aucune commande</text>
           </svg>
         </div>

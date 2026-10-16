@@ -10,7 +10,7 @@
 
 ## 1. Objet du projet
 
-Voltaneum / ITNET est un système de télémétrie et d'aide à la régulation pour un échangeur thermique industriel reliant un bain d'huile à un dry cooler.
+Voltaneum / ITNET est un système de télémétrie et d'aide à la régulation pour un refroidissement par immersion : une cuve de liquide diélectrique, un échangeur, et une boucle de liquide de refroidissement évacuant la chaleur à l'air par un dry cooler.
 
 Le système doit :
 
@@ -46,12 +46,14 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | **liquide diélectrique** (cuve où baignent les équipements) | `pt01` |
-| `PT02` | **liquide diélectrique**, grandeur régulée (et prédite) | `pt02` |
-| `PT03` | **liquide de refroidissement** (boucle du dry cooler) | `pt03` |
-| `PT04` | **liquide de refroidissement** | `pt04` |
-| `HT01` | débit circuit bain d'huile | `ht01` |
-| fréquence | fréquence pompe/ventilateur | `freq_pompe` |
+| `PT01` | **liquide diélectrique**, sortie d'échangeur (refroidi, retourne à la cuve)* | `pt01` |
+| `PT02` | **liquide diélectrique**, bain (le plus chaud), grandeur régulée et prédite* | `pt02` |
+| `PT03` | **liquide de refroidissement**, sortie d'échangeur (réchauffé, va au dry cooler)* | `pt03` |
+| `PT04` | **liquide de refroidissement**, sortie du dry cooler (le plus froid)* | `pt04` |
+| `HT01` | débit du circuit « bain d'huile », donc diélectrique (à confirmer) | `ht01` |
+| fréquence | fréquence de la **pompe** (point `PUMP`, à confirmer) | `freq_pompe` |
+
+\* Circuit confirmé par l'automaticien ; côté chaud / froid **déduit des mesures**, à confirmer (`DIELECTRIC_HOT_COLUMN`, `DIELECTRIC_COLD_COLUMN`, `COOLANT_HOT_COLUMN`, `COOLANT_COLD_COLUMN`).
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
 
 Plages de validité (`config.SENSOR_VALID_RANGES`) :
@@ -67,12 +69,31 @@ La borne haute des sondes de température est **volontairement supérieure au se
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
-Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT01, PT02 — PT02 régulée) et le **liquide de refroidissement** de la boucle du dry cooler (PT03, PT04). Restent à préciser : l'aller et le retour de chaque paire, et le circuit de la pompe (`PUMP`) et du débitmètre HT01. La puissance estimée (PT03 − PT04 par défaut) n'est valable que si HT01 mesure le débit de la boucle de refroidissement (sinon `THERMAL_POWER_HOT=pt02`, `THERMAL_POWER_COLD=pt01` et les propriétés du diélectrique). Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT01, PT02 — PT02 régulée), à droite sur le synoptique, et le **liquide de refroidissement** de la boucle du dry cooler (PT03, PT04), à gauche. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+
+#### 2.2 bis Ce qui refroidit quoi, et comment
+
+Chaîne de la chaleur, du matériel jusqu'à l'air :
+
+1. Les équipements immergés dans la cuve dissipent leur puissance électrique dans le **liquide diélectrique** (isolant, il les baigne directement). Sa température au bain, **PT02**, est celle que voient les équipements : c'est la grandeur à tenir (cible `TARGET_TEMP`, 35 °C) et à ne jamais laisser dépasser `CRITICAL_TEMP` (55 °C).
+2. La **pompe** (`freq_pompe`, 30 Hz constants sur les relevés) fait circuler le diélectrique (débit `HT01` ≈ 10,4 m³/h) de la cuve vers l'**échangeur**, d'où il revient refroidi (**PT01**).
+3. Dans l'échangeur, la chaleur passe au **liquide de refroidissement** (eau glycolée en général), qui arrive froid du dry cooler (**PT04**) et repart réchauffé (**PT03**). Les deux circuits ne se mélangent pas.
+4. Le **dry cooler** rend la chaleur à l'air extérieur ; son **ventilateur** (état et vitesse non mesurés) augmente l'échange. C'est le levier de régulation de l'automate.
+
+Ordre mesuré le 15/10/2026 (moyennes 24 h) : PT02 33,9 > PT01 33,3 > PT03 33,0 > PT04 32,1 °C, cohérent avec un échangeur à contre-courant (écarts d'approche ≈ 1 °C de chaque côté). Quand le dry cooler souffle, PT04 chute de 3 °C en 30 s et PT03 suit avec retard ; la fréquence de la pompe ne bouge pas, ce n'est donc pas la vitesse du ventilateur.
+
+Conséquences prises en compte par le logiciel :
+
+- **limite physique** : le dry cooler ne peut pas refroidir sous la température de l'air. PT02 ne descend jamais sous l'air extérieur + les écarts d'approche du dry cooler et de l'échangeur ; par air chaud, la cible peut devenir inatteignable même à 100 %. D'où l'anticipation météo (`FEEDFORWARD_OUTDOOR_HOT_THRESHOLD`, forcément sous `TARGET_TEMP`) et les seuils avancés par air chaud ;
+- **inertie** : la boucle d'eau réagit en dizaines de secondes, le bain (grosse masse de liquide) en dizaines de minutes : c'est ce délai qui justifie de **prédire PT02** pour agir avant la dérive ;
+- **mesure de PT02** : elle semble lue au degré près (valeurs entières 33, 34, 35 °C). Une valeur constante pendant une heure n'est donc pas une panne en soi (voir l'alerte « PT02 figée », §10) ;
+- **puissance évacuée** : `thermal_power_kw` = débit HT01 × masse volumique × capacité thermique × (sonde chaude − sonde froide). HT01 étant sur le circuit « bain d'huile », la valeur par défaut est PT02 − PT01 avec une huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K) : environ 2,8 kW sur les relevés. Si HT01 est en fait sur la boucle du dry cooler : PT03 − PT04 et 1040 / 3800 (eau glycolée). Avec un écart d'environ 0,6 °C et PT02 au degré près, la valeur instantanée est très bruitée : lire une moyenne. Estimation tant que `THERMAL_POWER_CONFIRMED=false` ;
+- **efficacité de l'échangeur** : ε = max(PT02 − PT01, PT03 − PT04) / (PT02 − PT04), entre 0 et 1 (≈ 0,47 sur les relevés). L'alerte de dérive reste désactivée tant que la plage normale n'est pas connue.
 
 Grandeurs dérivées, enregistrées à chaque instantané :
 
 - `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ; enregistrée mais ni affichée ni exportée pour l'instant ;
-- `thermal_power_kw` : puissance dissipée **estimée** = débit HT01 × masse volumique × capacité thermique × (PT03 − PT04). Fluide (`THERMAL_FLUID_DENSITY_KG_M3`, `THERMAL_FLUID_HEAT_CAPACITY_J_KG_K`, valeurs d'une huile minérale typique par défaut) et sondes (`THERMAL_POWER_HOT` / `_COLD`) à confirmer ; tant que `THERMAL_POWER_CONFIRMED=false`, l'interface la présente comme une estimation. Elle n'est pas encore une entrée des modèles.
+- `thermal_power_kw` : puissance dissipée **estimée** (voir ci-dessus). Elle n'est pas une entrée des modèles.
 
 ### 2.3 Adresses par défaut
 
@@ -126,7 +147,7 @@ Voltaneum -> MQTT control/cooling_conditions (conditions à suivre)
           -> automate ou son pont -> décision finale
 ```
 
-Voltaneum ne doit jamais écrire dans un registre de commande, un variateur ou un automate. Il ne dit jamais « allume » ou « éteins » : il publie des seuils, l'automate compare lui-même la température d'huile à ces seuils.
+Voltaneum ne doit jamais écrire dans un registre de commande, un variateur ou un automate. Il ne dit jamais « allume » ou « éteins » : il publie des seuils, l'automate compare lui-même PT02 (température du bain diélectrique) à ces seuils.
 
 ---
 
@@ -224,7 +245,7 @@ Si la passerelle est muette depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s
 
 ### 6.2 Catalogue
 
-`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage. Deux catalogues réels ont été relevés le 9 octobre 2026 : `KEYNAME_TO_COLUMN` accepte les noms des deux passerelles (`PT01-temperature`, `Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Deux points alimentant la même colonne sont signalés par un avertissement. **À confirmer avec l'automaticien** : `PUMP` est supposé être la fréquence pompe / ventilateur.
+`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage. Deux catalogues réels ont été relevés le 9 octobre 2026 : `KEYNAME_TO_COLUMN` accepte les noms des deux passerelles (`PT01-temperature`, `Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Deux points alimentant la même colonne sont signalés par un avertissement. **À confirmer avec l'automaticien** : `PUMP` est la fréquence de la pompe (30 Hz constants pendant que le dry cooler démarre et s'arrête : ce n'est pas le ventilateur).
 
 ### 6.3 WebSocket
 
@@ -279,18 +300,18 @@ Publié à chaque cycle de contrôle (60 s), sans drapeau « retained » :
 
 | Champ | Sens |
 |---|---|
-| `target_temp` | température cible de l'huile (°C) |
+| `target_temp` | température cible de PT02, bain diélectrique (°C) |
 | `critical_temp` | seuil critique (°C) |
 | `outdoor_band` | `froid` (< 10 °C), `tempere` (10 à 25 °C), `chaud` (≥ 25 °C) ou `inconnue` |
-| `fan_on_above_temp` | seuil de marche du ventilateur = cible + décalage de la bande |
-| `fan_off_below_temp` | seuil d'arrêt = seuil de marche − `FAN_HYSTERESIS_CELSIUS` |
+| `fan_on_above_temp` | seuil de marche du ventilateur = cible + décalage de la bande + `FAN_HYSTERESIS_CELSIUS` / 2 |
+| `fan_off_below_temp` | seuil d'arrêt = cible + décalage − `FAN_HYSTERESIS_CELSIUS` / 2 |
 | `fan_min_freq_hz` | fréquence minimale conseillée (`null` si bande inconnue) |
 | `t_oil`, `t_outdoor` | mesures utilisées, pour la traçabilité (`t_outdoor` = `null` si inconnue) |
 | `t_outdoor_source` | origine de `t_outdoor` : `sensor` (capteur, prioritaire), `weather` (repli API météo) ou `null` |
 | `valid_for_seconds` | durée de validité (3 × intervalle de contrôle) |
 | `ts` | horodatage de publication |
 
-Règles : rien n'est publié si la température d'huile est invalide ou si les mesures sont périmées. Air froid : le dry cooler refroidit mieux, le ventilateur démarre plus tard (décalage +2 °C) ; air chaud : il démarre plus tôt (−2 °C). Les bandes, décalages, hystérésis et fréquences (`OUTDOOR_BANDS`, `FAN_HYSTERESIS_CELSIUS`) sont des **valeurs indicatives non calibrées**, à valider avec l'automaticien ; `validate_config()` refuse une table incohérente (bandes non ordonnées, seuil de marche ≥ seuil critique, fréquence hors de la plage du variateur).
+Règles : rien n'est publié si PT02 est invalide ou si les mesures sont périmées. La bande marche / arrêt est **centrée** sur la cible décalée : en tout-ou-rien, la température oscille entre les deux seuils et sa moyenne tombe au milieu (avant, marche à 35 °C et arrêt à 33 °C faisaient tenir le bain 1 °C sous la cible ; c'est ce qu'on observait, PT02 ≈ 34 °C). Air froid : le dry cooler refroidit mieux, le ventilateur démarre plus tard (décalage +2 °C) ; air chaud : il a moins de capacité, il démarre plus tôt (−2 °C). `fan_min_freq_hz` concerne le **ventilateur** et ne se compare pas à `freq_pompe`. Les bandes, décalages, hystérésis et fréquences (`OUTDOOR_BANDS`, `FAN_HYSTERESIS_CELSIUS`) sont des **valeurs indicatives non calibrées**, à valider avec l'automaticien ; `validate_config()` refuse une table incohérente (bandes non ordonnées, seuil de marche ≥ seuil critique, fréquence hors de la plage du variateur).
 
 Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_for_seconds` et retomber sur sa propre régulation ; rester dans ses bornes de variateur ; respecter son mode manuel / automatique, ses arrêts d'urgence et ses temporisations ; limiter la vitesse de variation ; ne jamais être piloté en écriture par ce projet. À ma connaissance, le S7-200 SMART n'a pas de client MQTT natif : un pont est probablement nécessaire (à confirmer).
 
@@ -342,7 +363,7 @@ Durées recommandées :
 
 Pour l'horizon de production de 600 secondes, chaque cycle actif doit durer au moins 20 à 30 minutes et présenter une variation mesurable de `PT02`. Une base volumineuse mais avec pompe à zéro ou cible constante n'est pas suffisante.
 
-La campagne est acceptable seulement si `freq_pompe` présente plusieurs phases, si `pt02` varie réellement, si les autres variables ne sont pas figées, et si les trous restent compatibles avec `MAX_GAP_SECONDS`.
+La campagne est acceptable seulement si `pt02` varie réellement (charge et météo différentes, démarrages et arrêts du dry cooler) et si les trous restent compatibles avec `MAX_GAP_SECONDS`. Une variable constante (pompe à vitesse fixe) n'empêche pas l'apprentissage, mais le modèle ne saura rien de son effet.
 
 ### 7.4 Rétention temporelle
 
@@ -406,7 +427,9 @@ Avant une purge, `database/backup.py` crée une copie cohérente via l'API SQLit
 ### 8.1 Entrées et cible
 
 Features : `pt02` (valeur actuelle), `pt01`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`.  
-Cible : `pt02` à l'horizon. La valeur actuelle de `pt02` fait partie des entrées : sans elle, le modèle devait la deviner alors que la persistance, à laquelle il est comparé, la connaît. Chaque modèle enregistre sa liste de variables ; un modèle entraîné avec une autre liste est refusé au chargement.  
+Cible : `pt02` à l'horizon, c'est-à-dire la température du bain que voient les équipements et que régule l'automate. On la prédit parce que le bain réagit lentement (grosse masse de liquide) : savoir 10 minutes à l'avance qu'il va dépasser la cible permet de refroidir plus tôt, au lieu de corriger après coup. Les entrées décrivent ce qui la fait bouger : la charge (écart PT02 − PT01 côté diélectrique), la capacité d'évacuation (PT03, PT04, air extérieur) et le débit. La valeur actuelle de `pt02` fait partie des entrées : sans elle, le modèle devait la deviner alors que la persistance, à laquelle il est comparé, la connaît. PT01, lue au dixième de degré, aide aussi le modèle à voir les variations que PT02, au degré près, ne montre pas encore.
+
+Une variable **restée constante** sur toute la période (cas actuel : la pompe à 30 Hz) est **écartée des entrées** et sa valeur mémorisée (`constant_features`) : elle n'apporte aucune information, et la règle précédente (« une variable figée, aucun modèle ») bloquait l'apprentissage pour toujours. Si cette variable s'écarte ensuite de sa valeur apprise (plus de max(0,5 ; 2 %)), la prédiction est déclarée **hors domaine** (`out_of_domain`) et le PID l'ignore jusqu'au prochain ré-entraînement. Chaque modèle enregistre sa liste de variables ; un modèle dont la liste n'est pas un sous-ensemble ordonné de `config.FEATURE_COLUMNS` est refusé au chargement.  
 Horizon de production actuel : `600` secondes.
 
 ### 8.2 Entraînement
@@ -436,7 +459,6 @@ Un modèle ne doit pas être déclaré industriellement valide si :
 - le segment continu est trop court ;
 - le nombre d'échantillons est insuffisant ;
 - la cible est quasi constante ;
-- la pompe n'a pas de cycles actifs ;
 - le modèle ne bat pas la persistance ;
 - les données d'essai ne représentent pas les conditions terrain.
 
@@ -476,7 +498,7 @@ Modes :
 
 Si `t_oil > CRITICAL_TEMP`, la sortie est immédiatement 100 %. Les entrées non finies ne doivent jamais contaminer l'état PID.
 
-**Anti-windup.** L'intégrale est gelée tant que la sortie est saturée **et** bornée dans `[0, SETPOINT_MAX / Ki]`. Le correctif « huile froide » évite qu'une période froide crée une dette négative inutile : avant correction, huile à 10 °C puis 40 °C donnait 9 minutes à 0 % ; après, la consigne réagit dès le premier cycle chaud.
+**Anti-windup.** L'intégrale est gelée tant que la sortie est saturée **et** bornée dans `[0, SETPOINT_MAX / Ki]`. Le correctif « bain froid » évite qu'une période froide crée une dette négative inutile : avant correction, PT02 à 10 °C puis 40 °C donnait 9 minutes à 0 % ; après, la consigne réagit dès le premier cycle chaud.
 
 **Rôle du PID.** Le contrat principal est la publication de la température cible et des conditions (§6.4) ; la consigne PID en % est publiée sur `voltaneum/control/setpoint` à titre informatif (suivi et comparaison avec la régulation de l'automate), désactivable par `PUBLISH_PID_SETPOINT=false`. Gains par défaut : Kp = 10 %/°C, Ki = 0,02 (temps d'intégration 500 s), Kd = 0 — point de départ prudent pour un procédé thermique lent échantillonné à 60 s, à régler sur site. Les anciennes valeurs (5 / 0,1 / 1) donnaient un temps d'intégration de 50 s, plus court qu'un cycle de calcul : consigne vite saturée.
 
@@ -498,13 +520,13 @@ Règles :
 
 - PT02 critique (`critical_temp`, CRITIQUE, immédiate) ;
 - **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, immédiate) : PT01 au-delà de `DIELECTRIC_CRITICAL_TEMP` (PT02, aussi diélectrique, relève du seuil critique de la grandeur régulée) (55 °C par défaut) — c'est la température qui protège les équipements immergés ;
-- **pompe / ventilateur en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
+- **pompe en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
 - perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - **PT02 absente** alors que la passerelle émet (`oil_sensor_missing`, ATTENTION, après `OIL_SENSOR_MISSING_ALERT_SECONDS`) : aucune consigne n'est alors publiée ;
-- **PT02 figée** (`oil_sensor_frozen`, ATTENTION) : valeur strictement constante pendant `SENSOR_FROZEN_ALERT_MINUTES` (cas réel : 34,0 °C sur 652 mesures, point de passerelle douteux) ;
+- **PT02 figée** (`oil_sensor_frozen`, ATTENTION) : valeur strictement constante pendant `SENSOR_FROZEN_ALERT_MINUTES` **alors que PT01**, sur le même circuit, a varié d'au moins `SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS` (1 °C) ; sans PT01, la durée seule fait foi. PT02 étant lue au degré près, elle reste à 34,0 °C pendant des heures sur un procédé stable : l'ancienne règle (durée seule) donnait une fausse alerte quotidienne ;
 - désaccord entre modèles ;
 - écart entre le capteur extérieur et la météo ;
-- dérive d'efficacité : formule non validée, **désactivée par défaut** (`EFFICIENCY_ALERT_ENABLED`) ;
+- dérive d'efficacité : ε = max(écart diélectrique, écart refroidissement) / (diélectrique chaud − refroidissement froid), plage normale inconnue, **désactivée par défaut** (`EFFICIENCY_ALERT_ENABLED`) ;
 - stockage : seuil d'avertissement, purge exécutée ou bloquée, sauvegarde (avant purge ou quotidienne) impossible.
 
 Les e-mails sont envoyés par le thread du moteur d'alertes, jamais par la collecte : un serveur SMTP lent ne retarde aucune mesure. Un défaut durable (`oil_sensor_frozen`) n'est rappelé qu'une fois par jour ; les autres règles respectent `ALERT_COOLDOWN_MINUTES`.
@@ -591,11 +613,11 @@ La recette industrielle n'est prononcée qu'après :
 
 - accès réel à la passerelle depuis le réseau autorisé ;
 - collecte continue sans corruption ;
-- cycles réels de pompe/ventilateur ;
+- cycles réels du ventilateur du dry cooler (état non mesuré aujourd'hui) ;
 - variation mesurable de `PT02` (le point actuel, constant à 34,0 °C, est à vérifier) ;
 - modèle meilleur que la persistance sur une période représentative, validé par une personne ;
 - validation des seuils et des gains PID par l'exploitant ;
-- confirmation de `PUMP` (ou `DIAG Actual frequency VW12`) comme fréquence pompe / ventilateur ;
+- confirmation de `PUMP` (ou `DIAG Actual frequency VW12`) comme fréquence de la pompe, et d'un point donnant l'état du ventilateur ;
 - validation des bandes de température extérieure, décalages, hystérésis et fréquences conseillées ;
 - validation des seuils de la règle pompe sans débit ;
 - définition et test du pont MQTT vers l'automate (âge du message, bornes du variateur, mode manuel / automatique) ;
@@ -610,13 +632,13 @@ Le logiciel, ses tests, sa gestion des erreurs, sa supervision, sa sécurité MQ
 
 Le 9 octobre 2026, la passerelle 10.0.1.34 a été jointe depuis le réseau industriel : login réussi, catalogue et WebSocket opérationnels, six colonnes remplies (pompe à 30 Hz, débit ≈ 10,4 m³/h, `PT01` à `PT04` entre 31 et 34 °C).
 
-Les premières données réelles ne contiennent encore aucune variation de fréquence de pompe : `freq_pompe` à 30 Hz constant ne permet pas d'entraîner un modèle (garde-fou `no_actionable_signal`). Une collecte avec des fréquences variées est nécessaire. La base de test précédente a montré des périodes avec pompe à zéro, `HT01` constant, faible variation de `PT02` et des trous importants. Elle permet de tester le pipeline, mais ne suffit pas seule à valider la performance industrielle du modèle.
+Les premières données réelles ne contiennent aucune variation de fréquence de pompe (30 Hz constants) : `freq_pompe` est donc écartée des entrées du modèle (voir §8.1) au lieu de bloquer l'apprentissage. PT02 lue au degré près limite la précision atteignable (erreur de quantification ≈ 0,3 °C). La base de test précédente a montré des périodes avec pompe à zéro, `HT01` constant, faible variation de `PT02` et des trous importants. Elle permet de tester le pipeline, mais ne suffit pas seule à valider la performance industrielle du modèle.
 
 La connexion aux passerelles (`10.0.1.33`, `10.0.1.34`) et au broker d'entreprise ne peut pas être testée depuis une machine hors réseau ou sans VPN autorisé. Cette limite est réseau, pas un défaut à contourner dans le code.
 
 Les paramètres suivants restent à confirmer sur le terrain :
 
-- `PUMP` comme fréquence pompe / ventilateur ;
+- `PUMP` comme fréquence de la pompe ; côté chaud / froid de chaque paire de sondes ; circuit de HT01 ;
 - gains PID ;
 - seuil critique ;
 - bandes de température extérieure, décalages, hystérésis et fréquences conseillées (`OUTDOOR_BANDS`) ;

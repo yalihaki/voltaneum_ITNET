@@ -86,6 +86,7 @@ class VoltaneumApp:
         self._pid_state: dict = {}
         self._prediction_used = False
         self._disagreement_reported = False
+        self._out_of_domain_reported = False
         self._retrain_process: subprocess.Popen | None = None
         # Vrai tant que la boucle de contrôle est suspendue pour mesures périmées (un seul avertissement par panne).
         self._stale_data_reported = False
@@ -338,7 +339,7 @@ class VoltaneumApp:
             "mqtt_sent": None if not config.PUBLISH_PID_SETPOINT else int(setpoint_message is not None),
         }, db_path=config.SQLITE_DB_PATH)
         logger.info(
-            "Consigne suggérée : %.1f %% (mode=%s, huile=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
+            "Consigne suggérée : %.1f %% (mode=%s, PT02=%.1f °C, cible=%.1f °C, prédit=%.1f °C, ext=%s).",
             setpoint, mode, t_oil, config.TARGET_TEMP, t_oil_predicted,
             "inconnue" if t_outdoor is None else f"{t_outdoor:.1f} °C ({outdoor_source})",
         )
@@ -469,11 +470,12 @@ class VoltaneumApp:
         self._reload_predictor_if_changed()
         if self._predictor is None:
             return t_oil_current
-        if any(last_known.get(column) is None for column in config.FEATURE_COLUMNS):
+        columns = getattr(self._predictor, "required_columns", config.FEATURE_COLUMNS)
+        if any(last_known.get(column) is None for column in columns):
             logger.debug("Variables d'entrée incomplètes : prédiction ML ignorée pour ce cycle.")
             return t_oil_current
         try:
-            prediction = self._predictor.predict({c: last_known[c] for c in config.FEATURE_COLUMNS})
+            prediction = self._predictor.predict({c: last_known[c] for c in columns})
         except Exception:
             logger.exception("Échec de la prédiction ML")
             return t_oil_current
@@ -494,6 +496,16 @@ class VoltaneumApp:
         if self._disagreement_reported:
             logger.info("Modèles de nouveau d'accord : prédiction utilisée par le PID.")
             self._disagreement_reported = False
+        # Une variable restée constante pendant tout l'apprentissage a changé (ex. fréquence de la
+        # pompe) : le modèle n'a jamais vu ce cas, sa prédiction est ignorée.
+        out_of_domain = prediction.get("out_of_domain") or []
+        if out_of_domain:
+            if not self._out_of_domain_reported:
+                logger.warning("Situation jamais vue à l'apprentissage (%s a changé) : prédiction ignorée "
+                               "par le PID jusqu'au prochain ré-entraînement.", ", ".join(out_of_domain))
+                self._out_of_domain_reported = True
+            return t_oil_current
+        self._out_of_domain_reported = False
         self._prediction_used = True
         return prediction["combined_prediction"]
 

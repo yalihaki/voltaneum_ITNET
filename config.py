@@ -143,8 +143,8 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
     "pt02": (-20.0, 150.0),      # °C — liquide diélectrique (grandeur régulée et prédite)
     "pt03": (-20.0, 150.0),      # °C — circuit dry cooler
     "pt04": (-20.0, 150.0),      # °C — circuit dry cooler
-    "ht01": (0.0, 15.0),         # m³/h — débit (circuit à confirmer : diélectrique ou refroidissement)
-    "freq_pompe": (0.0, 50.0),   # Hz — fréquence pompe / ventilateur (variateur)
+    "ht01": (0.0, 15.0),         # m³/h — débit du circuit diélectrique (cahier des charges, à confirmer)
+    "freq_pompe": (0.0, 50.0),   # Hz — fréquence du variateur de la pompe (point PUMP, à confirmer)
     "temp_outdoor": (-20.0, 55.0),  # °C — capteur extérieur indépendant
 }
 
@@ -168,16 +168,30 @@ SENSOR_LABELS: dict[str, tuple[str, str]] = {
 DIELECTRIC_COLUMNS: tuple[str, ...] = ("pt01", "pt02")
 COOLANT_COLUMNS: tuple[str, ...] = ("pt03", "pt04")
 
+# Côté CHAUD / FROID de chaque circuit. Non donné par l'automaticien : DÉDUIT des mesures réelles
+# du 15/10/2026 (moyennes 24 h : PT02 33,9 > PT01 33,3 > PT03 33,0 > PT04 32,1 °C ; PT04 chute de
+# 3 °C en 30 s quand le dry cooler se met à souffler, PT03 suit avec retard) :
+#   - diélectrique : PT02 = bain / sortie de cuve (chaud, va vers l'échangeur),
+#                    PT01 = sortie d'échangeur (refroidi, retourne à la cuve) ;
+#   - refroidissement : PT04 = sortie du dry cooler (froid, va vers l'échangeur),
+#                       PT03 = sortie d'échangeur (réchauffé, va vers le dry cooler).
+# Ordre cohérent avec un échangeur à contre-courant. À CONFIRMER ; modifiable dans .env.
+DIELECTRIC_HOT_COLUMN: str = _env_str("DIELECTRIC_HOT_COLUMN", "pt02").lower()
+DIELECTRIC_COLD_COLUMN: str = _env_str("DIELECTRIC_COLD_COLUMN", "pt01").lower()
+COOLANT_HOT_COLUMN: str = _env_str("COOLANT_HOT_COLUMN", "pt03").lower()
+COOLANT_COLD_COLUMN: str = _env_str("COOLANT_COLD_COLUMN", "pt04").lower()
+
 # Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique
-# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Par défaut : PT03 − PT04 (liquide de refroidissement)
-# et les propriétés d'une eau glycolée (≈ 1040 kg/m³, 3800 J/kg/K). Valable SEULEMENT si HT01
-# mesure le débit de la boucle de refroidissement ; s'il est sur le circuit diélectrique, prendre
-# PT02 / PT01 et les propriétés du diélectrique (≈ 850 kg/m³, 1900 J/kg/K). À CONFIRMER. Tant que
-# THERMAL_POWER_CONFIRMED=false, l'interface l'affiche comme une estimation à confirmer.
-THERMAL_FLUID_DENSITY_KG_M3: float = _env_float("THERMAL_FLUID_DENSITY_KG_M3", 1040.0)
-THERMAL_FLUID_HEAT_CAPACITY_J_KG_K: float = _env_float("THERMAL_FLUID_HEAT_CAPACITY_J_KG_K", 3800.0)
-THERMAL_POWER_HOT: str = _env_str("THERMAL_POWER_HOT", "pt03").lower()
-THERMAL_POWER_COLD: str = _env_str("THERMAL_POWER_COLD", "pt04").lower()
+# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Le cahier des charges place HT01 sur le circuit
+# « bain d'huile », c'est-à-dire le DIÉLECTRIQUE : par défaut PT02 − PT01 et les propriétés d'une
+# huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K). Si HT01 est en fait sur la boucle du dry cooler :
+# THERMAL_POWER_HOT=pt03, THERMAL_POWER_COLD=pt04, eau glycolée ≈ 1040 kg/m³ et 3800 J/kg/K.
+# Attention : PT02 semble lue au degré près ; avec un écart de ~0,6 °C, la puissance instantanée est
+# très bruitée (lire une moyenne). Tant que THERMAL_POWER_CONFIRMED=false, c'est une estimation.
+THERMAL_FLUID_DENSITY_KG_M3: float = _env_float("THERMAL_FLUID_DENSITY_KG_M3", 850.0)
+THERMAL_FLUID_HEAT_CAPACITY_J_KG_K: float = _env_float("THERMAL_FLUID_HEAT_CAPACITY_J_KG_K", 1900.0)
+THERMAL_POWER_HOT: str = _env_str("THERMAL_POWER_HOT", DIELECTRIC_HOT_COLUMN).lower()
+THERMAL_POWER_COLD: str = _env_str("THERMAL_POWER_COLD", DIELECTRIC_COLD_COLUMN).lower()
 THERMAL_POWER_CONFIRMED: bool = _env_bool("THERMAL_POWER_CONFIRMED", False)
 
 # ---------------------------------------------------------------------------
@@ -221,8 +235,9 @@ CONTROL_LOOP_INTERVAL_SECONDS: float = _env_float("CONTROL_LOOP_INTERVAL_SECONDS
 TARGET_TEMP: float = _env_float("TARGET_TEMP", 35.0)
 CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
 # Seuil critique des AUTRES sondes du liquide diélectrique (PT01 ; PT02 relève de CRITICAL_TEMP) :
-# c'est ce liquide qui baigne et protège le matériel. Par défaut le même que CRITICAL_TEMP ; à
-# fixer avec l'exploitant.
+# c'est ce liquide qui baigne et protège le matériel. PT01 (sortie d'échangeur) est normalement plus
+# froide que PT02 : cette alerte sert surtout de secours si PT02 est absente ou bloquée. Par défaut
+# le même seuil que CRITICAL_TEMP ; à fixer avec l'exploitant.
 DIELECTRIC_CRITICAL_TEMP: float = _env_float("DIELECTRIC_CRITICAL_TEMP", CRITICAL_TEMP)
 # Point de départ prudent pour un procédé thermique lent échantillonné toutes les 60 s :
 # Kp = 10 %/°C, temps d'intégration Ti = Kp/Ki = 500 s (≈ 8 cycles), pas de dérivée (sur une
@@ -248,8 +263,11 @@ PUBLISH_PID_SETPOINT: bool = _env_bool("PUBLISH_PID_SETPOINT", True)
 # VALEURS INDICATIVES, À VALIDER AVEC L'AUTOMATICIEN (rien n'est calibré sur le vrai système).
 # Chaque bande : (limite haute EXCLUE en °C, nom, décalage du seuil de marche en °C,
 #                 fréquence minimale conseillée en Hz).
-# Seuil de marche du ventilateur = TARGET_TEMP + décalage. Air extérieur froid : le dry cooler
-# refroidit plus facilement, on peut démarrer plus tard (+). Air chaud : on démarre plus tôt (-).
+# La bande marche / arrêt du ventilateur est CENTRÉE sur TARGET_TEMP + décalage : avec une commande
+# tout-ou-rien, la température oscille entre les deux seuils, donc sa moyenne est le milieu de la
+# bande. (Avant : marche à la cible, arrêt 2 °C dessous, la moyenne tombait 1 °C SOUS la cible.)
+# Air extérieur froid : le dry cooler refroidit plus facilement, on peut démarrer plus tard (+).
+# Air chaud : il a moins de capacité, on démarre plus tôt (-).
 OUTDOOR_BANDS: tuple[tuple[float, str, float, float], ...] = (
     (10.0, "froid", 2.0, 20.0),
     (25.0, "tempere", 0.0, 30.0),
@@ -325,8 +343,12 @@ EFFICIENCY_MIN_EXPECTED: float = _env_float("EFFICIENCY_MIN_EXPECTED", 0.0)
 EFFICIENCY_MAX_EXPECTED: float = _env_float("EFFICIENCY_MAX_EXPECTED", 1.0)
 # PT02 (grandeur régulée) sans valeur alors que la passerelle émet : alerte après ce délai (s).
 OIL_SENSOR_MISSING_ALERT_SECONDS: int = _env_int("OIL_SENSOR_MISSING_ALERT_SECONDS", 120)
-# PT02 strictement constante pendant ce délai (min) : valeur suspecte (0 = règle désactivée).
+# PT02 strictement constante pendant ce délai (min) : valeur suspecte (0 = règle désactivée)...
 SENSOR_FROZEN_ALERT_MINUTES: int = _env_int("SENSOR_FROZEN_ALERT_MINUTES", 60)
+# ... SEULEMENT si, pendant ce temps, l'autre sonde du même circuit (PT01) a varié d'au moins cet
+# écart (°C). PT02 est lue au degré près : sur un procédé stable, elle peut rester à 34,0 °C
+# pendant des heures sans être en panne. Sans PT01, la durée seule fait foi.
+SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS: float = _env_float("SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS", 1.0)
 
 # ---------------------------------------------------------------------------
 # Protection automatique du stockage (purge pilotée par la TAILLE de la base)
@@ -403,7 +425,7 @@ def _validate_cooling_bands() -> None:
         _require(upper_limit > previous_limit,
                  f"OUTDOOR_BANDS : limites hautes non strictement croissantes (bande {name!r}).")
         previous_limit = upper_limit
-        fan_on = TARGET_TEMP + offset
+        fan_on = TARGET_TEMP + offset + FAN_HYSTERESIS_CELSIUS / 2
         _require(fan_on < CRITICAL_TEMP,
                  f"OUTDOOR_BANDS : le seuil de marche de la bande {name!r} ({fan_on}) doit rester "
                  f"sous CRITICAL_TEMP ({CRITICAL_TEMP}).")
@@ -491,6 +513,14 @@ def validate_config() -> None:
     _require({THERMAL_POWER_HOT, THERMAL_POWER_COLD} <= {"pt01", "pt02", "pt03", "pt04"}
              and THERMAL_POWER_HOT != THERMAL_POWER_COLD,
              "THERMAL_POWER_HOT et THERMAL_POWER_COLD doivent être deux sondes différentes parmi pt01..pt04.")
+    _require(sorted((DIELECTRIC_HOT_COLUMN, DIELECTRIC_COLD_COLUMN)) == sorted(DIELECTRIC_COLUMNS)
+             and sorted((COOLANT_HOT_COLUMN, COOLANT_COLD_COLUMN)) == sorted(COOLANT_COLUMNS),
+             f"DIELECTRIC_HOT/COLD_COLUMN doivent être {DIELECTRIC_COLUMNS} et COOLANT_HOT/COLD_COLUMN "
+             f"{COOLANT_COLUMNS}, chacune une fois.")
+    _require(FEEDFORWARD_OUTDOOR_HOT_THRESHOLD < TARGET_TEMP,
+             "FEEDFORWARD_OUTDOOR_HOT_THRESHOLD doit rester sous TARGET_TEMP : le dry cooler ne peut pas "
+             "refroidir sous la température de l'air, l'anticipation doit agir avant.")
+    _require(SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS > 0, "SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS doit être positif.")
     _require(THERMAL_FLUID_DENSITY_KG_M3 > 0 and THERMAL_FLUID_HEAT_CAPACITY_J_KG_K > 0,
              "THERMAL_FLUID_DENSITY_KG_M3 et THERMAL_FLUID_HEAT_CAPACITY_J_KG_K doivent être positifs.")
     dielectric_upper = min(SENSOR_VALID_RANGES[c][1] for c in DIELECTRIC_COLUMNS)

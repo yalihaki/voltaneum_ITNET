@@ -33,6 +33,15 @@ def select_outdoor_band(t_outdoor: float | None) -> tuple[str, float, float | No
     return _UNKNOWN_BAND, 0.0, None
 
 
+def fan_thresholds(offset: float) -> tuple[float, float]:
+    """(seuil de marche, seuil d'arrêt) du ventilateur pour un décalage de bande.
+
+    Bande centrée sur la cible décalée : en tout-ou-rien, la température oscille entre les deux
+    seuils et sa moyenne tombe au milieu, donc sur la cible visée."""
+    centre = config.TARGET_TEMP + offset
+    return centre + config.FAN_HYSTERESIS_CELSIUS / 2, centre - config.FAN_HYSTERESIS_CELSIUS / 2
+
+
 def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | None:
     """Conditions de refroidissement à publier, ou None si la grandeur régulée (PT02) est invalide
     (on ne publie rien plutôt que de publier des conditions sur une mesure fausse)."""
@@ -40,8 +49,7 @@ def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | 
         return None
 
     band, offset, min_freq_hz = select_outdoor_band(t_outdoor)
-    fan_on_above = config.TARGET_TEMP + offset
-    fan_off_below = fan_on_above - config.FAN_HYSTERESIS_CELSIUS
+    fan_on_above, fan_off_below = fan_thresholds(offset)
     outdoor_ok = t_outdoor is not None and math.isfinite(t_outdoor)
 
     return {

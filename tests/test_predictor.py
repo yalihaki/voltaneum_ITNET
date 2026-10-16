@@ -98,7 +98,7 @@ class TestDualModelPredictorPredict:
 
         expected_keys = {
             "predictions", "combined_prediction", "best_model",
-            "disagreement", "disagreement_flag", "horizon_seconds",
+            "disagreement", "disagreement_flag", "out_of_domain", "horizon_seconds",
         }
         assert set(result.keys()) == expected_keys
 
@@ -174,3 +174,23 @@ def test_model_trained_with_other_inputs_is_refused(trained_model_dir):
     report_path.write_text(json.dumps(report))
     with pytest.raises(FileNotFoundError, match="autres variables"):
         DualModelPredictor(model_dir=str(trained_model_dir))
+
+
+def test_model_on_a_subset_of_inputs_is_accepted_and_checks_its_domain(trained_model_dir):
+    """Un modèle entraîné sans une variable restée constante (ex. pompe à 30 Hz) est utilisable ;
+    si cette variable change, la prédiction est signalée « hors domaine »."""
+    import json
+
+    from ml.predictor import compatible_features
+
+    report = {"features": ["pt02", "pt01", "temp_outdoor"], "constant_features": {"freq_pompe": 30.0}}
+    assert compatible_features(report)
+    assert not compatible_features({"features": ["pt01", "pt02"]})            # ordre différent
+    assert not compatible_features({"features": ["pt02", "inconnue"]})
+    assert not compatible_features({"features": []})
+
+    predictor = DualModelPredictor(model_dir=trained_model_dir)
+    predictor.constant_features = {"freq_pompe": 30.0}
+    assert predictor.out_of_domain({**SAMPLE_FEATURES, "freq_pompe": 30.4}) == []
+    assert predictor.out_of_domain({**SAMPLE_FEATURES, "freq_pompe": 45.0}) == ["freq_pompe"]
+    json.dumps(predictor.predict(SAMPLE_FEATURES))   # résultat sérialisable (publié sur MQTT)

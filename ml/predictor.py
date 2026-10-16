@@ -31,6 +31,22 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Écart, par rapport à la valeur constante apprise, au-delà duquel une variable écartée est jugée
+# « hors domaine » : max(0,5 en absolu, 2 % de la valeur) — 30 Hz -> écart toléré 0,6 Hz.
+OUT_OF_DOMAIN_MIN_GAP = 0.5
+OUT_OF_DOMAIN_RATIO = 0.02
+
+
+def compatible_features(report: dict) -> bool:
+    """Vrai si le modèle utilise un sous-ensemble NON VIDE de config.FEATURE_COLUMNS, dans le même
+    ordre, et si toute variable écartée fait aussi partie de config.FEATURE_COLUMNS."""
+    features = report.get("features")
+    constants = report.get("constant_features") or {}
+    if not isinstance(features, list) or not features or not isinstance(constants, dict):
+        return False
+    return (features == [c for c in config.FEATURE_COLUMNS if c in features]
+            and set(constants) <= set(config.FEATURE_COLUMNS))
+
 
 class DualModelPredictor:
     """Charge les deux modèles entraînés (RandomForest, GradientBoosting) et
@@ -71,15 +87,24 @@ class DualModelPredictor:
                 f"d'utiliser ce dossier pour la prédiction."
             )
 
-        if self.training_report.get("features") != list(config.FEATURE_COLUMNS):
+        if not compatible_features(self.training_report):
             raise FileNotFoundError(
                 f"Les modèles de '{self.model_dir}' ont été entraînés avec d'autres variables d'entrée "
                 f"({self.training_report.get('features')}) que celles attendues ({config.FEATURE_COLUMNS}) : "
                 f"ré-entraîner (./voltaneum retrain) puis valider (./voltaneum model accept)."
             )
+        # Entrées du modèle, et variables écartées car constantes à l'entraînement (valeur apprise).
+        self.features: list[str] = list(self.training_report["features"])
+        self.constant_features: dict[str, float] = dict(self.training_report.get("constant_features") or {})
 
         self.random_forest = joblib.load(rf_path)
         self.gradient_boosting = joblib.load(gb_path)
+        for model in (self.random_forest, self.gradient_boosting):
+            if getattr(model, "n_features_in_", len(self.features)) != len(self.features):
+                raise FileNotFoundError(
+                    f"Les modèles de '{self.model_dir}' attendent {model.n_features_in_} variables d'entrée, "
+                    f"le rapport en annonce {len(self.features)} ({self.features}) : autres variables que "
+                    f"celles du rapport, ré-entraîner (./voltaneum retrain).")
 
         self.best_model_name: str = self.training_report.get("best_model", "random_forest")
         self.horizon_seconds: int = self.training_report.get(
@@ -92,10 +117,21 @@ class DualModelPredictor:
             self.best_model_name,
         )
 
+    @property
+    def required_columns(self) -> list[str]:
+        """Mesures nécessaires à une prédiction (entrées + variables constantes à contrôler)."""
+        return self.features + [c for c in self.constant_features if c not in self.features]
+
+    def out_of_domain(self, current_features: dict) -> list[str]:
+        """Variables constantes à l'entraînement qui ont changé depuis : le modèle n'a jamais vu
+        cette situation (ex. pompe à 30 Hz pendant tout l'apprentissage, 45 Hz aujourd'hui)."""
+        return [c for c, learned in self.constant_features.items()
+                if abs(float(current_features[c]) - learned) > max(OUT_OF_DOMAIN_MIN_GAP, OUT_OF_DOMAIN_RATIO * abs(learned))]
+
     def predict(self, current_features: dict) -> dict:
         """Prédit la valeur future de TARGET_COLUMN à partir des features actuelles.
 
-        `current_features` doit contenir toutes les clés de config.FEATURE_COLUMNS.
+        `current_features` doit contenir toutes les clés de `required_columns`.
 
         Retourne :
         {
@@ -108,16 +144,16 @@ class DualModelPredictor:
         }
         """
         missing_features = [
-            column for column in config.FEATURE_COLUMNS if column not in current_features
+            column for column in self.required_columns if column not in current_features
         ]
         if missing_features:
             raise ValueError(
                 f"current_features incomplet : colonnes manquantes {missing_features}. "
-                f"Colonnes attendues : {config.FEATURE_COLUMNS}."
+                f"Colonnes attendues : {self.required_columns}."
             )
 
         feature_vector = np.array(
-            [[current_features[column] for column in config.FEATURE_COLUMNS]]
+            [[current_features[column] for column in self.features]]
         )
 
         pred_rf = float(self.random_forest.predict(feature_vector)[0])
@@ -141,5 +177,6 @@ class DualModelPredictor:
             "best_model": self.best_model_name,
             "disagreement": disagreement,
             "disagreement_flag": disagreement_flag,
+            "out_of_domain": self.out_of_domain(current_features),
             "horizon_seconds": self.horizon_seconds,
         }

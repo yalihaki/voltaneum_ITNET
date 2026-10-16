@@ -248,7 +248,9 @@
     const fmax = (th.valid_ranges.freq_pompe || [0, 50])[1];
     const fm = $('.meter > span', tf);
     fm.style.width = v.freq_pompe == null ? '0' : Math.min(100, v.freq_pompe / fmax * 100) + '%';
-    fm.className = cool && cool.fan_min_freq_hz != null && v.freq_pompe != null && v.freq_pompe > th.pump_running_min_hz && v.freq_pompe < cool.fan_min_freq_hz ? 'warn' : '';
+    // Fréquence de la POMPE : elle n'est pas comparable à la fréquence minimale conseillée au
+    // ventilateur du dry cooler (autre moteur, non mesuré).
+    fm.className = '';
     tf.className = 'tile' + (v.freq_pompe == null ? ' absent' : '');
 
     const th01 = tile('ht01');
@@ -290,15 +292,15 @@
       let cls = 'tag';
       if (v[key] == null) cls += ' absent';
       else if (key === 'pt02' && v.pt02 > th.critical_temp) cls += ' crit';
-      else if (key.startsWith('pt') && v[key] > th.critical_temp) cls += ' crit';
+      else if (key === 'pt01' && v.pt01 > (th.dielectric_critical_temp ?? th.critical_temp)) cls += ' crit';
       else if (key === 'ht01' && pumpNoFlow) cls += ' crit';
       g.setAttribute('class', cls);
     }
     $('#syno-ext-lbl').textContent = src === 'weather' ? 'Air extérieur (météo)' : src === 'sensor' ? 'Air extérieur (capteur)' : 'Air extérieur';
-    const running = v.freq_pompe != null && v.freq_pompe > th.pump_running_min_hz;
-    syno.classList.toggle('fan-off', !running);
+    // L'état du ventilateur du dry cooler n'est pas mesuré (la fréquence lue est celle de la
+    // pompe) : l'hélice reste immobile plutôt que de suggérer un état inventé.
+    syno.classList.add('fan-off');
     syno.classList.toggle('no-flow', !(v.ht01 != null && v.ht01 >= th.flow_min_m3h));
-    if (running) $('#fan').style.animationDuration = Math.max(0.35, Math.min(3, 40 / v.freq_pompe)) + 's';
 
     // Conditions de refroidissement
     $$('#bands .band').forEach(b => b.classList.toggle('on', !!cool && b.dataset.band === cool.outdoor_band));
@@ -1166,7 +1168,7 @@
         add('Meilleur modèle', MODEL_LABELS[tr.best_model] || tr.best_model || '—');
         add('Horizon', tr.horizon_seconds ? fmtHorizon(tr.horizon_seconds) : '—');
         add('Échantillons d\'entraînement', tr.n_samples != null ? tr.n_samples.toLocaleString('fr-FR') : '—');
-        if (tr.degenerate_features && tr.degenerate_features.length) add('Variables figées', tr.degenerate_features.join(', '));
+        if (tr.degenerate_features && tr.degenerate_features.length) add('Variables constantes (écartées des entrées)', tr.degenerate_features.join(', '));
         box.append(dl);
       }
       const body = $('#live-models tbody'); body.replaceChildren();
@@ -1218,6 +1220,7 @@
       for (const [k, [lo, hi]] of Object.entries(d.valid_ranges)) ranges[LABELS[k] || k] = num(lo, 0) + ' … ' + num(hi, 0) + ' ' + (UNITS[k] || '');
       section('Plages de mesure acceptées', ranges);
       if (d.sensors) section('Sondes (noms modifiables dans .env : PT01_LABEL…)', d.sensors);
+      if (d.flow_direction) section('Sens de circulation', d.flow_direction);
       if (d.thermal) section('Puissance dissipée estimée', d.thermal);
     } catch (err) {
       $('#settings').replaceChildren(el('p', 'callout warn', 'Impossible de charger les réglages : ' + err.message));

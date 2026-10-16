@@ -34,7 +34,11 @@ def _utc(epoch: float) -> str:
 
 
 class _Process:
-    """Modèle thermique grossier : l'huile chauffe, la pompe / ventilateur la refroidit."""
+    """Modèle thermique grossier, dans l'ordre des mesures réelles (PT02 > PT01 > PT03 > PT04) :
+    les équipements chauffent le bain diélectrique (PT02), l'échangeur le refroidit (retour PT01),
+    la boucle d'eau glycolée emporte la chaleur (PT03 chaud) vers le dry cooler qui la rend à l'air
+    (PT04 froid). Pour que la démonstration ait de quoi apprendre, la « fréquence » y varie et
+    représente l'effort de refroidissement (sur le site, la pompe reste à 30 Hz)."""
 
     def __init__(self, seed: int = 7) -> None:
         self.rng = random.Random(seed)  # nosec B311
@@ -56,11 +60,12 @@ class _Process:
         self.freq += (max(0.0, min(50.0, target_freq)) - self.freq) * 0.08 + self.rng.gauss(0, 0.3)
         self.freq = max(0.0, min(50.0, self.freq))
         flow = 0.0 if self.freq < 3 else 0.6 + self.freq * 0.065 + self.rng.gauss(0, 0.03)
+        coolant_cold = ext + 0.55 * (self.oil - ext)          # sortie du dry cooler
         return {
-            "pt01": round(self.oil + 4.5 + self.rng.gauss(0, 0.1), 2),
+            "pt01": round(self.oil - 0.6 * load + self.rng.gauss(0, 0.05), 2),
             "pt02": round(self.oil, 2),
-            "pt03": round(self.oil + 3.8 + self.rng.gauss(0, 0.1), 2),
-            "pt04": round(ext + 0.55 * (self.oil - ext) + self.rng.gauss(0, 0.1), 2),
+            "pt03": round(coolant_cold + 0.9 * load + self.rng.gauss(0, 0.05), 2),
+            "pt04": round(coolant_cold + self.rng.gauss(0, 0.1), 2),
             "ht01": round(max(0.0, flow), 3),
             "freq_pompe": round(self.freq, 1),
             "temp_outdoor": round(ext, 1),

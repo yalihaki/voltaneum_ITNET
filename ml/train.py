@@ -51,21 +51,20 @@ MIN_SAMPLES_FOR_TRAINING = 20
 MIN_TARGET_STD_CELSIUS = 0.3
 
 # Seuil (quasi nul) en dessous duquel une variable d'entrée est considérée
-# comme n'ayant JAMAIS varié sur la période de collecte — donc incapable
-# d'apporter la moindre information au modèle, quel que soit son score
-# global par ailleurs. En clair : si `freq_pompe` (le levier qu'on veut
-# piloter) est resté figé à 0 pendant toute la collecte, le modèle ne peut
-# PAS avoir appris l'effet de la pompe sur la température, même si son score
-# a l'air excellent — il aura simplement appris à suivre la météo
-# extérieure, qui elle a varié. C'est exactement ce qui s'est produit sur la
-# collecte du 9-10 septembre 2026 (freq_pompe ET ht01 constants à une seule
-# valeur, RMSE RandomForest = 0.0) : un résultat arithmétiquement vrai mais
-# qui ne valide rien sur la capacité du modèle à anticiper un vrai cycle de
-# refroidissement. Volontairement TRÈS proche de zéro (pas un seuil "métier"
-# par capteur à calibrer) pour ne détecter que la vraie dégénérescence — une
-# variable avec un bruit de mesure normal, même faible, ne doit jamais être
-# signalée à tort (voir tests/test_train.py, données synthétiques avec un
-# bruit réaliste sur ht01).
+# comme n'ayant JAMAIS varié sur la période de collecte : elle n'apporte
+# aucune information et le modèle ne peut pas avoir appris son effet.
+#
+# Une telle variable est ÉCARTÉE des entrées du modèle (et sa valeur constante
+# mémorisée), au lieu de faire refuser tout entraînement. Sur l'installation,
+# la pompe tourne à fréquence fixe (30 Hz en permanence) : l'ancienne règle
+# « une variable figée => aucun modèle » bloquait donc l'apprentissage pour
+# toujours. Le modèle appris décrit le procédé DANS ces conditions ; si un
+# jour la variable s'écarte de sa valeur constante, ml/predictor.py déclare la
+# situation « hors domaine » et la régulation ignore la prédiction.
+#
+# Volontairement TRÈS proche de zéro (pas un seuil "métier" par capteur) : une
+# variable avec un bruit de mesure normal, même faible, n'est jamais écartée
+# (voir tests/test_train.py, bruit réaliste sur ht01).
 FEATURE_DEGENERACY_STD_EPSILON = 1e-6
 
 
@@ -275,6 +274,16 @@ def train_and_compare(
         if std < FEATURE_DEGENERACY_STD_EPSILON
     ]
 
+    used_features = [c for c in config.FEATURE_COLUMNS if c not in degenerate_features]
+    constant_features = {c: float(usable[c].iloc[0]) for c in degenerate_features}
+    if not used_features:
+        message = ("Toutes les variables d'entrée sont restées figées sur la période : rien à apprendre. "
+                   "Aucun modèle ne sera entraîné ni sauvegardé.")
+        logger.warning(message)
+        return {"status": "no_actionable_signal", "message": message, "degenerate_features": degenerate_features,
+                "n_samples": len(usable), "horizon_seconds": horizon_seconds, "trained_at": int(time.time())}
+    feature_matrix = usable[used_features].to_numpy()
+
     split_idx = int(len(usable) * 0.8)
     X_train, X_test = feature_matrix[:split_idx], feature_matrix[split_idx:]
     y_train, y_test = target_vector[:split_idx], target_vector[split_idx:]
@@ -323,16 +332,8 @@ def train_and_compare(
     )
     beats_persistence = metrics[best_model_name]["rmse"] < baseline_rmse
 
-    # Le statut "ok" n'est accordé que si, EN PLUS de battre la persistance,
-    # aucune variable d'entrée n'est restée figée sur toute la période. Un
-    # RMSE excellent obtenu alors que `freq_pompe` (ou une autre variable)
-    # n'a jamais varié ne prouve rien sur la capacité du modèle à anticiper
-    # un vrai cycle de refroidissement — voir l'explication de
-    # MIN_FEATURE_STD ci-dessus.
-    status = "no_actionable_signal" if degenerate_features else "ok"
-
     report = {
-        "status": status,
+        "status": "ok",
         "random_forest": metrics["random_forest"],
         "gradient_boosting": metrics["gradient_boosting"],
         "baseline_persistence": metrics["baseline_persistence"],
@@ -341,27 +342,20 @@ def train_and_compare(
         "trained_at": int(time.time()),
         "n_samples": len(usable),
         "horizon_seconds": horizon_seconds,
-        "features": list(config.FEATURE_COLUMNS),
+        # Variables réellement utilisées par les modèles (ordre de config.FEATURE_COLUMNS) et
+        # variables écartées car constantes, avec leur valeur (contrôle « hors domaine »).
+        "features": used_features,
+        "constant_features": constant_features,
         "target_std_celsius": target_std,
         "feature_std": feature_std,
         "degenerate_features": degenerate_features,
     }
-
     if degenerate_features:
-        message = (
-            f"Résultat NON interprétable comme validation d'un modèle : "
-            f"{', '.join(degenerate_features)} n'a/ont jamais varié sur la "
-            f"période de collecte (écart-type en dessous du minimum attendu). "
-            f"Le modèle a pu obtenir un score élevé en apprenant uniquement les "
-            f"variables qui, elles, ont varié (ex. la météo) — pas en apprenant "
-            f"l'effet réel de la variable de contrôle. Aucun modèle ne sera "
-            f"sauvegardé tant qu'une collecte avec un vrai cycle de "
-            f"refroidissement actif n'aura pas été réalisée."
-        )
-        logger.warning(message)
-        print(f"\n⚠️  {message}\n")
-        report["message"] = message
-        return report
+        report["message"] = (
+            f"Variable(s) constante(s) sur toute la période, écartée(s) des entrées : "
+            f"{', '.join(f'{c} = {v:g}' for c, v in constant_features.items())}. Le modèle n'a pas appris "
+            f"leur effet ; si elles changent, la prédiction sera ignorée (hors domaine).")
+        logger.warning(report["message"])
 
     if not beats_persistence:
         # Un modèle qui fait moins bien que « la température ne bouge pas » n'apporte rien et

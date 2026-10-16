@@ -14,20 +14,29 @@ from database import sqlite_client
 def test_power_from_flow_and_temperature_difference(monkeypatch):
     monkeypatch.setattr(config, "THERMAL_FLUID_DENSITY_KG_M3", 850.0)
     monkeypatch.setattr(config, "THERMAL_FLUID_HEAT_CAPACITY_J_KG_K", 1900.0)
-    # 10,4 m³/h et 1 °C d'écart PT03 - PT04 : 10,4/3600 × 850 × 1900 × 1 ≈ 4,67 kW
-    power = estimate_power_kw({"ht01": 10.4, "pt03": 33.5, "pt04": 32.5})
+    monkeypatch.setattr(config, "THERMAL_POWER_HOT", "pt02")
+    monkeypatch.setattr(config, "THERMAL_POWER_COLD", "pt01")
+    # 10,4 m³/h et 1 °C d'écart PT02 - PT01 : 10,4/3600 × 850 × 1900 × 1 ≈ 4,67 kW
+    power = estimate_power_kw({"ht01": 10.4, "pt02": 34.5, "pt01": 33.5})
     assert power == pytest.approx(4.665, abs=0.01)
 
 
-def test_power_absent_when_a_measure_is_missing():
+def test_default_is_the_dielectric_circuit_measured_by_ht01():
+    """Le cahier des charges place HT01 sur le circuit « bain d'huile » (diélectrique)."""
+    assert (config.THERMAL_POWER_HOT, config.THERMAL_POWER_COLD) == ("pt02", "pt01")
+
+
+def test_power_absent_when_a_measure_is_missing(monkeypatch):
+    monkeypatch.setattr(config, "THERMAL_POWER_HOT", "pt03")
+    monkeypatch.setattr(config, "THERMAL_POWER_COLD", "pt04")
     assert estimate_power_kw({"ht01": None, "pt03": 33.5, "pt04": 32.5}) is None
     assert estimate_power_kw({"ht01": 10.0, "pt03": float("nan"), "pt04": 32.5}) is None
 
 
 def test_configured_probes_are_used(monkeypatch):
-    monkeypatch.setattr(config, "THERMAL_POWER_HOT", "pt02")
-    monkeypatch.setattr(config, "THERMAL_POWER_COLD", "pt01")
-    assert estimate_power_kw({"ht01": 10.0, "pt02": 35.0, "pt01": 34.0, "pt03": 99.0, "pt04": 0.0}) > 0
+    monkeypatch.setattr(config, "THERMAL_POWER_HOT", "pt03")
+    monkeypatch.setattr(config, "THERMAL_POWER_COLD", "pt04")
+    assert estimate_power_kw({"ht01": 10.0, "pt02": 35.0, "pt01": 99.0, "pt03": 34.0, "pt04": 33.0}) > 0
 
 
 @patch("collectors.weather_collector.requests.get")

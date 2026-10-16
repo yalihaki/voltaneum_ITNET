@@ -274,33 +274,30 @@ class TestTrainAndCompareDegenerateFeatures:
             }
         )
 
-    def test_flags_status_no_actionable_signal_when_control_variable_frozen(
-        self, temp_model_dir
-    ):
-        """Reproduit le cas réel du 9-10 septembre 2026 : suffisamment de
-        données et de variation de la cible pour passer les gardes-fous
-        précédents, mais freq_pompe/ht01 n'ont jamais varié -> le résultat
-        ne doit PAS être marqué "ok" même s'il bat la persistance."""
+    def test_frozen_variables_are_set_aside_not_blocking(self, temp_model_dir):
+        """Cas réel : la pompe tourne à fréquence fixe. Une variable constante n'apporte rien au
+        modèle ; elle est ÉCARTÉE des entrées (avec sa valeur) au lieu de bloquer tout
+        apprentissage pour toujours."""
         df = self._make_dataframe_with_frozen_pump()
         report = train_and_compare(df, horizon_seconds=600, model_dir=temp_model_dir)
 
-        assert report["status"] == "no_actionable_signal"
         assert set(report["degenerate_features"]) == {"ht01", "freq_pompe"}
+        assert "ht01" not in report["features"] and "freq_pompe" not in report["features"]
+        assert report["constant_features"] == {"ht01": 39.0, "freq_pompe": 0.0}
+        assert report["status"] in ("ok", "no_skill")
 
-    def test_does_not_save_models_when_control_variable_frozen(self, temp_model_dir):
-        """Le point le plus important : même si le score est excellent, aucun
-        fichier de modèle ne doit être écrit -> ml/predictor.py doit rester
-        en FileNotFoundError et le système doit continuer en mode dégradé
-        (PID sans feedforward ML) plutôt que d'utiliser un modèle trompeur."""
-        from pathlib import Path
+    def test_saved_model_uses_only_the_varying_inputs(self, temp_model_dir):
+        from ml.predictor import DualModelPredictor
 
         df = self._make_dataframe_with_frozen_pump()
-        train_and_compare(df, horizon_seconds=600, model_dir=temp_model_dir)
-
-        model_dir = Path(temp_model_dir)
-        assert not (model_dir / "random_forest.joblib").exists()
-        assert not (model_dir / "gradient_boosting.joblib").exists()
-        assert not (model_dir / "training_report.json").exists()
+        report = train_and_compare(df, horizon_seconds=600, model_dir=temp_model_dir)
+        if report["status"] != "ok":
+            pytest.skip("données synthétiques sans gain sur la persistance")
+        predictor = DualModelPredictor(model_dir=temp_model_dir)
+        sample = {"pt01": 30.0, "pt02": 30.3, "pt03": 28.8, "pt04": 28.3, "ht01": 39.0,
+                  "freq_pompe": 0.0, "temp_outdoor": 20.0}
+        assert predictor.predict(sample)["out_of_domain"] == []
+        assert predictor.predict({**sample, "freq_pompe": 30.0})["out_of_domain"] == ["freq_pompe"]
 
     def test_realistic_sensor_noise_does_not_trigger_false_positive(self, temp_model_dir):
         """Non-régression du faux positif détecté en cours de développement :

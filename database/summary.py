@@ -14,8 +14,8 @@ import config
 # Mesures résumées en bas de l'affichage : colonne -> (libellé, unité).
 MEASURES: dict[str, tuple[str, str]] = {
     **{column: (labels[0], "°C") for column, labels in config.SENSOR_LABELS.items()},
-    "ht01": ("HT01 · débit circuit huile", "m³/h"),
-    "freq_pompe": ("Fréquence pompe / ventilateur", "Hz"),
+    "ht01": ("HT01 · débit circuit diélectrique", "m³/h"),
+    "freq_pompe": ("Fréquence pompe", "Hz"),
     "temp_outdoor": ("Température extérieure", "°C"),
     "thermal_power_kw": ("Puissance dissipée (estimée)", "kW"),
 }

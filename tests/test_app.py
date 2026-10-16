@@ -630,6 +630,22 @@ class TestPredictions:
                 "SELECT t_predicted, feedforward_prediction FROM control_log").fetchone()
         assert t_predicted is None and ff_prediction == 0.0      # 45 °C prédits n'ont rien déclenché
 
+    def test_prediction_out_of_its_learning_domain_is_not_used_by_the_pid(self, app, monkeypatch):
+        """Une variable constante pendant l'apprentissage (pompe à 30 Hz) a changé : le modèle n'a
+        jamais vu ce cas, l'anticipation du PID est neutralisée."""
+        self._install_models(app)
+        original = FakePredictor.predict
+        monkeypatch.setattr(FakePredictor, "predict", lambda self, f: {
+            **original(self, f), "combined_prediction": 45.0, "out_of_domain": ["freq_pompe"]})
+        app.start()
+        feed_measurements(app, t_oil=35.0)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            t_predicted, ff_prediction = conn.execute(
+                "SELECT t_predicted, feedforward_prediction FROM control_log").fetchone()
+        assert t_predicted is None and ff_prediction == 0.0
+
     def test_no_prediction_when_an_input_variable_is_missing(self, app):
         self._install_models(app)
         app.start()

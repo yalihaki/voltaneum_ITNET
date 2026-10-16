@@ -121,24 +121,25 @@ def _number(payload: dict | None, key: str) -> float | None:
 
 
 def _compute_efficiency(telemetry: dict) -> float | None:
-    """Efficacité approximative de l'échangeur : proportion de la chute de
-    température d'une sonde par rapport à l'écart maximal disponible
-    avec le circuit dry cooler. Retourne None si les données nécessaires
-    manquent ou si le dénominateur est ~0 (pas d'écart de température, donc
-    pas d'échange thermique mesurable, division non pertinente).
+    """Efficacité de l'échangeur (définition usuelle, entre 0 et 1) :
 
-    TODO (voir config.EFFICIENCY_MIN_EXPECTED / MAX_EXPECTED) : la formule
-    exacte et les bornes "attendues" ne sont pas encore validées avec des
-    données réelles de fonctionnement normal — à ajuster avant de compter
-    sur cette règle en production.
+        ε = plus grand des deux écarts de circuit / écart maximal disponible
+          = max(T diélectrique chaud − froid, T refroidissement chaud − froid)
+            / (T diélectrique chaud − T refroidissement froid)
+
+    Les sondes chaude / froide de chaque circuit viennent de config (DIELECTRIC_HOT_COLUMN…).
+    None si une mesure manque ou si l'écart disponible est trop faible pour être interprété (pas
+    d'échange mesurable, division non pertinente). Bornes attendues NON validées : règle
+    désactivée par défaut (config.EFFICIENCY_ALERT_ENABLED).
     """
-    pt01, pt02, pt03 = _number(telemetry, "pt01"), _number(telemetry, "pt02"), _number(telemetry, "pt03")
-    if pt01 is None or pt02 is None or pt03 is None:
+    diel_hot, diel_cold = _number(telemetry, config.DIELECTRIC_HOT_COLUMN), _number(telemetry, config.DIELECTRIC_COLD_COLUMN)
+    cool_hot, cool_cold = _number(telemetry, config.COOLANT_HOT_COLUMN), _number(telemetry, config.COOLANT_COLD_COLUMN)
+    if diel_hot is None or diel_cold is None or cool_hot is None or cool_cold is None:
         return None
-    denom = pt01 - pt03
-    if abs(denom) < 0.5:
+    available = diel_hot - cool_cold
+    if available < 0.5:
         return None
-    return (pt01 - pt02) / denom
+    return max(diel_hot - diel_cold, cool_hot - cool_cold) / available
 
 
 def _is_new_sample(state: dict, key: str, payload: dict | None) -> bool:
@@ -214,7 +215,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
              f"Liquide diélectrique trop chaud : {detail} > seuil {config.DIELECTRIC_CRITICAL_TEMP:.0f} °C "
              "— équipements immergés exposés. Vérifier le refroidissement sur site.")
 
-    # --- CRITIQUE : fréquence pompe / ventilateur non nulle sans débit ----------
+    # --- CRITIQUE : pompe en marche (fréquence non nulle) sans débit ------------
     # Une pompe qui tourne sans débit (vanne fermée, circuit bouché, désamorçage, variateur ou
     # capteur de débit défaillant) risque la marche à sec. Seuils : config.PUMP_RUNNING_MIN_HZ
     # (au-dessus : « en marche ») et config.FLOW_MIN_M3H (en dessous : « pas de débit »).
@@ -234,7 +235,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
         detail = (f"fréquence = {frequency:.1f} Hz, débit = {flow:.2f} m³/h"
                   if flow is not None and frequency is not None else "valeurs indisponibles")
         emit("CRITIQUE", "pump_without_flow",
-             f"Pompe/ventilateur en marche sans débit sur {pump_count} mesures consécutives "
+             f"Pompe en marche sans débit sur {pump_count} mesures consécutives "
              f"({detail}) — vérifier sur site : vanne, circuit, amorçage, capteur de débit.")
 
     # --- CRITIQUE : perte de communication --------------------------------
@@ -254,6 +255,10 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
     # Sans PT02 valide, AUCUNE consigne n'est publiée : l'automate retombe sur sa propre
     # régulation. Un PT02 qui ne bouge plus d'un dixième de degré pendant une heure alors que
     # le reste vit est presque toujours un mauvais point de passerelle ou une sonde bloquée.
+    # PT02 est lue au degré près : constante pendant une heure sur un procédé stable n'est PAS une
+    # panne. Elle n'est jugée figée que si l'autre sonde du circuit (PT01) a bougé d'au moins
+    # SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS pendant ce temps (sans PT01 : la durée seule fait foi).
+    reference = next((c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN), None)
     if telemetry is not None and _is_new_sample(state, "oil_sensor", telemetry):
         oil = _number(telemetry, config.TARGET_COLUMN)
         if oil is None:
@@ -263,6 +268,11 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
             if oil != state.get("oil_last_value"):
                 state["oil_last_value"] = oil
                 state["oil_unchanged_since"] = now
+                state["frozen_reference_range"] = None
+            ref_value = _number(telemetry, reference) if reference else None
+            if ref_value is not None:
+                low, high = state.get("frozen_reference_range") or (ref_value, ref_value)
+                state["frozen_reference_range"] = (min(low, ref_value), max(high, ref_value))
     if telemetry is not None:
         missing_since = state.get("oil_missing_since")
         if missing_since is not None and now - missing_since >= config.OIL_SENSOR_MISSING_ALERT_SECONDS:
@@ -272,12 +282,16 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
                  "Vérifier la sonde et le point sur la passerelle.")
         unchanged_since = state.get("oil_unchanged_since")
         frozen_after = config.SENSOR_FROZEN_ALERT_MINUTES * 60
+        ref_range = state.get("frozen_reference_range")
+        ref_span = None if ref_range is None else ref_range[1] - ref_range[0]
+        neighbour_moved = ref_span is None or ref_span >= config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS
         if (frozen_after and missing_since is None and unchanged_since is not None
-                and now - unchanged_since >= frozen_after):
+                and now - unchanged_since >= frozen_after and neighbour_moved):
+            moved = "" if ref_span is None else f" alors que {str(reference).upper()} a varié de {ref_span:.1f} °C"
             emit("ATTENTION", "oil_sensor_frozen",
-                 f"PT02 figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min : "
+                 f"PT02 figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min{moved} : "
                  "valeur suspecte (mauvais point de passerelle, consigne lue à la place de la mesure, sonde "
-                 "bloquée ?). À vérifier avec l'automaticien ; aucun modèle ne peut apprendre sur une mesure figée.")
+                 "bloquée ?). À vérifier avec l'automaticien.")
 
     # --- ATTENTION : dérive d'efficacité de l'échangeur (désactivée par défaut) -
     # Formule et bornes NON validées sur l'installation : la règle n'est active que si

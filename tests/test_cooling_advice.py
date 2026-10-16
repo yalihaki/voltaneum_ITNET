@@ -27,8 +27,15 @@ def test_stop_threshold_is_below_start_threshold_and_all_below_critical():
 def test_unknown_outdoor_gives_neutral_conditions_and_no_frequency():
     c = compute_cooling_conditions(35.0, None)
     assert c["outdoor_band"] == "inconnue"
-    assert c["fan_on_above_temp"] == config.TARGET_TEMP
+    assert c["fan_on_above_temp"] == config.TARGET_TEMP + config.FAN_HYSTERESIS_CELSIUS / 2
     assert c["fan_min_freq_hz"] is None and c["t_outdoor"] is None
+
+
+def test_band_is_centred_on_the_target_so_the_average_temperature_is_the_target():
+    """Tout-ou-rien : la température oscille entre les seuils, sa moyenne est le milieu."""
+    c = compute_cooling_conditions(35.0, 15.0)          # air tempéré : décalage nul
+    assert (c["fan_on_above_temp"] + c["fan_off_below_temp"]) / 2 == config.TARGET_TEMP
+    assert c["fan_off_below_temp"] < config.TARGET_TEMP < c["fan_on_above_temp"]
 
 
 @pytest.mark.parametrize("bad", [None, math.nan, math.inf])

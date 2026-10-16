@@ -3,7 +3,7 @@
 P (kW) = débit (m³/h) / 3600 × masse volumique (kg/m³) × capacité thermique (J/kg/K)
          × (T chaude − T froide) / 1000
 
-Sondes et propriétés du fluide sont réglables (config.THERMAL_POWER_*, OIL_*) et restent À
+Sondes et propriétés du fluide sont réglables (config.THERMAL_POWER_*, THERMAL_FLUID_*) et restent À
 CONFIRMER avec l'automaticien : tant que ce n'est pas fait, la valeur est une estimation.
 Un écart de température légèrement négatif (bruit des sondes à faible charge) est conservé tel
 quel, sans être déguisé en zéro.
