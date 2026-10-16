@@ -151,15 +151,16 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
 # ---------------------------------------------------------------------------
 # Noms des mesures, IDENTIQUES sur tous les écrans (interface, terminal, résumé)
 # ---------------------------------------------------------------------------
-# (nom complet, nom court pour le synoptique). Rôles DÉDUITS DES MESURES, à faire confirmer par
-# l'automaticien : PT03 est toujours plus chaude que PT04 (≈ 0,9 °C) et PT04 chute de plusieurs
-# degrés en quelques secondes quand le refroidissement démarre -> PT03 = entrée du dry cooler,
-# PT04 = sortie. Modifiables dans .env (PT01_LABEL, PT01_SHORT, … PT04_SHORT).
+# (nom complet, nom court pour le synoptique). PT03 / PT04 : noms NEUTRES tant que l'automaticien
+# n'a pas confirmé s'il s'agit de températures d'huile (entrée / sortie) ou d'air (sortie /
+# entrée d'air). Seul fait établi par les mesures : PT03 est le côté chaud, PT04 le côté froid.
+# PT04 reste 15 à 20 °C au-dessus de l'air extérieur (29 à 34 °C contre 7 à 24 °C), ce qui
+# évoque plutôt une température de fluide. Modifiables dans .env (PT01_LABEL … PT04_SHORT).
 SENSOR_LABELS: dict[str, tuple[str, str]] = {
     "pt01": (_env_str("PT01_LABEL", "PT01 · huile, circuit"), _env_str("PT01_SHORT", "PT01 · circuit huile")),
     "pt02": (_env_str("PT02_LABEL", "PT02 · huile du bain (régulée)"), _env_str("PT02_SHORT", "PT02 · bain (régulée)")),
-    "pt03": (_env_str("PT03_LABEL", "PT03 · dry cooler, entrée (chaud)"), _env_str("PT03_SHORT", "PT03 · entrée cooler")),
-    "pt04": (_env_str("PT04_LABEL", "PT04 · dry cooler, sortie (refroidi)"), _env_str("PT04_SHORT", "PT04 · sortie cooler")),
+    "pt03": (_env_str("PT03_LABEL", "PT03 · dry cooler, côté chaud"), _env_str("PT03_SHORT", "PT03 · cooler chaud")),
+    "pt04": (_env_str("PT04_LABEL", "PT04 · dry cooler, côté froid"), _env_str("PT04_SHORT", "PT04 · cooler froid")),
 }
 
 # Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique

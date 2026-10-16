@@ -10,7 +10,7 @@
   // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
     pt01: 'PT01 · huile, circuit', pt02: 'PT02 · huile du bain (régulée)',
-    pt03: 'PT03 · dry cooler, entrée (chaud)', pt04: 'PT04 · dry cooler, sortie (refroidi)',
+    pt03: 'PT03 · dry cooler, côté chaud', pt04: 'PT04 · dry cooler, côté froid',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
     thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };

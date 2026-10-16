@@ -48,8 +48,8 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 |---|---|---|
 | `PT01` | huile, circuit | `pt01` |
 | `PT02` | huile du bain, **grandeur régulée** (et prédite) | `pt02` |
-| `PT03` | dry cooler, **entrée** (huile chaude) | `pt03` |
-| `PT04` | dry cooler, **sortie** (huile refroidie) | `pt04` |
+| `PT03` | dry cooler, **côté chaud** (air ou huile : à confirmer) | `pt03` |
+| `PT04` | dry cooler, **côté froid** (air ou huile : à confirmer) | `pt04` |
 | `HT01` | débit circuit bain d'huile | `ht01` |
 | fréquence | fréquence pompe/ventilateur | `freq_pompe` |
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
@@ -67,7 +67,7 @@ La borne haute des sondes de température est **volontairement supérieure au se
 
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
-Rôles de PT03 / PT04 **déduits des mesures**, à faire confirmer par l'automaticien : PT03 est toujours plus chaude que PT04 (≈ 0,9 °C en moyenne) et PT04 chute de plusieurs degrés en quelques secondes au démarrage du refroidissement. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
+PT03 / PT04 : seul fait établi, PT03 est toujours plus chaude que PT04 (≈ 0,9 °C en moyenne). Reste à confirmer par l'automaticien s'il s'agit de températures d'huile (entrée / sortie) ou d'air (sortie / entrée d'air) ; PT04 restant 15 à 20 °C au-dessus de l'air extérieur, une température de fluide est plus probable. La puissance estimée n'est valable que pour des températures de fluide. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
 
 Grandeurs dérivées, enregistrées à chaque instantané :
 
