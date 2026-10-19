@@ -2,7 +2,7 @@
 ml/train.py — Entraînement et comparaison de modèles de prédiction de température.
 
 En clair : ce module répond à la question "peut-on prédire la température
-PT02 dans 10 minutes à partir des valeurs actuelles des autres capteurs ?".
+PT01 dans 10 minutes à partir des valeurs actuelles des autres capteurs ?".
 Pour y répondre honnêtement, on ne se contente pas d'entraîner un modèle et
 de croire son score : on le compare à une référence bête et méchante — la
 "persistance", qui prédit simplement que la température dans 10 minutes

@@ -62,6 +62,29 @@ def test_inconsistent_configuration_is_refused(monkeypatch, name, value, fragmen
         config.validate_config()
 
 
+@pytest.mark.parametrize("name,empty", [
+    ("MANAGE_API_URL", ""), ("IOT_API_URL", ""), ("WS_URL", ""), ("SENSOR_DRIVER_NODE", ""),
+    ("MQTT_HOST", ""), ("MQTT_PORT", 0), ("DASHBOARD_HOST", ""), ("DASHBOARD_PORT", 0),
+])
+def test_addresses_come_only_from_env(monkeypatch, name, empty):
+    """Aucune adresse par défaut dans le code : absente de .env, le démarrage est refusé."""
+    monkeypatch.setattr(config, name, empty)
+    with pytest.raises(ValueError, match=name):
+        config.validate_config()
+
+
+def test_no_address_is_written_in_the_code():
+    source = (ROOT / "config.py").read_text(encoding="utf-8")
+    assert not re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", source)
+    assert not re.search(r"(?:https?|wss?)://", source)
+
+
+def test_site_position_is_required(monkeypatch):
+    monkeypatch.setattr(config, "LATITUDE", float("nan"))
+    with pytest.raises(ValueError, match="VOLTANEUM_LAT"):
+        config.validate_config()
+
+
 def test_invalid_number_in_environment_names_the_variable(monkeypatch):
     monkeypatch.setenv("SNAPSHOT_INTERVAL_SECONDS", "beaucoup")
     with pytest.raises(ValueError, match="SNAPSHOT_INTERVAL_SECONDS"):

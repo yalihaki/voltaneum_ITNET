@@ -120,6 +120,9 @@ class GatewayCollector:
 
         self.token: str | None = None
         self.keynode_to_column: dict[str, str] = {}
+        # Dernière valeur BRUTE de chaque point du nœud capteur, utilisé ou non (KeyNode ->
+        # (valeur, instant)) : alimente l'onglet « Catalogue », jamais la régulation.
+        self._raw_values: dict[str, tuple[object, float]] = {}
         self._lock = threading.Lock()
 
         # Toutes les colonnes attendues, initialisées à None tant qu'aucune
@@ -275,6 +278,9 @@ class GatewayCollector:
                 )
             seen_columns[column] = key_node
 
+        # Catalogue complet enregistré (même sans point reconnu : utile au diagnostic).
+        sqlite_client.save_catalogue(points, mapping, self.sensor_driver_node, db_path=self.db_path)
+
         if not mapping:
             raise RuntimeError(
                 "Aucun point reconnu dans le catalogue reçu (vérifier "
@@ -322,6 +328,8 @@ class GatewayCollector:
             value = point.get("V")
             if key_node is None or value is None:
                 continue
+            with self._lock:
+                self._raw_values[key_node] = (value, time.time())
 
             column = self.keynode_to_column.get(key_node)
             if column is None:
@@ -473,6 +481,9 @@ class GatewayCollector:
             db_path=self.db_path,
         )
         extras = {"temp_outdoor_source": outdoor_source, "humidity_outdoor": humidity, "thermal_power_kw": power}
+        with self._lock:
+            raw_values, self._raw_values = self._raw_values, {}
+        sqlite_client.update_catalogue_values(self.sensor_driver_node, raw_values, db_path=self.db_path)
 
         if self.on_snapshot is not None:
             try:

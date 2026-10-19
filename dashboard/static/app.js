@@ -9,14 +9,17 @@
   // Noms des sondes : valeurs par défaut identiques à config.py, remplacées par celles du serveur
   // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
-    pt01: 'PT01 · liquide diélectrique', pt02: 'PT02 · liquide diélectrique (régulé)',
-    pt03: 'PT03 · liquide de refroidissement', pt04: 'PT04 · liquide de refroidissement',
+    pt01: 'PT01 · diélectrique entrant (régulé)', pt02: 'PT02 · diélectrique sortant',
+    pt03: 'PT03 · air sortant (chaud)', pt04: 'PT04 · air entrant (froid)',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
     thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };
   const UNITS = { pt01: '°C', pt02: '°C', pt03: '°C', pt04: '°C', ht01: 'm³/h', freq_pompe: 'Hz', temp_outdoor: '°C', thermal_power_kw: 'kW', humidity_outdoor: '%' };
   const DIGITS = { pt01: 1, pt02: 1, pt03: 1, pt04: 1, ht01: 2, freq_pompe: 1, temp_outdoor: 1, thermal_power_kw: 1, humidity_outdoor: 0 };
-  const COLORS = { pt01: '--s2', pt02: '--s1', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7', thermal_power_kw: '--s2', humidity_outdoor: '--s7' };
+  const COLORS = { pt01: '--s1', pt02: '--s2', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7', thermal_power_kw: '--s2', humidity_outdoor: '--s7' };
+  // Grandeur régulée (config.TARGET_COLUMN, transmise par le serveur dans les seuils).
+  let REG = 'pt01';
+  const regName = () => REG.toUpperCase();
   const MODEL_LABELS = { random_forest: 'Forêt aléatoire', gradient_boosting: 'Gradient boosting', baseline_persistence: 'Persistance (référence)' };
   const MODEL_COLORS = { random_forest: '--pred', gradient_boosting: '--pred-2' };
 
@@ -119,7 +122,7 @@
   };
 
   // ================================================================ navigation
-  const VIEWS = ['supervision', 'historique', 'alertes', 'pid', 'modeles', 'reglages'];
+  const VIEWS = ['supervision', 'historique', 'alertes', 'pid', 'modeles', 'catalogue', 'reglages'];
   const loaders = {};
   function route() {
     const name = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'supervision';
@@ -182,7 +185,7 @@
 
   // ================================================================ noms des sondes
   // Les noms viennent du serveur (config.SENSOR_LABELS, réglables dans .env) : synoptique, tuile
-  // PT02, courbes et légendes de l'historique affichent tous le même nom.
+  // de la grandeur régulée, courbes et légendes de l'historique affichent tous le même nom.
   let labelsApplied = '';
   function applyLabels(labels) {
     if (!labels) return;
@@ -194,7 +197,8 @@
       const tag = $('.tag[data-key="' + key + '"] .lbl-pt'); if (tag) tag.textContent = l.short;
       const chipText = $('.chip-label[data-key="' + key + '"]'); if (chipText) chipText.textContent = l.long;
     }
-    if (labels.pt02) $('#lbl-pt02').textContent = labels.pt02.long;
+    if (labels[REG]) $('#lbl-regulated').textContent = labels[REG].long;
+    for (const el of $$('.reg-name')) el.textContent = regName();
     for (const c of allCharts) for (const serie of c.o.series) if (labels[serie.key]) serie.label = labels[serie.key].long;
   }
 
@@ -202,6 +206,7 @@
   function renderSnapshot(s) {
     state.snapshot = s;
     state.thresholds = s.thresholds;
+    if (s.thresholds && s.thresholds.target_column) REG = s.thresholds.target_column;
     state.clockOffset = Date.now() - s.server_time;
     state.dbError = null;
     updateFreshness();
@@ -212,15 +217,15 @@
     const tile = key => $('.tile[data-key="' + key + '"]');
     const pumpNoFlow = v.freq_pompe != null && v.ht01 != null && v.freq_pompe > th.pump_running_min_hz && v.ht01 < th.flow_min_m3h;
 
-    const t02 = tile('pt02');
-    setNumber($('.v', t02), v.pt02, 1);
-    t02.className = 'tile' + (v.pt02 == null ? ' absent' : v.pt02 > th.critical_temp ? ' crit' : v.pt02 >= th.critical_temp - 5 ? ' warn' : '');
-    const trend = $('.trend', t02);
-    if (s.pt02_trend_10min != null) {
-      trend.textContent = (s.pt02_trend_10min > 0.05 ? '↗ ' : s.pt02_trend_10min < -0.05 ? '↘ ' : '→ ') + signed(s.pt02_trend_10min) + ' °C / 10 min';
-      trend.className = 'trend num ' + (s.pt02_trend_10min > 0.3 ? 'up' : s.pt02_trend_10min < -0.3 ? 'down' : '');
+    const treg = tile('regulated'), vreg = v[REG], tr = s.target_trend_10min;
+    setNumber($('.v', treg), vreg, 1);
+    treg.className = 'tile' + (vreg == null ? ' absent' : vreg > th.critical_temp ? ' crit' : vreg >= th.critical_temp - 5 ? ' warn' : '');
+    const trend = $('.trend', treg);
+    if (tr != null) {
+      trend.textContent = (tr > 0.05 ? '↗ ' : tr < -0.05 ? '↘ ' : '→ ') + signed(tr) + ' °C / 10 min';
+      trend.className = 'trend num ' + (tr > 0.3 ? 'up' : tr < -0.3 ? 'down' : '');
     } else trend.textContent = '';
-    $('.hint', t02).textContent = v.pt02 == null ? 'mesure absente' : 'cible ' + num(th.target_temp) + ' °C';
+    $('.hint', treg).textContent = vreg == null ? 'mesure absente' : 'cible ' + num(th.target_temp) + ' °C';
 
     const tp = tile('pred');
     const pred = s.predictions && s.predictions.models[s.predictions.best_model];
@@ -291,8 +296,8 @@
       setNumber($('.v', g), v[key], DIGITS[key]);
       let cls = 'tag';
       if (v[key] == null) cls += ' absent';
-      else if (key === 'pt02' && v.pt02 > th.critical_temp) cls += ' crit';
-      else if (key === 'pt01' && v.pt01 > (th.dielectric_critical_temp ?? th.critical_temp)) cls += ' crit';
+      else if (key === REG && v[REG] > th.critical_temp) cls += ' crit';
+      else if ((key === 'pt01' || key === 'pt02') && key !== REG && v[key] > (th.dielectric_critical_temp ?? th.critical_temp)) cls += ' crit';
       else if (key === 'ht01' && pumpNoFlow) cls += ' crit';
       g.setAttribute('class', cls);
     }
@@ -353,7 +358,7 @@
       empty.hidden = false; body.hidden = true;
       empty.className = 'callout warn';
       empty.textContent = 'Aucun calcul PID enregistré pour l\'instant : la régulation calcule une consigne chaque minute ' +
-        'dès que PT02 est mesurée (vérifier ./voltaneum status).';
+        'dès que ' + regName() + ' est mesurée (vérifier ./voltaneum status).';
       $('#pid-age').textContent = '';
       return;
     }
@@ -378,11 +383,11 @@
     const why = $('#pid-why'); why.replaceChildren();
     const add = (text, bold) => why.append(bold ? el('b', null, text) : document.createTextNode(text));
     if (c.mode === 'safety_bypass') {
-      add('PT02 est à '); add(num(c.t_oil) + ' °C', true);
+      add(regName() + ' est à '); add(num(c.t_oil) + ' °C', true);
       add(', au-dessus du seuil critique de ' + num(s.thresholds.critical_temp) + ' °C : refroidissement maximal demandé, sans calcul PID.');
     } else {
       const e = c.error;
-      add('PT02 (liquide diélectrique) est à '); add(num(c.t_oil) + ' °C', true);
+      add(regName() + ' (liquide diélectrique) est à '); add(num(c.t_oil) + ' °C', true);
       add(Math.abs(e) < 0.05 ? ', exactement à la cible : ' : ', soit ' + num(Math.abs(e)) + ' °C ' + (e > 0 ? 'au-dessus' : 'en dessous') + ' de la cible de ' + num(c.t_target) + ' °C. ');
       add('Le PID suggère '); add(pct(c.setpoint), true); add(' de refroidissement');
       const reasons = [];
@@ -391,7 +396,7 @@
       add(reasons.length ? ', dont ' + reasons.join(' et ') + '.' : '.');
       if (c.raw_output != null && c.raw_output > 100.05) add(' Le calcul brut donne ' + pct(c.raw_output) + ', ramené au maximum de 100 %.');
       if (c.raw_output != null && c.raw_output < -0.05) add(' Le calcul brut est négatif (' + pct(c.raw_output) + ') : le PID ne sait que refroidir, la consigne reste à 0 %.');
-      if (c.i_term != null && c.i_term >= 99.9) add(' Le terme intégral est à son maximum : PT02 est restée longtemps au-dessus de la cible.');
+      if (c.i_term != null && c.i_term >= 99.9) add(' Le terme intégral est à son maximum : ' + regName() + ' est restée longtemps au-dessus de la cible.');
     }
 
     // Décomposition terme par terme
@@ -426,7 +431,7 @@
     // Entrées du calcul
     const dl = $('#pid-inputs'); dl.replaceChildren();
     const kv = (k, v) => dl.append(el('dt', null, k), el('dd', null, v));
-    kv('Écart PT02 − cible', c.error == null ? '—' : signed(c.error, 2) + ' °C');
+    kv('Écart ' + regName() + ' − cible', c.error == null ? '—' : signed(c.error, 2) + ' °C');
     kv('Prédiction utilisée', c.t_predicted == null ? 'aucune (PID seul)' : num(c.t_predicted, 2) + ' °C');
     kv('Air extérieur', c.t_outdoor == null ? 'inconnu' : num(c.t_outdoor) + ' °C' + (c.t_outdoor_source === 'weather' ? ' (météo)' : c.t_outdoor_source === 'sensor' ? ' (capteur)' : ''));
     kv('Fréquence réelle pompe', s.values.freq_pompe == null ? '—' : num(s.values.freq_pompe, 1) + ' Hz (' + pct(fp) + ')');
@@ -446,8 +451,8 @@
     empty.hidden = true; body.hidden = false;
     const models = Object.entries(p.models);
     const any = models[0][1];
-    $('#ml-horizon').textContent = 'PT02 dans ' + fmtHorizon(any.horizon_seconds);
-    const now = s.values.pt02;
+    $('#ml-horizon').textContent = regName() + ' dans ' + fmtHorizon(any.horizon_seconds);
+    const now = s.values[REG];
     const live = {};
     for (const r of (state.models && state.models.live) || []) if (r.horizon_seconds === any.horizon_seconds) live[r.model] = r;
     const box = $('#ml-models'); box.replaceChildren();
@@ -478,9 +483,9 @@
   // ================================================================ supervision : courbes
   const supGroup = [];
   const supTemp = chart('chart-sup', {
-    label: 'Tendance de PT02', unit: '°C', digits: 1, minSpan: 4, now: true, group: supGroup,
+    label: 'Tendance de ' + regName(), unit: '°C', digits: 1, minSpan: 4, now: true, group: supGroup,
     series: [
-      { key: 'pt02', label: 'PT02', color: '--s1', width: 2, area: true, band: true, endpoint: true },
+      { key: REG, label: regName(), color: '--s1', width: 2, area: true, band: true, endpoint: true },
       { key: 'pred_hist', label: 'Prédit', color: '--pred', width: 1.4, dash: [2, 3] },
       { key: 'forecast', label: 'Prévision', color: '--pred', width: 2, dash: [6, 4], endpoint: true },
     ],
@@ -517,13 +522,13 @@
       const best = d.predictions && (d.predictions.best_model || Object.keys(d.predictions.models)[0]);
       const ph = best && d.predictions.models[best];
       const out = {
-        pt02: { t: d.t, v: d.series.pt02 },
+        [REG]: { t: d.t, v: d.series[REG] },
         freq_pompe: { t: d.t, v: d.series.freq_pompe },
         pred_hist: ph ? { t: ph.t, v: ph.v } : { t: [], v: [] },
         forecast: { t: [], v: [] },
       };
       const p = s && !s.empty && s.predictions && s.predictions.models[s.predictions.best_model];
-      if (p && p.value != null && s.values.pt02 != null) out.forecast = { t: [s.ts, p.target_ts], v: [s.values.pt02, p.value] };
+      if (p && p.value != null && s.values[REG] != null) out.forecast = { t: [s.ts, p.target_ts], v: [s.values[REG], p.value] };
       return out;
     },
     xRange() {
@@ -538,7 +543,7 @@
       const sr = this.series(), [x0, x1] = this.xRange();
       const gap = this.data.gap_ms;
       supTemp.setData({ xMin: x0, xMax: x1, gapMs: gap, series: sr,
-        band: this.data.bucket_seconds > state.thresholds.snapshot_interval_seconds ? { t: this.data.t, lo: this.data.pt02_min, hi: this.data.pt02_max } : null });
+        band: this.data.bucket_seconds > state.thresholds.snapshot_interval_seconds ? { t: this.data.t, lo: this.data.target_min, hi: this.data.target_max } : null });
       supFreq.setData({ xMin: x0, xMax: x1, gapMs: gap, series: { freq_pompe: sr.freq_pompe } });
       const ctl = this.data.control || { t: [], setpoint: [] };
       const fmax = (state.thresholds.valid_ranges.freq_pompe || [0, 50])[1];
@@ -568,7 +573,7 @@
         if (!d.t.length || s.ts > d.t[d.t.length - 1]) {
           d.t.push(s.ts);
           for (const k of Object.keys(d.series)) d.series[k].push(s.values[k] ?? null);
-          d.pt02_min.push(s.values.pt02 ?? null); d.pt02_max.push(s.values.pt02 ?? null);
+          d.target_min.push(s.values[REG] ?? null); d.target_max.push(s.values[REG] ?? null);
           const ctl = d.control;
           if (ctl && s.control && (!ctl.t.length || s.control.ts > ctl.t[ctl.t.length - 1])) {
             ctl.t.push(s.control.ts); ctl.setpoint.push(s.control.setpoint); ctl.t_predicted.push(s.control.t_predicted);
@@ -577,7 +582,7 @@
           if (cut > 0) {
             d.t.splice(0, cut);
             for (const k of Object.keys(d.series)) d.series[k].splice(0, cut);
-            d.pt02_min.splice(0, cut); d.pt02_max.splice(0, cut);
+            d.target_min.splice(0, cut); d.target_max.splice(0, cut);
           }
         }
         this.render();
@@ -590,7 +595,7 @@
   const supRange = segmented($('#sup-range'), b => { supChart.minutes = +b.dataset.min; supChart.loadedAt = Date.now(); supChart.load(); });
   supChart.minutes = +supRange().dataset.min;
   legend('#legend-sup', [
-    ['--s1', 'PT02 mesurée', ''], ['--pred', 'Prévision du modèle', 'dash'], ['--pred', 'Prédictions passées, à leur échéance', 'dotted'],
+    ['--s1', regName() + ' mesurée', ''], ['--pred', 'Prévision du modèle', 'dash'], ['--pred', 'Prédictions passées, à leur échéance', 'dotted'],
     ['--ok', 'Seuils marche / arrêt ventilateur', 'dotted'], ['--crit', 'Seuil critique', ''], ['--s5', 'Fréquence pompe (Hz)', ''], ['--s2', 'Consigne PID (%)', ''], ['--s5', 'Fréquence en % de la plage', 'dash'],
   ]);
   function legend(sel, items) {
@@ -699,7 +704,7 @@
   const TEMP_KEYS = ['pt01', 'pt02', 'pt03', 'pt04', 'temp_outdoor'];
   const histTemp = chart('chart-hist-temp', {
     label: 'Températures', unit: '°C', digits: 1, minSpan: 4, group: histGroup,
-    series: TEMP_KEYS.map(k => ({ key: k, label: LABELS[k], color: COLORS[k], width: k === 'pt02' ? 2 : 1.4, band: k === 'pt02', dash: k === 'temp_outdoor' ? [4, 3] : null })),
+    series: TEMP_KEYS.map(k => ({ key: k, label: LABELS[k], color: COLORS[k], width: k === REG ? 2 : 1.4, band: k === REG, dash: k === 'temp_outdoor' ? [4, 3] : null })),
   });
   const histFlow = chart('chart-hist-flow', {
     label: 'Fréquence et débit', unit: 'Hz', rightUnit: 'm³/h', digits: 1, rightDigits: 2, minSpan: 10, rightMinSpan: 1,
@@ -776,11 +781,11 @@
       for (const k of Object.keys(d.series)) series[k] = { t: d.t, v: d.series[k] };
       const banded = d.bucket_seconds > state.thresholds?.snapshot_interval_seconds;
       histTemp.o.thresholds = state.thresholds ? [{ value: state.thresholds.critical_temp, color: '--crit', label: 'critique ' + num(state.thresholds.critical_temp, 0) + ' °C', dash: [], offscale: true }, { value: state.thresholds.target_temp, color: '--ok', label: 'cible ' + num(state.thresholds.target_temp, 0) + ' °C' }] : [];
-      histTemp.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series, band: banded ? { t: d.t, lo: d.pt02_min, hi: d.pt02_max } : null });
+      histTemp.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series, band: banded ? { t: d.t, lo: d.target_min, hi: d.target_max } : null });
       histFlow.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series });
       histPower.setData({ xMin: start, xMax: end, gapMs: d.gap_ms, series });
       $('#hist-foot').textContent = d.count.toLocaleString('fr-FR') + ' mesures · ' +
-        (banded ? 'moyennes par tranches de ' + ago(d.bucket_seconds * 1000) + ' (enveloppe min / max de PT02 en transparence)' : 'toutes les mesures affichées');
+        (banded ? 'moyennes par tranches de ' + ago(d.bucket_seconds * 1000) + ' (enveloppe min / max de ' + regName() + ' en transparence)' : 'toutes les mesures affichées');
       renderStats(d, banded);
     } catch (err) {
       $('#hist-foot').textContent = 'Impossible de charger la période : ' + err.message;
@@ -797,8 +802,8 @@
         const td = el('td', 'r', 'aucune valeur'); td.colSpan = 4; tr.append(td);
       } else {
         let lo = Math.min(...vals), hi = Math.max(...vals);
-        if (k === 'pt02') {
-          const mins = d.pt02_min.filter(v => v != null), maxs = d.pt02_max.filter(v => v != null);
+        if (k === REG) {
+          const mins = d.target_min.filter(v => v != null), maxs = d.target_max.filter(v => v != null);
           if (mins.length) lo = Math.min(...mins); if (maxs.length) hi = Math.max(...maxs);
         }
         const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -810,7 +815,7 @@
       }
       body.append(tr);
     }
-    $('#hist-stats-note').textContent = banded ? 'min / max calculés sur les moyennes par tranche (PT02 : valeurs réelles)' : 'sur toutes les mesures';
+    $('#hist-stats-note').textContent = banded ? 'min / max calculés sur les moyennes par tranche (' + regName() + ' : valeurs réelles)' : 'sur toutes les mesures';
   }
   let histInit = false;
   loaders.historique = () => { if (!histInit) { histInit = true; setHistPreset(histMinutes); } loadHistory(); };
@@ -927,7 +932,7 @@
     const e = c ? c.last_event : null;
     if (key === 'setpoint' || key === 'conditions') {
       if (!c) return { label: 'Aucun cycle enregistré', msg: null };
-      if (!e) return { label: 'Aucun message envoyé : PT02 ne s\'est pas réchauffée, l\'automate régule seul', msg: null };
+      if (!e) return { label: 'Aucun message envoyé : ' + regName() + ' ne s\'est pas réchauffée, l\'automate régule seul', msg: null };
       const when = fmtTime.format(new Date(e.ts)) + ' (' + (EVENT_INFO[e.event] || e.event) + ')';
       const msg = key === 'setpoint' ? e.mqtt_setpoint : e.mqtt_conditions;
       if (msg) return { label: 'Dernier message envoyé · ' + when, msg, ok: true };
@@ -1073,12 +1078,12 @@
   const modelChart = chart('chart-models', {
     label: 'Prédiction comparée à la mesure', unit: '°C', digits: 2, minSpan: 3,
     series: [
-      { key: 'pt02', label: 'PT02 mesurée', color: '--s1', width: 2 },
+      { key: REG, label: regName() + ' mesurée', color: '--s1', width: 2 },
       { key: 'random_forest', label: MODEL_LABELS.random_forest, color: MODEL_COLORS.random_forest, width: 1.4, dash: [5, 3] },
       { key: 'gradient_boosting', label: MODEL_LABELS.gradient_boosting, color: MODEL_COLORS.gradient_boosting, width: 1.4, dash: [2, 3] },
     ],
   });
-  legend('#legend-models', [['--s1', 'PT02 mesurée', ''], ['--pred', MODEL_LABELS.random_forest, 'dash'], ['--pred-2', MODEL_LABELS.gradient_boosting, 'dotted']]);
+  legend('#legend-models', [['--s1', regName() + ' mesurée', ''], ['--pred', MODEL_LABELS.random_forest, 'dash'], ['--pred-2', MODEL_LABELS.gradient_boosting, 'dotted']]);
   let modelMinutes = 1440;
   segmented($('#model-range'), b => { modelMinutes = +b.dataset.min; loadModelChart(); });
   function setModelExports() {
@@ -1092,7 +1097,7 @@
     const box = $('#chart-models'); box.classList.add('loading');
     try {
       const d = await api('/api/series?minutes=' + modelMinutes + '&points=' + Math.max(300, Math.round(box.clientWidth)));
-      const series = { pt02: { t: d.t, v: d.series.pt02 } };
+      const series = { [REG]: { t: d.t, v: d.series[REG] } };
       for (const [m, s] of Object.entries(d.predictions.models || {})) series[m] = { t: s.t, v: s.v };
       modelChart.o.emptyText = 'Aucune mesure ni prédiction sur cette période';
       modelChart.setData({ xMin: d.start, xMax: d.end, gapMs: d.gap_ms, series });
@@ -1255,6 +1260,54 @@
     }
   }
   loaders.reglages = loadSettings;
+
+  // ================================================================ catalogue de l'automate
+  let catData = null, catFilter = '';
+  async function loadCatalogue() {
+    try {
+      catData = await api('/api/catalogue');
+      const c = catData.counts, counts = $('#cat-counts'); counts.replaceChildren();
+      for (const [label, value, cls] of [['Points du catalogue', c.total, ''], ['Utilisés par Voltaneum', c.used, ''],
+        ['Modifiables (jamais écrits)', c.writable, c.writable ? 'warn' : ''], ['Avec une valeur reçue', c.with_value, '']]) {
+        const box = el('div', 'count ' + cls); box.append(el('span', null, label), el('b', null, String(value))); counts.append(box);
+      }
+      const src = $('#cat-source'); src.replaceChildren();
+      if (catData.source === 'reference') {
+        src.append(el('p', 'callout warn', 'Aucun catalogue relevé dans cette base : la passerelle n\'a pas encore été jointe. '
+          + 'Liste des points connus du projet (relevés du 9/10/2026), sans valeur.'));
+      } else {
+        src.append(el('p', 'small-text', 'Catalogue relevé sur la passerelle le ' + fmtDateTime.format(new Date(catData.refreshed_at))
+          + ' · nœud capteur ' + catData.sensor_node + ' · rafraîchi automatiquement par la collecte.'));
+      }
+      renderCatalogue();
+    } catch (err) {
+      $('#cat-table tbody').replaceChildren(rowMsg(7, 'Impossible de charger le catalogue : ' + err.message));
+    }
+  }
+  function renderCatalogue() {
+    if (!catData) return;
+    const q = $('#cat-search').value.trim().toLowerCase();
+    const items = catData.items.filter(i =>
+      (!catFilter || (catFilter === 'used' ? i.used : catFilter === 'unused' ? !i.used : i.writable))
+      && (!q || [i.key_name, i.key_node, i.column, i.description, i.usage].join(' ').toLowerCase().includes(q)));
+    const body = $('#cat-table tbody'); body.replaceChildren();
+    if (!items.length) { body.append(rowMsg(7, 'Aucun point ne correspond.')); return; }
+    for (const i of items) {
+      const tr = el('tr', i.used ? '' : 'unused');
+      const name = el('td', 'n', i.key_name || '—');
+      if (i.dev_node && !i.on_sensor_node) name.append(el('span', 'sub', 'appareil ' + i.dev_node));
+      const access = el('td'); access.append(el('span', 'chip ' + (i.writable ? 'warn' : ''), i.writable ? 'modifiable' : i.writable === false ? 'lecture' : '?'));
+      const value = el('td', 'r', i.last_value == null ? '—' : i.last_value + (i.column && UNITS[i.column] ? ' ' + UNITS[i.column] : i.unit ? ' ' + i.unit : ''));
+      if (i.value_age_seconds != null) value.append(el('span', 'sub', 'il y a ' + ago(i.value_age_seconds * 1000)));
+      const used = el('td'); used.append(el('span', 'chip ' + (i.used ? 'ok' : ''), i.used ? 'oui' : 'non'));
+      if (i.column) used.append(el('span', 'sub', i.column));
+      tr.append(name, el('td', 'n', i.key_node || '—'), access, value, used, el('td', 'desc', i.description), el('td', 'use', i.usage));
+      body.append(tr);
+    }
+  }
+  segmented($('#cat-filter'), b => { catFilter = b.dataset.f; renderCatalogue(); });
+  $('#cat-search').addEventListener('input', renderCatalogue);
+  loaders.catalogue = loadCatalogue;
 
   // ================================================================ démarrage
   async function start() {

@@ -183,10 +183,10 @@ def test_model_on_a_subset_of_inputs_is_accepted_and_checks_its_domain(trained_m
 
     from ml.predictor import compatible_features
 
-    report = {"features": ["pt02", "pt01", "temp_outdoor"], "constant_features": {"freq_pompe": 30.0}}
+    report = {"features": ["pt01", "pt02", "temp_outdoor"], "constant_features": {"freq_pompe": 30.0}}
     assert compatible_features(report)
-    assert not compatible_features({"features": ["pt01", "pt02"]})            # ordre différent
-    assert not compatible_features({"features": ["pt02", "inconnue"]})
+    assert not compatible_features({"features": ["pt02", "pt01"]})            # ordre différent
+    assert not compatible_features({"features": ["pt01", "inconnue"]})
     assert not compatible_features({"features": []})
 
     predictor = DualModelPredictor(model_dir=trained_model_dir)

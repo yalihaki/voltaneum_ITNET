@@ -7,19 +7,19 @@ Pourquoi des étapes : le bain diélectrique est une grosse masse de liquide, il
 minutes à réagir. Envoyer une nouvelle consigne chaque minute n'a pas de sens : on agirait avant
 d'avoir vu l'effet de la précédente. On procède donc comme un exploitant :
 
-  REPOS ──(PT02 au-dessus de la cible, ou qui monte, ou prédite au-dessus)──► ACTIVATION
+  REPOS ──(PT01 au-dessus de la cible, ou qui monte, ou prédite au-dessus)──► ACTIVATION
      ▲                                                                         │ un message
      │                                                                         ▼
-    FIN ◄──(PT02 revenue sous la cible − marge)── ATTENTE de l'effet (REGULATION_EFFECT_WAIT_SECONDS)
+    FIN ◄──(PT01 revenue sous la cible − marge)── ATTENTE de l'effet (REGULATION_EFFECT_WAIT_SECONDS)
      ▲     un message                                 │ rien n'est envoyé
      │                                                ▼
      └──────────────────────────────────────── VÉRIFICATION
-                                       PT02 baisse      -> MAINTIEN (même consigne, un message)
-                                       PT02 ne baisse pas -> RENFORCEMENT (un message) :
+                                       PT01 baisse      -> MAINTIEN (même consigne, un message)
+                                       PT01 ne baisse pas -> RENFORCEMENT (un message) :
                                           air extérieur seul -> ventilateur -> ventilateur + fort
                                           -> 100 % ; à 100 % sans effet -> « insuffisant » (alerte)
 
-À tout moment, PT02 au-delà de CRITICAL_TEMP : envoi IMMÉDIAT à 100 % (étape « critique »).
+À tout moment, PT01 au-delà de CRITICAL_TEMP : envoi IMMÉDIAT à 100 % (étape « critique »).
 
 Phases : « repos », « air_exterieur » (ventilateur arrêté, l'air froid suffit), « ventilateur »,
 « critique ». Événements (= un message à publier) : activation, maintien, renforcement,
@@ -65,12 +65,12 @@ def _activation_reason(t_oil: float, slope: float | None, predicted: float | Non
     """Pourquoi il faut commencer à refroidir, ou None si rien ne le justifie."""
     target = config.TARGET_TEMP
     if t_oil > target + config.REGULATION_START_ABOVE_TARGET_CELSIUS:
-        return f"PT02 à {_fr(t_oil)} °C, au-dessus de la cible {_fr(target)} °C"
+        return f"PT01 à {_fr(t_oil)} °C, au-dessus de la cible {_fr(target)} °C"
     near = t_oil > target - config.REGULATION_RELEASE_BELOW_TARGET_CELSIUS
     if near and slope is not None and slope >= config.REGULATION_HEATING_SLOPE:
-        return f"PT02 monte ({_signed(slope)} °C / 10 min) à {_fr(t_oil)} °C"
+        return f"PT01 monte ({_signed(slope)} °C / 10 min) à {_fr(t_oil)} °C"
     if near and predicted is not None and predicted > target + config.FEEDFORWARD_PREDICTED_OVERSHOOT_THRESHOLD:
-        return f"prédiction : PT02 à {_fr(predicted)} °C dans 10 min"
+        return f"prédiction : PT01 à {_fr(predicted)} °C dans 10 min"
     return None
 
 
@@ -84,7 +84,7 @@ def decide(t_oil: float, slope: float | None, t_outdoor: float | None, pid_perce
            predicted: float | None, now: float, state: dict) -> tuple[Decision, dict]:
     """Décision de ce cycle et nouvel état. Passer {} au premier appel.
 
-    `slope` : tendance de PT02 (°C / 10 min, control/trend.py) ou None ; `predicted` : prédiction
+    `slope` : tendance de PT01 (°C / 10 min, control/trend.py) ou None ; `predicted` : prédiction
     ML retenue (None si absente ou écartée) ; `pid_percent` : sortie du PID ce cycle.
     """
     s = dict(state)
@@ -102,7 +102,7 @@ def decide(t_oil: float, slope: float | None, t_outdoor: float | None, pid_perce
 
     # --- Sécurité : au-delà du seuil critique, maximum immédiat. ---------------------------
     if t_oil > config.CRITICAL_TEMP:
-        reason = f"PT02 à {_fr(t_oil)} °C, au-delà du seuil critique {_fr(config.CRITICAL_TEMP)} °C : maximum"
+        reason = f"PT01 à {_fr(t_oil)} °C, au-delà du seuil critique {_fr(config.CRITICAL_TEMP)} °C : maximum"
         if phase != CRITICAL:
             return send(CRITICAL, "critique", config.SETPOINT_MAX, reason)
         if now - s.get("since", now) >= wait:
@@ -116,17 +116,17 @@ def decide(t_oil: float, slope: float | None, t_outdoor: float | None, pid_perce
     # --- Repos : rien à envoyer tant que rien ne chauffe. --------------------------------
     if phase == REST:
         if trigger is None:
-            return quiet(f"PT02 à {_fr(t_oil)} °C, stable : rien à envoyer, l'automate régule seul")
+            return quiet(f"PT01 à {_fr(t_oil)} °C, stable : rien à envoyer, l'automate régule seul")
         if air_ok:
             return send(OUTDOOR_AIR, "activation", 0.0,
                         f"{trigger} : air extérieur seul (ventilateur arrêté), l'air froid devrait suffire")
         return send(FAN, "activation", _fan_percent(pid_percent),
                     f"{trigger} : démarrage du ventilateur")
 
-    # --- Fin : PT02 revenue sous la cible et plus rien ne pousse à refroidir. ----------
+    # --- Fin : PT01 revenue sous la cible et plus rien ne pousse à refroidir. ----------
     if trigger is None and t_oil <= config.TARGET_TEMP - config.REGULATION_RELEASE_BELOW_TARGET_CELSIUS:
         s.pop("since", None)
-        return send(REST, "fin", 0.0, f"PT02 revenue à {_fr(t_oil)} °C : fin de la demande, l'automate régule seul")
+        return send(REST, "fin", 0.0, f"PT01 revenue à {_fr(t_oil)} °C : fin de la demande, l'automate régule seul")
 
     # --- L'air extérieur s'est réchauffé pendant une demande « air seul ». -------------
     if phase == OUTDOOR_AIR and not air_ok:
@@ -140,14 +140,14 @@ def decide(t_oil: float, slope: float | None, t_outdoor: float | None, pid_perce
 
     # --- Vérification de l'effet. --------------------------------------------------------
     if slope is None:
-        return send(phase, "maintien", command, "tendance de PT02 indisponible : consigne maintenue")
+        return send(phase, "maintien", command, "tendance de PT01 indisponible : consigne maintenue")
     if slope <= -config.REGULATION_COOLING_SLOPE:
         return send(phase, "maintien", command,
-                    f"PT02 à {_fr(t_oil)} °C ({_signed(slope)} °C / 10 min) : ça refroidit, consigne maintenue")
+                    f"PT01 à {_fr(t_oil)} °C ({_signed(slope)} °C / 10 min) : ça refroidit, consigne maintenue")
     if t_oil <= config.TARGET_TEMP and slope <= 0:
         return send(phase, "maintien", command,
-                    f"PT02 à {_fr(t_oil)} °C, à la cible et stable : consigne maintenue")
-    not_cooling = f"PT02 ne baisse pas ({_signed(slope)} °C / 10 min, {_fr(t_oil)} °C)"
+                    f"PT01 à {_fr(t_oil)} °C, à la cible et stable : consigne maintenue")
+    not_cooling = f"PT01 ne baisse pas ({_signed(slope)} °C / 10 min, {_fr(t_oil)} °C)"
     if phase == OUTDOOR_AIR:
         return send(FAN, "renforcement", _fan_percent(pid_percent),
                     f"{not_cooling} avec l'air seul : démarrage du ventilateur")

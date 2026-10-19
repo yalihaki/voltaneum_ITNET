@@ -1,6 +1,6 @@
 """control/trend.py — Tendance d'une température (°C par 10 min), par moindres carrés (calcul pur).
 
-Une simple différence « maintenant − il y a 10 min » ne vaut rien sur PT02, lue au degré près : un
+Une simple différence « maintenant − il y a 10 min » ne vaut rien sur une sonde lue au degré près : un
 seul pas de quantification ferait croire à +1 °C / 10 min. La pente de la droite ajustée sur
 toutes les mesures de la fenêtre (une toutes les 15 s) lisse ces marches.
 """

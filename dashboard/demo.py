@@ -37,9 +37,8 @@ def _utc(epoch: float) -> str:
 
 class _Process:
     """Modèle thermique grossier, dans l'ordre des mesures réelles (PT02 > PT01 > PT03 > PT04) :
-    les équipements chauffent le bain diélectrique (PT02), l'échangeur le refroidit (retour PT01),
-    la boucle d'eau glycolée emporte la chaleur (PT03 chaud) vers le dry cooler qui la rend à l'air
-    (PT04 froid). Pour que la démonstration ait de quoi apprendre, la « fréquence » y varie et
+    les équipements chauffent le liquide diélectrique, qui sort de l'armoire chaud (PT02) et y
+    revient refroidi (PT01, grandeur régulée) ; l'air entre froid (PT04) et ressort chaud (PT03). Pour que la démonstration ait de quoi apprendre, la « fréquence » y varie et
     représente l'effort de refroidissement (sur le site, la pompe reste à 30 Hz)."""
 
     def __init__(self, seed: int = 7) -> None:
@@ -48,7 +47,7 @@ class _Process:
         self.freq = 25.0
         self.pid_state: dict = {}
         self.supervisor_state: dict = {}
-        self.recent: list[tuple[float, float]] = []    # (instant, PT02) : tendance pour les étapes
+        self.recent: list[tuple[float, float]] = []    # (instant, PT01) : tendance pour les étapes
 
     def outdoor(self, t: float) -> float:
         hour = (t / 3600) % 24
@@ -64,10 +63,10 @@ class _Process:
         self.freq += (max(0.0, min(50.0, target_freq)) - self.freq) * 0.08 + self.rng.gauss(0, 0.3)
         self.freq = max(0.0, min(50.0, self.freq))
         flow = 0.0 if self.freq < 3 else 0.6 + self.freq * 0.065 + self.rng.gauss(0, 0.03)
-        coolant_cold = ext + 0.55 * (self.oil - ext)          # sortie du dry cooler
+        coolant_cold = ext + 0.55 * (self.oil - ext)          # air entrant (PT04)
         return {
-            "pt01": round(self.oil - 0.6 * load + self.rng.gauss(0, 0.05), 2),
-            "pt02": round(self.oil, 2),
+            "pt01": round(self.oil - 0.6 * load + self.rng.gauss(0, 0.05), 2),   # diélectrique entrant
+            "pt02": round(self.oil, 2),                                            # diélectrique sortant
             "pt03": round(coolant_cold + 0.9 * load + self.rng.gauss(0, 0.05), 2),
             "pt04": round(coolant_cold + self.rng.gauss(0, 0.1), 2),
             "ht01": round(max(0.0, flow), 3),
@@ -82,16 +81,16 @@ def _insert(conn, ts: float, values: dict) -> None:
     conn.execute(
         "INSERT INTO telemetry (timestamp, pt01, pt02, pt03, pt04, ht01, freq_pompe, temp_outdoor, "
         "temp_outdoor_source, humidity_outdoor, thermal_power_kw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'weather', ?, ?)",
-        (_utc(ts), values["pt01"], values["pt02"], values["pt03"], values["pt04"], values["ht01"],
+        (_utc(ts), values["pt01"], values[config.TARGET_COLUMN], values["pt03"], values["pt04"], values["ht01"],
          values["freq_pompe"], values["temp_outdoor"], humidity, estimate_power_kw(values)),
     )
 
 
-def _predict(conn, made_at: float, pt02_now: float, pt02_future: float, rng: random.Random,
+def _predict(conn, made_at: float, target_now: float, target_future: float, rng: random.Random,
              horizon: int, complete: bool) -> None:
     for model, noise in (("random_forest", 0.35), ("gradient_boosting", 0.28)):
-        predicted = pt02_future + rng.gauss(0, noise) if complete else pt02_now + rng.gauss(0, noise)
-        actual = pt02_future if complete else None
+        predicted = target_future + rng.gauss(0, noise) if complete else target_now + rng.gauss(0, noise)
+        actual = target_future if complete else None
         conn.execute(
             "INSERT INTO predictions_log (made_at, target_ts, horizon_seconds, model_name, predicted_value, "
             "actual_value, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -104,7 +103,7 @@ def _log_control(conn, process: _Process, ts: float, values: dict, predicted: fl
                  broker_up: bool = True) -> None:
     """Un cycle de contrôle calculé avec le VRAI code (PID, étapes), comme la boucle de contrôle :
     un message n'est « envoyé » qu'aux étapes."""
-    t_oil, t_ext = values["pt02"], values["temp_outdoor"]
+    t_oil, t_ext = values[config.TARGET_COLUMN], values["temp_outdoor"]
     detail = compute_setpoint_detailed(
         t_oil, config.TARGET_TEMP, t_oil if predicted is None else predicted, t_ext,
         config.CONTROL_LOOP_INTERVAL_SECONDS, process.pid_state,
@@ -163,7 +162,7 @@ def create_demo_database(path: str = DEMO_DB_PATH) -> _Process:
             if not (start + 2.2 * 86400 < t < start + 2.25 * 86400 or now - 5 * 3600 < t < now - 4.9 * 3600):
                 values = process.step(t, interval)
                 _insert(conn, t, values)
-                history.append((t, values["pt02"]))
+                history.append((t, values[config.TARGET_COLUMN]))
                 snapshots.append((t, values))
             else:
                 process.step(t, interval)
@@ -185,12 +184,12 @@ def create_demo_database(path: str = DEMO_DB_PATH) -> _Process:
         for i in range(0, len(snapshots), step):
             ts, values = snapshots[i]
             future_index = i + horizon // interval
-            future = snapshots[min(future_index, len(snapshots) - 1)][1]["pt02"]
+            future = snapshots[min(future_index, len(snapshots) - 1)][1][config.TARGET_COLUMN]
             predicted = round(future + rng.gauss(0, 0.3), 2)
             # Broker « indisponible » 25 minutes il y a 30 h : envois en échec, pour le rendu.
             broker_up = not (now - 30 * 3600 < ts < now - 30 * 3600 + 1500)
             lookback = int(config.REGULATION_TREND_WINDOW_SECONDS // interval) + 1
-            control_process.recent = [(t, v["pt02"]) for t, v in snapshots[max(0, i - lookback):i + 1]]
+            control_process.recent = [(t, v[config.TARGET_COLUMN]) for t, v in snapshots[max(0, i - lookback):i + 1]]
             _log_control(conn, control_process, ts, values, predicted, broker_up)
         process.pid_state = control_process.pid_state
         process.supervisor_state = control_process.supervisor_state
@@ -207,9 +206,41 @@ def create_demo_database(path: str = DEMO_DB_PATH) -> _Process:
             "INSERT INTO alerts_log (timestamp, level, rule_name, message, email_sent) VALUES (?, ?, ?, ?, ?)",
             [(_utc(ts), lvl, rule, msg, sent) for ts, lvl, rule, msg, sent in alerts],
         )
+    _seed_catalogue(path, snapshots[-1][1], now)
     _write_demo_training_report(history, horizon)
     logger.info("Base de démonstration créée : %s (%d mesures).", path, len(history))
     return process
+
+
+# Catalogue FICTIF, sur le modèle du catalogue réel de la passerelle 10.0.1.34 (relevé du 9/10/2026) :
+# les six points lus, plus des points modifiables et de diagnostic que Voltaneum n'utilise pas.
+_DEMO_CATALOGUE: list[dict] = [
+    {"KeyNode": "K0", "KeyName": "PT01", "WrEnable": 0, "DataType": "Float"},
+    {"KeyNode": "K1", "KeyName": "PT02", "WrEnable": 0, "DataType": "Float"},
+    {"KeyNode": "K2", "KeyName": "PT03", "WrEnable": 0, "DataType": "Float"},
+    {"KeyNode": "K3", "KeyName": "PT04", "WrEnable": 0, "DataType": "Float"},
+    {"KeyNode": "K4", "KeyName": "HT01", "WrEnable": 0, "DataType": "Float"},
+    {"KeyNode": "K5", "KeyName": "PUMP", "WrEnable": 0, "DataType": "Int16"},
+    {"KeyNode": "K6", "KeyName": "ON/OFF", "WrEnable": 1, "DataType": "Bool"},
+    {"KeyNode": "K12", "KeyName": "Temperature setpoint", "WrEnable": 1, "DataType": "Float"},
+    {"KeyNode": "K17", "KeyName": "Emergency stop bypass", "WrEnable": 1, "DataType": "Bool"},
+    {"KeyNode": "auto_mode", "KeyName": "AUTO REQUEST M4.2", "WrEnable": 1, "DataType": "Bool"},
+    {"KeyNode": "diag_vw12", "KeyName": "DIAG Actual frequency VW12", "WrEnable": 0, "DataType": "Int16"},
+]
+_DEMO_COLUMNS = {"K0": "pt01", "K1": "pt02", "K2": "pt03", "K3": "pt04", "K4": "ht01", "K5": "freq_pompe"}
+
+
+def _catalogue_values(values: dict, now: float) -> dict[str, tuple[object, float]]:
+    raw: dict[str, tuple[object, float]] = {k: (values[c], now) for k, c in _DEMO_COLUMNS.items()}
+    raw.update({"K6": (1, now), "K12": (config.TARGET_TEMP, now), "K17": (0, now), "auto_mode": (1, now),
+                "diag_vw12": (round(values["freq_pompe"]), now)})
+    return raw
+
+
+def _seed_catalogue(path: str, values: dict, now: float) -> None:
+    node = config.SENSOR_DRIVER_NODE
+    sqlite_client.save_catalogue([{**p, "DevNode": node} for p in _DEMO_CATALOGUE], _DEMO_COLUMNS, node, db_path=path)
+    sqlite_client.update_catalogue_values(node, _catalogue_values(values, now), db_path=path)
 
 
 def _write_demo_training_report(history: list[tuple[float, float]], horizon: int) -> None:
@@ -242,15 +273,16 @@ def run_live_feed(process: _Process, stop: threading.Event, path: str = DEMO_DB_
     while not stop.wait(interval):
         now = time.time()
         values = process.step(now, interval)
-        process.recent.append((now, values["pt02"]))
+        process.recent.append((now, values[config.TARGET_COLUMN]))
         with sqlite_client.connect(path) as conn:
             _insert(conn, now, values)
             if count % 4 == 0:
-                _predict(conn, now, values["pt02"], values["pt02"] - 0.15, rng, horizon, complete=False)
-                _log_control(conn, process, now, values, round(values["pt02"] - 0.15 + rng.gauss(0, 0.2), 2))
+                _predict(conn, now, values[config.TARGET_COLUMN], values[config.TARGET_COLUMN] - 0.15, rng, horizon, complete=False)
+                _log_control(conn, process, now, values, round(values[config.TARGET_COLUMN] - 0.15 + rng.gauss(0, 0.2), 2))
             if count and count % 120 == 0:
                 conn.execute(
                     "INSERT INTO alerts_log (level, rule_name, message, email_sent) VALUES (?, ?, ?, 0)",
                     ("ATTENTION", "demo", "Alerte de démonstration (une toutes les 30 min)"),
                 )
+        sqlite_client.update_catalogue_values(config.SENSOR_DRIVER_NODE, _catalogue_values(values, now), db_path=path)
         count += 1

@@ -209,6 +209,42 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return run_watch(args.db, interval=args.interval, minutes=args.minutes, once=args.once)
 
 
+def cmd_catalogue(args: argparse.Namespace) -> int:
+    """Catalogue de l'automate en tableau : ce que la passerelle envoie et ce qu'on en fait."""
+    import textwrap
+    import time
+
+    from dashboard.data import DatabaseUnavailable, catalogue
+
+    try:
+        cat = catalogue(args.db)
+    except DatabaseUnavailable as exc:
+        print(f"Catalogue indisponible : {exc}")
+        return 1
+    items = [i for i in cat["items"] if not args.used or i["used"]]
+    if cat["source"] == "reference":
+        print("Aucun catalogue relevé dans cette base (passerelle jamais jointe) : points connus du projet.")
+    else:
+        when = time.strftime("%d/%m/%Y %H:%M", time.localtime(cat["refreshed_at"] / 1000))
+        print(f"Catalogue relevé le {when} · nœud capteur {cat['sensor_node']}")
+    c = cat["counts"]
+    print(f"{c['total']} points · {c['used']} utilisés · {c['writable']} modifiables (jamais écrits) · "
+          f"{c['with_value']} avec une valeur reçue\n")
+    print(f"{'POINT':<28} {'CODE':<10} {'ACCÈS':<10} {'VALEUR':>10}  {'UTILISÉ':<18} DESCRIPTION")
+    for i in items:
+        access = "modifiable" if i["writable"] else "lecture" if i["writable"] is False else "?"
+        used = f"oui → {i['column']}" if i["used"] else "non"
+        value = "—" if i["last_value"] is None else str(i["last_value"])[:10]
+        print(f"{str(i['key_name'] or '—')[:28]:<28} {str(i['key_node'] or '—')[:10]:<10} {access:<10} "
+              f"{value:>10}  {used:<18} {i['description']}")
+        if args.details:
+            for line in textwrap.wrap(i["usage"], 100):
+                print(" " * 4 + line)
+    if not args.details:
+        print("\n--details : comment Voltaneum utilise chaque point · --used : seulement les points utilisés")
+    return 0
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     """Liste les sauvegardes, ou restaure l'une d'elles (Voltaneum doit être arrêté)."""
     from database.backup import create_backup, restore_backup
@@ -315,6 +351,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--minutes", type=int, default=60, help="durée des courbes")
     watch.add_argument("--once", action="store_true", help="afficher une seule fois puis quitter")
     watch.set_defaults(func=cmd_watch)
+
+    cat = sub.add_parser("catalogue", help="points de l'automate : description, dernière valeur, utilisés ou non")
+    cat.add_argument("--db", default=config.SQLITE_DB_PATH)
+    cat.add_argument("--details", action="store_true", help="afficher comment Voltaneum utilise chaque point")
+    cat.add_argument("--used", action="store_true", help="seulement les points utilisés")
+    cat.set_defaults(func=cmd_catalogue)
 
     restore = sub.add_parser("restore", help="lister les sauvegardes, ou en restaurer une (Voltaneum arrêté)")
     restore.add_argument("archive", nargs="?", help="nom de la sauvegarde (voir la liste)")

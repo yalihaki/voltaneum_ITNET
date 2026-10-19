@@ -317,7 +317,7 @@ class VoltaneumApp:
         )
         setpoint, self._pid_state, mode = detail.setpoint, detail.state, detail.mode
 
-        # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT02 se
+        # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT01 se
         # réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle chaque minute.
         now = time.time()
         slope = slope_per_10min(

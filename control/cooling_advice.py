@@ -43,7 +43,7 @@ def fan_thresholds(offset: float) -> tuple[float, float]:
 
 
 def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | None:
-    """Conditions de refroidissement à publier, ou None si la grandeur régulée (PT02) est invalide
+    """Conditions de refroidissement à publier, ou None si la grandeur régulée (PT01) est invalide
     (on ne publie rien plutôt que de publier des conditions sur une mesure fausse)."""
     if t_oil is None or not math.isfinite(t_oil):
         return None

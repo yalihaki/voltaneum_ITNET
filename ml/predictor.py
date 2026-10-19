@@ -6,7 +6,7 @@ En clair : `ml/train.py` est le "cours du soir" — il entraîne les modèles
 une fois (ou périodiquement) et les range dans un dossier. Ce module-ci est
 l'"élève diplômé" qu'on interroge en production, en continu : il charge les
 modèles déjà entraînés (sans jamais les ré-entraîner lui-même) et répond
-très vite à la question "que vaudra PT02 dans 10 minutes ?".
+très vite à la question "que vaudra PT01 dans 10 minutes ?".
 
 On interroge volontairement DEUX modèles (RandomForest et GradientBoosting)
 plutôt qu'un seul, et on calcule leur désaccord (`disagreement`). En clair :

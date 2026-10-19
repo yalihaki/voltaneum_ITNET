@@ -14,6 +14,7 @@ for SQLite, par exemple) : chaque ligne raconte une histoire complète.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -24,6 +25,7 @@ from contextlib import contextmanager
 
 import pandas as pd
 
+import config
 from config import SQLITE_DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,26 @@ _CREATE_CONTROL_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_control_ts ON control_log (timestamp);
 """
 
+# Catalogue des points de la passerelle (tous les points, utilisés ou non), relevé à chaque
+# rafraîchissement du mapping, avec la dernière valeur reçue de chaque point du nœud capteur.
+# Sert à l'onglet « Catalogue » : ce que l'automate envoie et ce que Voltaneum en fait.
+_CREATE_CATALOGUE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS gateway_catalogue (
+    dev_node TEXT NOT NULL,
+    key_node TEXT NOT NULL,
+    key_name TEXT,
+    writable INTEGER,
+    data_type TEXT,
+    unit TEXT,
+    gateway_desc TEXT,
+    column_name TEXT,
+    last_value TEXT,
+    last_seen DATETIME,
+    refreshed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dev_node, key_node)
+);
+"""
+
 
 @contextmanager
 def connect(db_path: str = SQLITE_DB_PATH) -> Iterator[sqlite3.Connection]:
@@ -175,6 +197,7 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
             if column not in control_columns:  # migration des bases existantes, aucune donnée perdue
                 conn.execute(f"ALTER TABLE control_log ADD COLUMN {column} {sql_type}")  # nosec B608
         conn.execute(_CREATE_CONTROL_INDEX_SQL)
+        conn.execute(_CREATE_CATALOGUE_TABLE_SQL)
 
     try:
         os.chmod(db_path, 0o600)
@@ -259,6 +282,15 @@ def log_prediction(
         return int(row_id) if row_id is not None else 0
 
 
+# Mesure de la grandeur régulée la plus proche d'une échéance (nom de colonne venant de config).
+_MEASURE_AT_SQL = (
+    f"SELECT {config.TARGET_COLUMN} FROM telemetry "  # nosec B608
+    "WHERE timestamp BETWEEN datetime(?, '-15 seconds') AND datetime(?, '+15 seconds') "
+    f"AND {config.TARGET_COLUMN} IS NOT NULL "
+    "ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC, timestamp ASC LIMIT 1"
+)
+
+
 def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
     """Complète les prédictions échues à partir des mesures réelles dans telemetry."""
     with connect(db_path) as conn:
@@ -275,14 +307,7 @@ def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
         completed = 0
         for pred_id, target_ts, horizon_seconds, model_name, predicted_value in pending:
             row = conn.execute(
-                """
-                SELECT pt02
-                FROM telemetry
-                WHERE timestamp BETWEEN datetime(?, '-15 seconds') AND datetime(?, '+15 seconds')
-                  AND pt02 IS NOT NULL
-                ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC, timestamp ASC
-                LIMIT 1
-                """,
+                _MEASURE_AT_SQL,
                 (target_ts, target_ts, target_ts),
             ).fetchone()
             if row is None:
@@ -412,3 +437,64 @@ def recent_values(column: str, since_epoch: float, db_path: str = SQLITE_DB_PATH
         logger.exception("Lecture de la tendance de %s impossible", column)
         return []
     return [(float(t), float(v)) for t, v in rows]
+
+
+def _first(point: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = point.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def save_catalogue(points: list[dict], columns: dict[str, str], sensor_node: str,
+                   db_path: str = SQLITE_DB_PATH) -> None:
+    """Remplace le catalogue enregistré par `points` (réponse brute de la passerelle).
+
+    `columns` : KeyNode -> colonne pour les points retenus du nœud `sensor_node`. Les dernières
+    valeurs déjà connues sont conservées. Ne lève jamais d'exception (la collecte continue).
+    """
+    rows = []
+    for point in points:
+        key_node, dev_node = point.get("KeyNode"), point.get("DevNode")
+        if not key_node or dev_node is None:
+            continue
+        writable = point.get("WrEnable")
+        rows.append((
+            str(dev_node), str(key_node), _first(point, "KeyName"),
+            None if writable is None else int(bool(writable)),
+            _first(point, "DataType", "Type", "ValueType"), _first(point, "Unit", "Units"),
+            _first(point, "Desc", "Description", "Remark", "Comment"),
+            columns.get(key_node) if dev_node == sensor_node else None,
+        ))
+    try:
+        with connect(db_path) as conn:
+            conn.execute(_CREATE_CATALOGUE_TABLE_SQL)
+            kept = {(r[0], r[1]): (r[2], r[3]) for r in conn.execute(
+                "SELECT dev_node, key_node, last_value, last_seen FROM gateway_catalogue")}
+            conn.execute("DELETE FROM gateway_catalogue")
+            conn.executemany(
+                "INSERT OR REPLACE INTO gateway_catalogue (dev_node, key_node, key_name, writable, data_type, unit, "
+                "gateway_desc, column_name, last_value, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(*row, *kept.get((row[0], row[1]), (None, None))) for row in rows],
+            )
+    except sqlite3.Error:
+        logger.exception("Échec d'enregistrement du catalogue de la passerelle")
+
+
+def update_catalogue_values(dev_node: str, values: dict[str, tuple[object, float]],
+                            db_path: str = SQLITE_DB_PATH) -> None:
+    """Dernière valeur brute reçue de chaque point (KeyNode -> (valeur, instant epoch)).
+    Ne lève jamais d'exception."""
+    if not values:
+        return
+    try:
+        with connect(db_path) as conn:
+            conn.executemany(
+                "UPDATE gateway_catalogue SET last_value = ?, last_seen = ? WHERE dev_node = ? AND key_node = ?",
+                [(json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value,
+                  time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)), dev_node, key_node)
+                 for key_node, (value, ts) in values.items()],
+            )
+    except sqlite3.Error:
+        logger.exception("Échec de mise à jour des valeurs du catalogue")

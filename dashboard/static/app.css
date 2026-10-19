@@ -360,6 +360,10 @@ details.history summary { cursor: pointer; padding: 10px 14px; font-size: 13px; 
 .table td.r, .table td.n { font-family: var(--f-num); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table td.msg { min-width: 260px; overflow-wrap: anywhere; }
 .table td.empty { text-align: center; padding: 28px 14px; }
+.cat-table td.desc { min-width: 220px; }
+.cat-table td.use { min-width: 300px; color: var(--muted); }
+.cat-table tr.unused td:first-child, .cat-table tr.unused td.r { color: var(--muted); }
+.cat-table .sub { display: block; font-size: 11.5px; color: var(--faint); }
 .table i.sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: -1px; }
 .alerts-table tbody tr.crit td:first-child { box-shadow: inset 3px 0 0 var(--crit); }
 .alerts-table tbody tr.warn td:first-child { box-shadow: inset 3px 0 0 var(--warn); }

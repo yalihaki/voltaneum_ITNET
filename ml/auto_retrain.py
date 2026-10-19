@@ -10,7 +10,7 @@ anticipation se déclenche sur la prédiction). Tant que le PID n'est pas régl�
 l'automaticien, ce choix reste humain.
 
 Un horizon est jugé FIABLE si :
-  1. `ml/train.py` l'a accepté (assez de collecte continue, PT02 varie ; une variable figée est
+  1. `ml/train.py` l'a accepté (assez de collecte continue, PT01 varie ; une variable figée est
      écartée des entrées, pas bloquante) ;
   2. son erreur (RMSE) est au moins AUTO_RETRAIN_MIN_GAIN plus faible que la persistance
      (« la température ne bouge pas ») ;
@@ -68,7 +68,7 @@ _FEATURE_LABELS = {
 
 _STATUS_REASONS = {
     "insufficient_data": "données insuffisantes (collecte continue trop courte pour cet horizon)",
-    "insufficient_variance": "PT02 ne varie pas assez pour juger une prédiction",
+    "insufficient_variance": "PT01 ne varie pas assez pour juger une prédiction",
     "no_actionable_signal": "toutes les variables d'entrée sont restées figées",
     "no_skill": "ne fait pas mieux que la persistance (« la température ne bouge pas »)",
 }

@@ -173,25 +173,26 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     lines.append(rule)
 
     v = snap["values"]
-    pt02 = v["pt02"]
-    pt02_txt = _num(pt02, 1, "°C")
-    if pt02 is not None and pt02 > th["critical_temp"]:
-        pt02_txt = s.crit(pt02_txt + " CRITIQUE")
-    trend = snap.get("pt02_trend_10min")
-    row("Régulée (PT02)", f"{s.bold(pt02_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
+    reg_name = config.TARGET_COLUMN.upper()
+    regulated = v[config.TARGET_COLUMN]
+    regulated_txt = _num(regulated, 1, "°C")
+    if regulated is not None and regulated > th["critical_temp"]:
+        regulated_txt = s.crit(regulated_txt + " CRITIQUE")
+    trend = snap.get("target_trend_10min")
+    row(f"Régulée ({reg_name})", f"{s.bold(regulated_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
     def pair(columns: tuple[str, ...]) -> str:
         text = "   ".join(f"{c.upper()} {_num(v[c], 1, '°C')}" for c in columns)
         known = [v[c] for c in columns if v[c] is not None]
         return text + (f"   (écart {_num(max(known) - min(known), 1)} °C)" if len(columns) == 2 == len(known) else "")
 
-    # Liquide diélectrique (cuve) : seuil critique sur les sondes autres que PT02 (PT02 a le sien).
+    # Liquide diélectrique : seuil critique sur les sondes autres que la régulée (PT01 a le sien).
     others = [v[c] for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN and v[c] is not None]
     diel_txt = pair(config.DIELECTRIC_COLUMNS)
     if others and max(others) > th.get("dielectric_critical_temp", th["critical_temp"]):
         diel_txt = s.crit(diel_txt + "  CRITIQUE")
     row("Diélectrique", diel_txt)
-    row("Refroidissement", pair(config.COOLANT_COLUMNS))
+    row("Air", pair(config.COOLANT_COLUMNS))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
         f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")
@@ -205,8 +206,8 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     if not c:
         if running is False:
             reason = "Voltaneum n'est pas démarré (./voltaneum restart)"
-        elif pt02 is None:
-            reason = "PT02 absente : aucune consigne n'est calculée sans la grandeur régulée"
+        elif regulated is None:
+            reason = f"{reg_name} absente : aucune consigne n'est calculée sans la grandeur régulée"
         elif age > th["stale_after_seconds"]:
             reason = "mesures périmées : la régulation est suspendue"
         else:
@@ -239,7 +240,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
             sent = {1: s.ok("transmis"), 0: s.warn("NON transmis (broker injoignable)")}.get(last.get("mqtt_sent"), "")
             row("Dernier envoi", f"{when} · {last.get('event')} · {sent}")
         elif c.get("phase"):
-            row("Dernier envoi", s.dim("aucun : PT02 ne s'est pas réchauffée"))
+            row("Dernier envoi", s.dim(f"aucun : {reg_name} ne s'est pas réchauffée"))
 
     p = snap.get("predictions")
     if not p:
@@ -253,7 +254,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         dis = p.get("disagreement")
         dis_txt = "" if dis is None else (s.warn(f"  désaccord {_num(dis, 2)} °C") if dis > p["disagreement_threshold"]
                                          else f"  écart {_num(dis, 2)} °C")
-        row("Prédiction ML", s.pred(f"PT02 dans {horizon // 60} min : " + "   ".join(parts)) + dis_txt)
+        row("Prédiction ML", s.pred(f"{reg_name} dans {horizon // 60} min : " + "   ".join(parts)) + dis_txt)
 
     for i, part in enumerate(_ml_status(s)):
         row("Modèle ML" if i == 0 else "", part)
@@ -271,7 +272,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     control = data.control_series(db_path, end - minutes * 60, end, max_points=600)
     graph_w = max(10, width - label_w - 22)
     for label, values, unit, digits in (
-        (f"PT02 · {minutes} min", series["series"]["pt02"], "°C", 1),
+        (f"{reg_name} · {minutes} min", series["series"][config.TARGET_COLUMN], "°C", 1),
         (f"Fréquence · {minutes} min", series["series"]["freq_pompe"], "Hz", 0),
         (f"Puissance · {minutes} min", series["series"]["thermal_power_kw"], "kW", 1),
         (f"Consigne · {minutes} min", control["setpoint"], "%", 0),
@@ -282,7 +283,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         elif hi == lo:  # valeur strictement constante : ligne médiane, signalée comme telle
             line = "".join("▄" if ch != " " else " " for ch in line)
             scale = f" {_num(lo, digits)} {unit} CONSTANTE"
-            scale = s.warn(scale) if label.startswith("PT02") else scale
+            scale = s.warn(scale) if label.startswith(reg_name) else scale
         else:
             scale = f" {_num(lo, digits)}–{_num(hi, digits)} {unit}"
         row(label, line + s.dim(scale))

@@ -89,8 +89,8 @@ class TestBuildTargetMergeAsof:
         """Vérifie que la cible correspond bien à la valeur réelle à t+horizon,
         pas à une ligne arbitrairement décalée."""
         t = pd.date_range("2026-01-01", periods=50, freq="10s")
-        pt02 = np.arange(50, dtype=float)  # valeurs faciles à vérifier : 0, 1, 2, ...
-        df = pd.DataFrame({"timestamp": t, "pt02": pt02})
+        pt01 = np.arange(50, dtype=float)  # valeurs faciles à vérifier : 0, 1, 2, ...
+        df = pd.DataFrame({"timestamp": t, "pt01": pt01})
 
         merged = build_target(df, horizon_seconds=100, tolerance_seconds=2)
         # À t=0 (index 0), t+100s correspond à l'index 10 (10 * 10s = 100s) -> valeur 10.
@@ -104,8 +104,8 @@ class TestBuildTargetMergeAsof:
             list(pd.date_range("2026-01-01 00:00:00", periods=5, freq="10s"))
             + list(pd.date_range("2026-01-01 01:00:00", periods=5, freq="10s"))
         )
-        pt02 = list(range(10))
-        df = pd.DataFrame({"timestamp": timestamps, "pt02": pt02})
+        pt01 = list(range(10))
+        df = pd.DataFrame({"timestamp": timestamps, "pt01": pt01})
 
         merged = build_target(df, horizon_seconds=100, tolerance_seconds=2)
         # Pour les premières lignes (avant le trou), t+100s tombe dans le trou :
@@ -118,7 +118,7 @@ class TestBuildTargetMergeAsof:
     def test_build_target_never_pairs_across_continuity_gap(self):
         timestamps = list(pd.date_range("2026-01-01", periods=3, freq="10s"))
         timestamps += list(pd.date_range("2026-01-01 01:00:00", periods=3, freq="10s"))
-        df = pd.DataFrame({"timestamp": timestamps, "pt02": range(6)})
+        df = pd.DataFrame({"timestamp": timestamps, "pt01": range(6)})
 
         merged = build_target(df, horizon_seconds=3600, tolerance_seconds=2)
 

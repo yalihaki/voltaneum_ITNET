@@ -22,6 +22,7 @@
     <a href="#alertes" data-tab="alertes">Alertes <span class="badge" id="alert-badge" hidden></span></a>
     <a href="#pid" data-tab="pid">PID</a>
     <a href="#modeles" data-tab="modeles">Modèles <span class="badge info" id="model-badge" hidden>1</span></a>
+    <a href="#catalogue" data-tab="catalogue">Catalogue</a>
     <a href="#reglages" data-tab="reglages">Réglages</a>
   </nav>
   <div class="status">
@@ -40,13 +41,13 @@
 <!-- ================================================================ SUPERVISION -->
 <section class="view" data-view="supervision" aria-label="Supervision">
   <div class="tiles" id="tiles">
-    <article class="tile" data-key="pt02">
-      <span class="lbl" id="lbl-pt02">PT02 · liquide diélectrique (régulé)</span>
+    <article class="tile" data-key="regulated">
+      <span class="lbl" id="lbl-regulated">PT01 · diélectrique entrant (régulé)</span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
     </article>
     <article class="tile tile-pred" data-key="pred">
-      <span class="lbl">Prédiction PT02 <span class="hz"></span></span>
+      <span class="lbl">Prédiction <span class="reg-name">PT01</span> <span class="hz"></span></span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub hint">aucune prédiction récente</span>
     </article>
@@ -79,14 +80,14 @@
         <div class="pb syno-wrap">
           <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : dry cooler et boucle de liquide de refroidissement (PT03, PT04) à gauche, échangeur, liquide diélectrique (PT01, PT02) et cuve à droite">
             <!-- Boucle du liquide de refroidissement (dry cooler <-> échangeur), à gauche -->
-            <!-- Sens déduit des mesures (à confirmer) : PT03 = réchauffé, vers le dry cooler ;
-                 PT04 = refroidi par le dry cooler, vers l'échangeur. -->
+            <!-- Dessin inchangé ; seuls les noms des sondes sont mis à jour (config.SENSOR_LABELS) :
+                 PT03 = air sortant (chaud), PT04 = air entrant (froid). -->
             <path class="pipe cool" d="M356 110 H200"/>
             <path class="flow" d="M356 110 H200"/>
             <path class="pipe cool" d="M200 220 H356"/>
             <path class="flow" d="M200 220 H356"/>
             <!-- Boucle du liquide diélectrique (échangeur <-> cuve), à droite -->
-            <!-- PT01 = refroidi par l'échangeur, retourne à la cuve ; PT02 = bain, vers l'échangeur. -->
+            <!-- PT01 = diélectrique entrant (régulé) ; PT02 = diélectrique sortant. -->
             <path class="pipe diel" d="M416 110 H616"/>
             <path class="flow" d="M416 110 H616"/>
             <path class="pipe diel" d="M616 220 H416"/>
@@ -101,6 +102,8 @@
 
             <rect class="equip" x="356" y="80" width="60" height="170" rx="4"/>
             <path class="plates" d="M368 92 V238 M380 92 V238 M392 92 V238 M404 92 V238"/>
+            <rect class="equip" x="364" y="153" width="44" height="22" rx="3"/>
+            <text class="t-lbl" x="386" y="169" text-anchor="middle">CDU</text>
             <text class="t-hx" x="386" y="266" text-anchor="middle">échangeur</text>
 
             <rect class="equip" x="616" y="70" width="120" height="190" rx="6"/>
@@ -128,7 +131,7 @@
 
       <section class="panel">
         <header class="ph">
-          <h2>Tendance PT02</h2>
+          <h2>Tendance <span class="reg-name">PT01</span></h2>
           <div class="seg" role="group" aria-label="Période" id="sup-range">
             <button type="button" data-min="60">1 h</button>
             <button type="button" data-min="360" aria-pressed="true">6 h</button>
@@ -188,7 +191,7 @@
           </div>
           <div class="cmode" id="cmode" hidden><span class="cmode-lbl">Étape</span><b id="cmode-val">—</b><small id="cmode-why"></small></div>
           <dl class="kv" id="cooling">
-            <dt>Température cible (PT02)</dt><dd data-k="target_temp">—</dd>
+            <dt>Température cible (<span class="reg-name">PT01</span>)</dt><dd data-k="target_temp">—</dd>
             <dt>Ventilateur : marche au-dessus de</dt><dd data-k="fan_on_above_temp">—</dd>
             <dt>Ventilateur : arrêt en dessous de</dt><dd data-k="fan_off_below_temp">—</dd>
             <dt>Fréquence minimale conseillée</dt><dd data-k="fan_min_freq_hz">—</dd>
@@ -340,7 +343,7 @@
     <div class="counts compact-counts" id="pid-summary"></div>
     <div class="chart-box mid" id="chart-pid-history"></div>
     <div class="table-wrap tall-table"><table class="table pid-table" id="pid-table">
-      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r">PT02</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
+      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r reg-name">PT01</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
       <tbody><tr><td colspan="12" class="empty">Chargement…</td></tr></tbody>
     </table></div>
     <p class="chart-foot">Cliquez une ligne pour voir le message JSON exact transmis au broker.</p>
@@ -397,6 +400,31 @@
 </section>
 
 <!-- ================================================================ RÉGLAGES -->
+<!-- ================================================================ CATALOGUE -->
+<section class="view" data-view="catalogue" aria-label="Catalogue de l'automate" hidden>
+  <p class="lead">Tous les points que la passerelle de l'automate publie, ce qu'ils représentent et ce que Voltaneum en fait. Lecture seule : aucun point n'est jamais écrit.</p>
+  <div class="counts" id="cat-counts"></div>
+  <section class="panel">
+    <header class="ph wrap">
+      <h2>Points de l'automate</h2>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Filtre" id="cat-filter">
+          <button type="button" data-f="" aria-pressed="true">Tous</button>
+          <button type="button" data-f="used">Utilisés</button>
+          <button type="button" data-f="unused">Non utilisés</button>
+          <button type="button" data-f="writable">Modifiables</button>
+        </div>
+        <label class="field search"><span class="sr">Rechercher</span><input type="search" id="cat-search" placeholder="Rechercher un point"></label>
+      </div>
+    </header>
+    <div class="pb" id="cat-source"></div>
+    <div class="table-wrap"><table class="table cat-table" id="cat-table">
+      <thead><tr><th>Point</th><th>Code</th><th>Accès</th><th class="r">Dernière valeur</th><th>Utilisé</th><th>Description</th><th>Utilisation dans Voltaneum</th></tr></thead>
+      <tbody><tr><td colspan="7" class="empty">Chargement…</td></tr></tbody>
+    </table></div>
+  </section>
+</section>
+
 <section class="view" data-view="reglages" aria-label="Réglages" hidden>
   <p class="lead">Réglages en vigueur sur le contrôleur, en lecture seule. Pour les modifier : fichier <code>.env</code> puis redémarrage des services. Aucun identifiant n'est affiché ici.</p>
   <div class="grid-2" id="settings"></div>

@@ -197,6 +197,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._export(name, *_range_from_query(query, time.time()))
             elif route == "/api/exports":
                 self._json(exports.describe())
+            elif route == "/api/catalogue":
+                self._json(data.catalogue(self.server.db_path))
             elif route == "/api/settings":
                 self._json(data.settings_summary())
             elif route == "/api/mode":

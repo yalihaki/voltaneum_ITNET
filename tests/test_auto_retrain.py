@@ -36,7 +36,7 @@ class TestJudge:
 
     def test_refused_when_training_refused(self):
         eligible, reason = judge({"status": "insufficient_variance"})
-        assert not eligible and "PT02" in reason
+        assert not eligible and "PT01" in reason
 
     def test_refused_when_not_enough_better_than_persistence(self):
         eligible, reason = judge(_report(0.45, 0.5))          # 10 % de mieux < 20 %

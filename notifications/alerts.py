@@ -30,8 +30,8 @@ logger = logging.getLogger("voltaneum.alerts")
 # Délai avant de retenter une alerte dont l'envoi a échoué (secondes). Sans lui, un
 # échec SMTP serait « couvert » par le délai entre e-mails et l'alerte perdue 30 min.
 SEND_RETRY_SECONDS = 60
-# Délai entre deux e-mails propre à certaines règles (minutes). Un défaut DURABLE (PT02 figée,
-# cas actuel sur l'installation) n'a pas à être rappelé toutes les 30 min : une fois par jour.
+# Délai entre deux e-mails propre à certaines règles (minutes). Un défaut DURABLE (sonde régulée
+# figée) n'a pas à être rappelé toutes les 30 min : une fois par jour.
 RULE_COOLDOWN_MINUTES: dict[str, int] = {"oil_sensor_frozen": 24 * 60}
 
 
@@ -124,8 +124,8 @@ def _compute_efficiency(telemetry: dict) -> float | None:
     """Efficacité de l'échangeur (définition usuelle, entre 0 et 1) :
 
         ε = plus grand des deux écarts de circuit / écart maximal disponible
-          = max(T diélectrique chaud − froid, T refroidissement chaud − froid)
-            / (T diélectrique chaud − T refroidissement froid)
+          = max(T diélectrique chaud − froid, T air chaud − froid)
+            / (T diélectrique chaud − T air froid)
 
     Les sondes chaude / froide de chaque circuit viennent de config (DIELECTRIC_HOT_COLUMN…).
     None si une mesure manque ou si l'écart disponible est trop faible pour être interprété (pas
@@ -196,15 +196,16 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
             alerts.append({"level": level, "rule_name": rule_name, "message": message})
             state["last_sent_at"][rule_name] = now
 
-    # --- CRITIQUE : grandeur régulée (PT02, liquide diélectrique) au-delà du seuil critique ---
+    # --- CRITIQUE : grandeur régulée (PT01, diélectrique entrant) au-delà du seuil critique ---
     # Immédiat : aucune confirmation multi-cycles (sécurité du procédé).
-    t_oil = _number(telemetry, "pt02")
+    regulated = config.TARGET_COLUMN.upper()
+    t_oil = _number(telemetry, config.TARGET_COLUMN)
     if t_oil is not None and t_oil > config.CRITICAL_TEMP:
         emit("CRITIQUE", "critical_temp",
-             f"PT02 (liquide diélectrique) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
+             f"{regulated} (liquide diélectrique, régulé) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
 
     # --- CRITIQUE : autres sondes du liquide diélectrique (cuve) au-delà de leur seuil ---
-    # C'est le liquide dans lequel baignent les équipements : sa température les protège. PT02
+    # C'est le liquide dans lequel baignent les équipements : sa température les protège. PT01
     # (diélectrique, grandeur régulée) relève déjà de la règle précédente. Immédiat.
     dielectric = [c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN]
     overheated = [(column.upper(), value) for column in dielectric
@@ -251,13 +252,13 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
              f"Aucune mesure reçue de la passerelle {since} {silence / 60:.1f} min "
              f"(seuil {config.TELEMETRY_TIMEOUT_SECONDS / 60:.0f} min)")
 
-    # --- ATTENTION : PT02 (grandeur régulée) absente ou figée ------------------
-    # Sans PT02 valide, AUCUNE consigne n'est publiée : l'automate retombe sur sa propre
-    # régulation. Un PT02 qui ne bouge plus d'un dixième de degré pendant une heure alors que
+    # --- ATTENTION : PT01 (grandeur régulée) absente ou figée ------------------
+    # Sans PT01 valide, AUCUNE consigne n'est publiée : l'automate retombe sur sa propre
+    # régulation. Une PT01 qui ne bouge plus d'un dixième de degré pendant une heure alors que
     # le reste vit est presque toujours un mauvais point de passerelle ou une sonde bloquée.
-    # PT02 est lue au degré près : constante pendant une heure sur un procédé stable n'est PAS une
-    # panne. Elle n'est jugée figée que si l'autre sonde du circuit (PT01) a bougé d'au moins
-    # SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS pendant ce temps (sans PT01 : la durée seule fait foi).
+    # Constante pendant une heure sur un procédé stable n'est PAS forcément une panne : elle n'est
+    # jugée figée que si l'autre sonde du circuit (PT02) a bougé d'au moins
+    # SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS pendant ce temps (sans PT02 : la durée seule fait foi).
     reference = next((c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN), None)
     if telemetry is not None and _is_new_sample(state, "oil_sensor", telemetry):
         oil = _number(telemetry, config.TARGET_COLUMN)
@@ -277,7 +278,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
         missing_since = state.get("oil_missing_since")
         if missing_since is not None and now - missing_since >= config.OIL_SENSOR_MISSING_ALERT_SECONDS:
             emit("ATTENTION", "oil_sensor_missing",
-                 f"PT02 (grandeur régulée) sans valeur valide depuis {(now - missing_since) / 60:.0f} min alors que "
+                 f"{regulated} (grandeur régulée) sans valeur valide depuis {(now - missing_since) / 60:.0f} min alors que "
                  "la passerelle émet : aucune consigne n'est publiée, l'automate régule seul. "
                  "Vérifier la sonde et le point sur la passerelle.")
         unchanged_since = state.get("oil_unchanged_since")
@@ -289,7 +290,7 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
                 and now - unchanged_since >= frozen_after and neighbour_moved):
             moved = "" if ref_span is None else f" alors que {str(reference).upper()} a varié de {ref_span:.1f} °C"
             emit("ATTENTION", "oil_sensor_frozen",
-                 f"PT02 figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min{moved} : "
+                 f"{regulated} figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min{moved} : "
                  "valeur suspecte (mauvais point de passerelle, consigne lue à la place de la mesure, sonde "
                  "bloquée ?). À vérifier avec l'automaticien.")
 

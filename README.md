@@ -1,7 +1,7 @@
 # Voltaneum / ITNET
 
 Supervision et aide à la régulation d'un refroidissement par immersion (cuve de liquide diélectrique → échangeur → boucle de refroidissement → dry cooler) :
-collecte des mesures de la passerelle, historique SQLite, alertes, prédiction de PT02,
+collecte des mesures de la passerelle, historique SQLite, alertes, prédiction de PT01,
 conditions de refroidissement et consigne PID **informatives** pour l'automate, interface web.
 
 > Voltaneum ne commande jamais l'automate ni le variateur. Il publie des conditions et une
@@ -38,6 +38,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
 | `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) et 10 dernières lignes (remplace `check_data.py`) ; options `--rows 50`, `--hours 24`, `--csv export.csv` |
+| `./voltaneum catalogue` | **catalogue de l'automate** : chaque point, sa dernière valeur, utilisé ou non et comment (`--details`, `--used`) |
 | `./voltaneum export` | **un fichier CSV par élément** (mesures, consignes PID, alertes, prédictions, ré-entraînements) dans `exports/` ; `--days 7` (défaut), `--hours 24`, `--all`, `--only mesures,alertes` |
 | `./voltaneum model` | modèle proposé : `accept`, `reject --note "…"`, `rollback` |
 | `./voltaneum restore` | lister les sauvegardes ; `restore <nom>` pour en restaurer une (après `stop`) |
@@ -66,10 +67,11 @@ toutes les 5 s (Ctrl+C pour quitter). Options : `--minutes 360` (courbes sur 6 h
 ssh -N -L 8080:localhost:8080 itnet@controller
 ```
 
-Écrans : **Supervision** (mesures en direct, synoptique, tendance et prévision de PT02, consigne
+Écrans : **Supervision** (mesures en direct, synoptique, tendance et prévision de PT01, consigne
 PID expliquée, prédiction, conditions de refroidissement, alertes, état du système),
 **Historique** (période au choix, **exports CSV** des cinq éléments sur cette période), **Alertes**
-(export), **PID** (réglages, messages MQTT exacts, consignes envoyées, export), **Modèles**
+(export), **PID** (réglages, messages MQTT exacts, consignes envoyées, export), **Catalogue**
+(tous les points de l'automate : description, dernière valeur, utilisé ou non et comment), **Modèles**
 (ré-entraînement, erreur en production, exports), **Réglages**.
 
 Exports au format Excel français : séparateur « ; », virgule décimale, UTF-8 avec BOM, heure UTC
@@ -86,7 +88,7 @@ Un seul processus, dont chaque composant est supervisé et relancé s'il s'arrê
   une valeur hors plage, non finie ou trop ancienne (`SENSOR_MAX_AGE_SECONDS`) est enregistrée comme absente ;
 - **régulation** (60 s) : prédiction (si un modèle validé est installé), PID, conditions de
   refroidissement selon l'air extérieur ; rien n'est calculé ni publié sur des mesures périmées
-  ou sans PT02, et le PID repart de zéro après une telle coupure ;
+  ou sans PT01, et le PID repart de zéro après une telle coupure ;
 - **alertes** : évaluées dans le processus, sans broker (voir §5) ;
 - **sauvegarde quotidienne** vérifiée de la base (`backups/daily`, 7 gardées) ;
 - **stockage** : sauvegarde vérifiée puis purge des plus anciennes lignes quand la base approche
@@ -100,12 +102,10 @@ modèle, le PID tourne sans anticipation. Sans e-mail, les alertes restent dans 
 capteur extérieur (cas actuel, `OUTDOOR_SENSOR_MODE=none`), la température vient de l'API météo
 (interrogée toutes les 10 min, la source est enregistrée).
 
-**Mesures et physique.** Les équipements chauffent le **liquide diélectrique** de la cuve ; la pompe
-l'envoie à l'échangeur, où un **liquide de refroidissement** emporte la chaleur vers le dry cooler,
-qui la rend à l'air. PT01 / PT02 = diélectrique (PT02 = bain, grandeur régulée et prédite ; PT01 =
-retour refroidi), PT03 / PT04 = refroidissement (PT03 vers le dry cooler, PT04 en sortie du dry
-cooler). Circuits confirmés par l'automaticien ; côté chaud / froid déduit des mesures (PT02 > PT01 >
-PT03 > PT04), à confirmer. Détail complet : cahier des charges §2.2 bis. S'y ajoute la **puissance
+**Mesures et physique** (rôle des sondes donné par l'exploitant le 19/10/2026). Les équipements
+chauffent le **liquide diélectrique** de l'armoire ; il en ressort chaud (**PT02**, non régulé) et y
+rentre refroidi (**PT01**, **grandeur régulée et prédite**). Côté air : **PT04** = air entrant
+(froid), **PT03** = air sortant (chaud). Ordre mesuré cohérent : PT02 > PT01 > PT03 > PT04. S'y ajoute la **puissance
 dissipée estimée** (débit HT01 × écart PT02 − PT01 × propriétés du diélectrique), affichée comme
 estimation tant que débit, fluide et sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
 
@@ -113,19 +113,19 @@ estimation tant que débit, fluide et sondes ne sont pas confirmés (`THERMAL_PO
 
 | Règle | Niveau | Déclenchement |
 |---|---|---|
-| `critical_temp` | CRITIQUE | PT02 > `CRITICAL_TEMP` (immédiat) |
-| `dielectric_critical_temp` | CRITIQUE | PT01 (diélectrique ; PT02 relève de `CRITICAL_TEMP`) > `DIELECTRIC_CRITICAL_TEMP` (immédiat) |
+| `critical_temp` | CRITIQUE | PT01 > `CRITICAL_TEMP` (immédiat) |
+| `dielectric_critical_temp` | CRITIQUE | PT02 (diélectrique sortant ; PT01 relève de `CRITICAL_TEMP`) > `DIELECTRIC_CRITICAL_TEMP` (immédiat) |
 | `pump_without_flow` | CRITIQUE | fréquence > 5 Hz et débit < 0,5 m³/h, confirmé |
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
-| `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |
-| `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT01 a bougé d'au moins 1 °C |
-| `cooling_ineffective` | ATTENTION | consigne au maximum et PT02 ne baisse toujours pas (ventilateur, dry cooler ou automate à vérifier) |
+| `oil_sensor_missing` | ATTENTION | PT01 absente alors que la passerelle émet (aucune consigne publiée) |
+| `oil_sensor_frozen` | ATTENTION | PT01 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT02 a bougé d'au moins 1 °C |
+| `cooling_ineffective` | ATTENTION | consigne au maximum et PT01 ne baisse toujours pas (ventilateur, dry cooler ou automate à vérifier) |
 | `model_disagreement` | ATTENTION | les deux modèles divergent (la prédiction n'est alors pas utilisée) |
 | `outdoor_sensor_weather_mismatch` | ATTENTION | capteur extérieur et météo très différents |
 | `storage_*` | ATTENTION / CRITIQUE | stockage presque plein, purge, sauvegarde impossible (dont la quotidienne) |
 
 Chaque alerte est journalisée une fois (onglet Alertes) et envoyée par e-mail si SMTP est
-configuré, avec un délai entre deux e-mails d'une même règle (un jour pour PT02 figée). Les
+configuré, avec un délai entre deux e-mails d'une même règle (un jour pour PT01 figée). Les
 e-mails partent d'un thread dédié : un serveur SMTP lent ne retarde jamais la collecte. La règle d'efficacité de
 l'échangeur est désactivée tant que sa formule n'est pas validée (`EFFICIENCY_ALERT_ENABLED`).
 
@@ -143,7 +143,7 @@ pas »), sous 0,5 °C, et mesurée sur une période de test d'au moins 3 fois l'
 ./voltaneum model rollback   # revenir au précédent
 ```
 
-Les modèles reçoivent la valeur actuelle de PT02 en plus des autres mesures. Un modèle qui ne
+Les modèles reçoivent la valeur actuelle de PT01 en plus des autres mesures. Un modèle qui ne
 bat pas la persistance n'est jamais sauvegardé ; un seul ré-entraînement tourne à la fois. Changer d'horizon change
 l'anticipation du PID (pensée pour 10 min) : la proposition le signale. Au-delà de quelques
 heures, le modèle ne connaît ni la charge à venir ni la météo prévue.
@@ -151,10 +151,10 @@ heures, le modèle ne connaît ni la charge à venir ni la météo prévue.
 ## 7. Régulation et messages MQTT
 
 **Régulation par étapes.** Le PID est calculé chaque minute, mais un message n'est envoyé qu'aux
-étapes : rien au repos ; **activation** quand PT02 dépasse la cible, monte, ou est prédite au-dessus
+étapes : rien au repos ; **activation** quand PT01 dépasse la cible, monte, ou est prédite au-dessus
 (air extérieur seul si l'air est sous 10 °C, sinon ventilateur) ; puis **10 min d'attente** pour voir
-l'effet ; **maintien** si PT02 baisse, sinon **renforcement** (air seul → ventilateur → +20 % →
-100 %, puis alerte « refroidissement insuffisant ») ; **fin** quand PT02 revient 1 °C sous la cible ;
+l'effet ; **maintien** si PT01 baisse, sinon **renforcement** (air seul → ventilateur → +20 % →
+100 %, puis alerte « refroidissement insuffisant ») ; **fin** quand PT01 revient 1 °C sous la cible ;
 **critique** (100 %) immédiatement au-delà de 55 °C. Détail : cahier des charges §6.4.
 
 Messages (QoS 0, non retenus, quand un broker est joignable) :
@@ -173,12 +173,16 @@ Bandes extérieures, hystérésis et seuils sont **indicatifs, à valider avec l
 
 Tous les réglages sont dans `.env` (modèle commenté : `.env.example`), lus et vérifiés au
 démarrage : une configuration incohérente est refusée avec un message qui nomme la variable.
+**Aucune adresse n'est écrite dans le code** : passerelle (`MANAGE_API_URL`, `IOT_API_URL`, `WS_URL`,
+`SENSOR_DRIVER_NODE`), broker (`MQTT_HOST`, `MQTT_PORT`), interface (`DASHBOARD_HOST`, `DASHBOARD_PORT`),
+`SMTP_PORT` (si `SMTP_HOST` est renseigné) et position du site (`VOLTANEUM_LAT`, `VOLTANEUM_LON`) viennent
+uniquement de `.env` ; une variable absente empêche le démarrage.
 Après modification : `./voltaneum restart`.
 
 ## 9. Sécurité
 
 - aucune écriture vers l'automate : seuls des points en lecture seule de la passerelle sont lus ;
-- aucun identifiant dans le code ; `.env` en `0600`, jamais versionné ;
+- aucun identifiant ni aucune adresse dans le code ; `.env` en `0600`, jamais versionné ;
 - MQTT : authentification et TLS vérifié configurables (un broker distant sans TLS est signalé) ;
 - e-mail en STARTTLS vérifié ; modèles en `0600` dans un dossier `0700` ;
 - la passerelle ne parle qu'en HTTP / WebSocket non chiffrés : réseau industriel ou VPN uniquement.
@@ -189,9 +193,9 @@ Après modification : `./voltaneum restart`.
 |---|---|
 | `./voltaneum status` : ARRÊTÉ | `./voltaneum logs`, puis `logs/voltaneum.err` ; `./voltaneum diagnose` |
 | bandeau rouge « Mesures périmées » | passerelle injoignable : réseau / VPN (`./voltaneum diagnose`) |
-| alerte `oil_sensor_frozen` | vérifier le point PT02 sur la passerelle avec l'automaticien |
-| aucune consigne PID | PT02 absente ou mesures périmées (voir l'onglet PID) |
-| aucune prédiction | aucun modèle validé : `./voltaneum watch` donne la cause du refus (souvent : PT02 ou la pompe constantes, rien à apprendre) |
+| alerte `oil_sensor_frozen` | vérifier le point PT01 sur la passerelle avec l'automaticien |
+| aucune consigne PID | PT01 absente ou mesures périmées (voir l'onglet PID) |
+| aucune prédiction | aucun modèle validé : `./voltaneum watch` donne la cause du refus (souvent : PT01 ou la pompe constantes, rien à apprendre) |
 | interface injoignable | port `DASHBOARD_PORT` déjà utilisé (voir le journal) ; tunnel SSH |
 | base corrompue ou fausse manœuvre | `./voltaneum stop`, `./voltaneum restore`, `./voltaneum restore <nom>`, `./voltaneum` |
 

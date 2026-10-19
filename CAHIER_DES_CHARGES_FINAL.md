@@ -17,7 +17,7 @@ Le système doit :
 1. collecter les mesures de la passerelle industrielle ;
 2. valider et historiser les mesures dans SQLite ;
 3. publier la télémétrie sur MQTT ;
-4. prédire l'évolution de la température `PT02` ;
+4. prédire l'évolution de la température `PT01` (diélectrique entrant, grandeur régulée) ;
 5. comparer les modèles ML à une baseline de persistance ;
 6. mesurer la qualité des prédictions après observation de la valeur réelle ;
 7. publier la température cible et les conditions de refroidissement à suivre (seuils de marche et d'arrêt du ventilateur selon la température extérieure) ;
@@ -46,14 +46,16 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | **liquide diélectrique**, sortie d'échangeur (refroidi, retourne à la cuve)* | `pt01` |
-| `PT02` | **liquide diélectrique**, bain (le plus chaud), grandeur régulée et prédite* | `pt02` |
-| `PT03` | **liquide de refroidissement**, sortie d'échangeur (réchauffé, va au dry cooler)* | `pt03` |
-| `PT04` | **liquide de refroidissement**, sortie du dry cooler (le plus froid)* | `pt04` |
+| `PT01` | **liquide diélectrique ENTRANT dans l'armoire** (refroidi) — **grandeur régulée et prédite** | `pt01` |
+| `PT02` | **liquide diélectrique SORTANT de l'armoire** (le plus chaud), non régulé | `pt02` |
+| `PT03` | **air sortant**, chaud | `pt03` |
+| `PT04` | **air entrant**, froid | `pt04` |
 | `HT01` | débit du circuit « bain d'huile », donc diélectrique (à confirmer) | `ht01` |
 | fréquence | fréquence de la **pompe** (point `PUMP`, à confirmer) | `freq_pompe` |
 
-\* Circuit confirmé par l'automaticien ; côté chaud / froid **déduit des mesures**, à confirmer (`DIELECTRIC_HOT_COLUMN`, `DIELECTRIC_COLD_COLUMN`, `COOLANT_HOT_COLUMN`, `COOLANT_COLD_COLUMN`).
+**Mise à jour du 19/10/2026 (exploitant)** : la grandeur régulée est désormais **PT01** (`config.TARGET_COLUMN`), et PT03 / PT04 sont des températures d'**air**. Partout où ce document dit « PT02 régulée / bain », lire **PT01** ; l'alerte `dielectric_critical_temp` porte sur **PT02** et l'alerte « sonde figée » sur PT01 (référence PT02). Les réglages `COOLANT_*` désignent le côté air (noms conservés). Les modèles entraînés pour PT02 sont refusés (liste d'entrées différente) : un ré-entraînement est nécessaire.
+
+Les sections ci-dessous qui décrivent l'échangeur et la boucle d'eau glycolée datent de la lecture du 16/10/2026.
 | capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
 
 Plages de validité (`config.SENSOR_VALID_RANGES`) :
@@ -95,12 +97,11 @@ Grandeurs dérivées, enregistrées à chaque instantané :
 - `humidity_outdoor` : humidité relative extérieure (%), fournie par l'API météo avec la température ; enregistrée mais ni affichée ni exportée pour l'instant ;
 - `thermal_power_kw` : puissance dissipée **estimée** (voir ci-dessus). Elle n'est pas une entrée des modèles.
 
-### 2.3 Adresses par défaut
+### 2.3 Adresses
 
-Les adresses sont configurables dans `.env` et ne doivent pas être considérées comme accessibles depuis Internet :
+Aucune adresse n'est écrite dans le code : passerelle (`MANAGE_API_URL`, `IOT_API_URL`, `WS_URL`, `SENSOR_DRIVER_NODE`), broker (`MQTT_HOST`, `MQTT_PORT`), interface (`DASHBOARD_HOST`, `DASHBOARD_PORT`), SMTP (`SMTP_PORT` si `SMTP_HOST` est renseigné) et position du site (`VOLTANEUM_LAT`, `VOLTANEUM_LON`) sont lus **uniquement dans `.env`** ; une valeur absente fait refuser le démarrage par `validate_config()` en nommant la variable. Exemple (`.env.example`) :
 
 ```env
-GATEWAY_HOST=10.0.1.33
 MANAGE_API_URL=http://10.0.1.33/ManageApi/Base.Auth.php
 IOT_API_URL=http://10.0.1.33:8001/iot/query_all_points
 WS_URL=ws://10.0.1.33:91
@@ -245,7 +246,7 @@ Si la passerelle est muette depuis plus de `CONTROL_MAX_DATA_AGE_SECONDS` (120 s
 
 ### 6.2 Catalogue
 
-`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage. Deux catalogues réels ont été relevés le 9 octobre 2026 : `KEYNAME_TO_COLUMN` accepte les noms des deux passerelles (`PT01-temperature`, `Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Deux points alimentant la même colonne sont signalés par un avertissement. **À confirmer avec l'automaticien** : `PUMP` est la fréquence de la pompe (30 Hz constants pendant que le dry cooler démarre et s'arrête : ce n'est pas le ventilateur).
+`POST IOT_API_URL` avec le token. Seuls les points du `SENSOR_DRIVER_NODE` configuré sont retenus. Le mapping `KeyNode -> colonne` est validé avant usage. Deux catalogues réels ont été relevés le 9 octobre 2026 : `KEYNAME_TO_COLUMN` accepte les noms des deux passerelles (`PT01-temperature`, `Pump frequency` sur 10.0.1.33 ; `PT01`, `PUMP` sur 10.0.1.34 ; `HT01` commun). Seuls des points en lecture seule sont mappés : les points modifiables du catalogue (`ON/OFF`, `Temperature setpoint`, bypass de sécurité…) n'y figurent jamais. Deux points alimentant la même colonne sont signalés par un avertissement. Le catalogue **complet** (tous appareils, points utilisés ou non) est enregistré dans la table `gateway_catalogue` à chaque rafraîchissement, avec la dernière valeur brute reçue de chaque point du nœud capteur ; il est consultable dans l'onglet **Catalogue** de l'interface et par `./voltaneum catalogue` (description, accès lecture / modifiable, utilisé ou non et comment). Les points modifiables y figurent pour information : ils ne sont jamais écrits. **À confirmer avec l'automaticien** : `PUMP` est la fréquence de la pompe (30 Hz constants pendant que le dry cooler démarre et s'arrête : ce n'est pas le ventilateur).
 
 ### 6.3 WebSocket
 
