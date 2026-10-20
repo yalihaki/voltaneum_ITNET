@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ml.features import TREND_FEATURES
 from ml.predictor import DualModelPredictor
 from ml.train import train_and_compare
 import config
@@ -63,6 +64,8 @@ SAMPLE_FEATURES = {
     "ht01": 39.0,
     "freq_pompe": 30.0,
     "temp_outdoor": 15.0,
+    # Tendances (ml/features.py) : procédé stable.
+    **{name: 0.0 for name in TREND_FEATURES},
 }
 
 
@@ -183,10 +186,13 @@ def test_model_on_a_subset_of_inputs_is_accepted_and_checks_its_domain(trained_m
 
     from ml.predictor import compatible_features
 
-    report = {"features": ["pt01", "pt02", "temp_outdoor"], "constant_features": {"freq_pompe": 30.0}}
+    report = {"features": ["pt02", "pt01", "temp_outdoor"], "constant_features": {"freq_pompe": 30.0},
+              "target": "delta", "target_column": "pt02"}
     assert compatible_features(report)
-    assert not compatible_features({"features": ["pt02", "pt01"]})            # ordre différent
-    assert not compatible_features({"features": ["pt01", "inconnue"]})
+    assert not compatible_features({**report, "target": None})               # ancien modèle (valeur seule)
+    assert not compatible_features({**report, "target_column": "pt01"})      # autre grandeur surveillée
+    assert not compatible_features({**report, "features": ["pt01", "pt02"]})  # ordre différent
+    assert not compatible_features({**report, "features": ["pt02", "inconnue"]})
     assert not compatible_features({"features": []})
 
     predictor = DualModelPredictor(model_dir=trained_model_dir)

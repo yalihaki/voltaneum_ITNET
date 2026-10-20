@@ -179,27 +179,29 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     if regulated is not None and regulated > th["critical_temp"]:
         regulated_txt = s.crit(regulated_txt + " CRITIQUE")
     trend = snap.get("target_trend_10min")
-    row(f"Régulée ({reg_name})", f"{s.bold(regulated_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
+    row(f"Surveillée ({reg_name})", f"{s.bold(regulated_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
     def pair(columns: tuple[str, ...]) -> str:
         text = "   ".join(f"{c.upper()} {_num(v[c], 1, '°C')}" for c in columns)
         known = [v[c] for c in columns if v[c] is not None]
         return text + (f"   (écart {_num(max(known) - min(known), 1)} °C)" if len(columns) == 2 == len(known) else "")
 
-    # Liquide diélectrique : seuil critique sur les sondes autres que la régulée (PT01 a le sien).
+    # Liquide diélectrique : seuil critique sur les sondes autres que la surveillée (PT02 a le sien).
     others = [v[c] for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN and v[c] is not None]
     diel_txt = pair(config.DIELECTRIC_COLUMNS)
     if others and max(others) > th.get("dielectric_critical_temp", th["critical_temp"]):
         diel_txt = s.crit(diel_txt + "  CRITIQUE")
     row("Diélectrique", diel_txt)
-    row("Air", pair(config.COOLANT_COLUMNS))
+    row("Refroidissement", pair(config.COOLANT_COLUMNS))
     source = {"sensor": "capteur", "weather": "météo"}.get(snap.get("temp_outdoor_source") or "", "absente")
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
         f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")
     tp = th.get("thermal_power", {})
     status = "confirmée" if tp.get("confirmed") else "ESTIMATION, fluide et sondes à confirmer"
-    row("Puissance", f"{s.bold(_num(v.get('thermal_power_kw'), 1, 'kW'))} dissipée  "
-        + s.dim(f"(débit × {tp.get('hot', 'pt03').upper()}−{tp.get('cold', 'pt04').upper()} ; {status})"))
+    mean_power = snap.get("thermal_power_kw_10min")
+    row("Puissance", f"{s.bold(_num(mean_power if mean_power is not None else v.get('thermal_power_kw'), 1, 'kW'))} "
+        "dissipée (moy. 10 min)  "
+        + s.dim(f"(débit × {tp.get('hot', 'pt02').upper()}−{tp.get('cold', 'pt01').upper()} ; {status})"))
     lines.append(rule)
 
     c = snap.get("control")
@@ -207,7 +209,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
         if running is False:
             reason = "Voltaneum n'est pas démarré (./voltaneum restart)"
         elif regulated is None:
-            reason = f"{reg_name} absente : aucune consigne n'est calculée sans la grandeur régulée"
+            reason = f"{reg_name} absente : aucune consigne n'est calculée sans la grandeur surveillée"
         elif age > th["stale_after_seconds"]:
             reason = "mesures périmées : la régulation est suspendue"
         else:

@@ -30,13 +30,13 @@ def db_path():
     os.close(fd)
     sqlite_client.init_db(path)
     now = time.time()
-    # 2 h de mesures toutes les 15 s, avec un trou de 10 min et une PT01 absente.
+    # 2 h de mesures toutes les 15 s, avec un trou de 10 min et une PT02 absente.
     for i in range(480):
         ts = now - 7200 + i * 15
         if now - 3600 < ts < now - 3000:
             continue
         sqlite_client.insert_reading(
-            pt02=40.0, pt01=None if i == 100 else 34.0 + i * 0.01, pt03=39.0, pt04=30.0,
+            pt01=40.0, pt02=None if i == 100 else 34.0 + i * 0.01, pt03=39.0, pt04=30.0,
             ht01=2.5, freq_pompe=30.0, temp_outdoor=18.0, timestamp=_utc(ts), db_path=path,
             temp_outdoor_source="weather",
         )
@@ -84,7 +84,7 @@ def test_missing_database_is_reported_cleanly(tmp_path):
 def test_latest_snapshot(db_path):
     snap = data.latest_snapshot(db_path)
     assert not snap["empty"]
-    assert snap["values"]["pt01"] == pytest.approx(34.0 + 479 * 0.01)
+    assert snap["values"]["pt02"] == pytest.approx(34.0 + 479 * 0.01)
     assert snap["age_seconds"] < 60
     assert snap["temp_outdoor_source"] == "weather"
     assert snap["target_trend_10min"] == pytest.approx(0.4, abs=0.02)   # 40 mesures × 0,01 °C
@@ -153,7 +153,7 @@ def test_series_are_bucketed_and_keep_extremes(db_path):
     full = data.telemetry_series(db_path, now - 7200, now, max_points=1000)
     assert full["bucket_seconds"] == 15
     assert full["count"] == len(full["t"])
-    assert None in full["series"]["pt01"]                      # mesure absente conservée comme trou
+    assert None in full["series"]["pt02"]                      # mesure absente conservée comme trou
     assert full["t"] == sorted(full["t"])
     coarse = data.telemetry_series(db_path, now - 7200, now, max_points=40)
     assert coarse["bucket_seconds"] in data._BUCKETS
@@ -235,7 +235,7 @@ def test_static_files_are_a_closed_list(server):
 
 def test_api_routes(server):
     status, _, body = _get(server + "/api/snapshot")
-    assert status == 200 and json.loads(body)["values"]["pt02"] == 40.0
+    assert status == 200 and json.loads(body)["values"]["pt01"] == 40.0
     status, _, body = _get(server + "/api/series?minutes=60&points=100")
     payload = json.loads(body)
     assert status == 200 and payload["t"] and "predictions" in payload
@@ -243,7 +243,7 @@ def test_api_routes(server):
     assert status == 200 and len(json.loads(body)["items"]) == 2
     now_ms = int(time.time() * 1000)
     status, _, body = _get(server + f"/api/control.csv?start={now_ms - 3_600_000}&end={now_ms + 60_000}")
-    assert status == 200 and body.decode("utf-8-sig").splitlines()[0].startswith("date UTC;heure locale;PT01 (°C);cible (°C)")
+    assert status == 200 and body.decode("utf-8-sig").splitlines()[0].startswith("date UTC;heure locale;PT02 (°C);cible (°C)")
     for route in ("/api/alerts", "/api/models", "/api/system", "/api/settings", "/api/pid", "/api/retrain", "/healthz"):
         assert _get(server + route)[0] == 200, route
 

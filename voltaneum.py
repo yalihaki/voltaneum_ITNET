@@ -93,7 +93,13 @@ def cmd_retrain(args: argparse.Namespace) -> int:
         return 1
     print(f"\nRé-entraînement {summary['run_id']} : {summary['rows']} mesures.")
     for c in summary["candidates"]:
-        print(f"  {format_horizon(c['horizon_seconds']):>8}  {'FIABLE ' if c['eligible'] else 'refusé '}  {c['reason']}")
+        gain = "" if c.get("gain") is None else f"{c['gain'] * 100:+.0f} % vs persistance, "
+        target = {"delta": "cible : écart", "absolute": "cible : valeur"}.get(c.get("target") or "", "")
+        print(f"  {format_horizon(c['horizon_seconds']):>8}  {'FIABLE ' if c['eligible'] else 'refusé '}  {c['reason']}"
+              + (f"  ({gain}{target})" if gain or target else ""))
+        top = list((c.get("feature_importance") or {}).items())[:4]
+        if top:
+            print(" " * 20 + "entrées principales : " + ", ".join(f"{name} {share * 100:.0f} %" for name, share in top))
     print(f"\nDécision : {summary['reason']}.")
     if summary["decision"] == "proposed":
         print("Proposition en attente : ./voltaneum model   (puis accept ou reject)")

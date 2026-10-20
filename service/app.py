@@ -41,7 +41,7 @@ from collectors.outdoor_consistency_checker import OutdoorConsistencyChecker
 from collectors.outdoor_sensor_collector import OutdoorSensorListener, get_outdoor_temperature_http
 from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_conditions
-from control.cooling_advice import compute_cooling_conditions
+from control.cooling_advice import compute_cooling_conditions, mean_load_delta
 from control.supervisor import decide
 from control.trend import slope_per_10min
 from control.pid_controller import compute_setpoint_detailed
@@ -50,6 +50,7 @@ from database.storage_manager import StorageManager
 from messaging.mqtt import connect_with_retry, create_client
 from dashboard.server import DashboardServer, is_loopback, make_server
 from ml.monitor import run_monitor_loop
+from ml.features import TREND_COLUMNS, TREND_FEATURES, TREND_WINDOWS_SECONDS, trend_features_at
 from ml.predictor import DualModelPredictor
 from notifications.alerts import AlertEngine
 
@@ -317,7 +318,7 @@ class VoltaneumApp:
         )
         setpoint, self._pid_state, mode = detail.setpoint, detail.state, detail.mode
 
-        # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT01 se
+        # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT02 se
         # réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle chaque minute.
         now = time.time()
         slope = slope_per_10min(
@@ -333,7 +334,11 @@ class VoltaneumApp:
         if decision.event == "insuffisant" and self.alerts is not None:
             self.alerts.report("ATTENTION", "cooling_ineffective", decision.reason)
 
-        conditions = compute_cooling_conditions(t_oil, t_outdoor)
+        window_start = now - config.REGULATION_TREND_WINDOW_SECONDS
+        load_delta = mean_load_delta(
+            sqlite_client.recent_values(config.DIELECTRIC_HOT_COLUMN, window_start, db_path=config.SQLITE_DB_PATH),
+            sqlite_client.recent_values(config.DIELECTRIC_COLD_COLUMN, window_start, db_path=config.SQLITE_DB_PATH))
+        conditions = compute_cooling_conditions(t_oil, t_outdoor, load_delta)
         conditions_message = setpoint_message = None
         if event is not None and conditions is not None:
             step = {"phase": decision.phase, "event": event, "cooling_mode": decision.cooling_mode,
@@ -500,11 +505,18 @@ class VoltaneumApp:
         if self._predictor is None:
             return t_oil_current
         columns = getattr(self._predictor, "required_columns", config.FEATURE_COLUMNS)
-        if any(last_known.get(column) is None for column in columns):
+        inputs = dict(last_known)
+        if any(c in TREND_FEATURES for c in columns):
+            # Tendances : même calcul qu'à l'entraînement, sur les dernières mesures en base.
+            now = time.time()
+            since = now - max(TREND_WINDOWS_SECONDS) - 60
+            history = {c: sqlite_client.recent_values(c, since, db_path=config.SQLITE_DB_PATH) for c in TREND_COLUMNS}
+            inputs.update(trend_features_at(history, now, last_known))
+        if any(inputs.get(column) is None for column in columns):
             logger.debug("Variables d'entrée incomplètes : prédiction ML ignorée pour ce cycle.")
             return t_oil_current
         try:
-            prediction = self._predictor.predict({c: last_known[c] for c in columns})
+            prediction = self._predictor.predict({c: inputs[c] for c in columns})
         except Exception:
             logger.exception("Échec de la prédiction ML")
             return t_oil_current

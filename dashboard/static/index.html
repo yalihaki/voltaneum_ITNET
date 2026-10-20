@@ -42,12 +42,12 @@
 <section class="view" data-view="supervision" aria-label="Supervision">
   <div class="tiles" id="tiles">
     <article class="tile" data-key="regulated">
-      <span class="lbl" id="lbl-regulated">PT01 · diélectrique entrant (régulé)</span>
+      <span class="lbl" id="lbl-regulated">PT02 · diélectrique sortie armoire (surveillé)</span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub"><span class="trend num"></span><span class="hint"></span></span>
     </article>
     <article class="tile tile-pred" data-key="pred">
-      <span class="lbl">Prédiction <span class="reg-name">PT01</span> <span class="hz"></span></span>
+      <span class="lbl">Prédiction <span class="reg-name">PT02</span> <span class="hz"></span></span>
       <span class="val"><span class="v num">—</span><u>°C</u></span>
       <span class="sub hint">aucune prédiction récente</span>
     </article>
@@ -78,7 +78,7 @@
       <section class="panel">
         <header class="ph"><h2>Synoptique</h2><small id="syno-age"></small></header>
         <div class="pb syno-wrap">
-          <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : dry cooler et boucle de liquide de refroidissement (PT03, PT04) à gauche, échangeur, liquide diélectrique (PT01, PT02) et cuve à droite">
+          <svg class="syno" id="syno" viewBox="0 0 760 330" role="img" aria-label="Schéma : dry cooler et boucle de liquide de refroidissement (PT03, PT04) à gauche, CDU au centre, liquide diélectrique (PT01, PT02) et armoire à droite">
             <!-- Boucle du liquide de refroidissement (dry cooler <-> échangeur), à gauche -->
             <!-- Dessin inchangé ; seuls les noms des sondes sont mis à jour (config.SENSOR_LABELS) :
                  PT03 = air sortant (chaud), PT04 = air entrant (froid). -->
@@ -86,8 +86,8 @@
             <path class="flow" d="M356 110 H200"/>
             <path class="pipe cool" d="M200 220 H356"/>
             <path class="flow" d="M200 220 H356"/>
-            <!-- Boucle du liquide diélectrique (échangeur <-> cuve), à droite -->
-            <!-- PT01 = diélectrique entrant (régulé) ; PT02 = diélectrique sortant. -->
+            <!-- Boucle du liquide diélectrique (CDU <-> armoire), à droite -->
+            <!-- PT01 = refroidi par la CDU, vers l'armoire (régulé par l'automate) ; PT02 = sortie armoire, vers la CDU (surveillé). -->
             <path class="pipe diel" d="M416 110 H616"/>
             <path class="flow" d="M416 110 H616"/>
             <path class="pipe diel" d="M616 220 H416"/>
@@ -108,7 +108,7 @@
 
             <rect class="equip" x="616" y="70" width="120" height="190" rx="6"/>
             <rect class="liquid" x="620" y="128" width="112" height="128" rx="3"/>
-            <text class="t-lbl" x="676" y="96" text-anchor="middle">Cuve</text>
+            <text class="t-lbl" x="676" y="96" text-anchor="middle">Armoire</text>
             <text class="t-lbl" x="676" y="112" text-anchor="middle">diélectrique</text>
 
             <text class="t-loop" x="278" y="160" text-anchor="middle">liquide de</text>
@@ -131,7 +131,7 @@
 
       <section class="panel">
         <header class="ph">
-          <h2>Tendance <span class="reg-name">PT01</span></h2>
+          <h2>Tendance <span class="reg-name">PT02</span></h2>
           <div class="seg" role="group" aria-label="Période" id="sup-range">
             <button type="button" data-min="60">1 h</button>
             <button type="button" data-min="360" aria-pressed="true">6 h</button>
@@ -191,11 +191,13 @@
           </div>
           <div class="cmode" id="cmode" hidden><span class="cmode-lbl">Étape</span><b id="cmode-val">—</b><small id="cmode-why"></small></div>
           <dl class="kv" id="cooling">
-            <dt>Température cible (<span class="reg-name">PT01</span>)</dt><dd data-k="target_temp">—</dd>
+            <dt>Température cible (<span class="reg-name">PT02</span>)</dt><dd data-k="target_temp">—</dd>
             <dt>Ventilateur : marche au-dessus de</dt><dd data-k="fan_on_above_temp">—</dd>
             <dt>Ventilateur : arrêt en dessous de</dt><dd data-k="fan_off_below_temp">—</dd>
             <dt>Fréquence minimale conseillée</dt><dd data-k="fan_min_freq_hz">—</dd>
             <dt>Seuil critique</dt><dd data-k="critical_temp">—</dd>
+            <dt>Échauffement armoire (PT02 − PT01, 10 min)</dt><dd data-k="load_delta_t">—</dd>
+            <dt>Consigne PT01 conseillée (cascade)</dt><dd data-k="inlet_setpoint_advice">—</dd>
           </dl>
           <p class="note">Mêmes règles que les messages publiés sur <code>voltaneum/control/cooling_conditions</code>. Valeurs indicatives, à valider avec l'automaticien ; l'automate reste seul décisionnaire.</p>
         </div>
@@ -343,7 +345,7 @@
     <div class="counts compact-counts" id="pid-summary"></div>
     <div class="chart-box mid" id="chart-pid-history"></div>
     <div class="table-wrap tall-table"><table class="table pid-table" id="pid-table">
-      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r reg-name">PT01</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
+      <thead><tr><th>Heure</th><th class="r">Consigne</th><th>Mode</th><th class="r reg-name">PT02</th><th class="r">Écart</th><th class="r">P</th><th class="r">I</th><th class="r">D</th><th class="r">Antic.</th><th class="r">Brut</th><th class="r">Prédiction</th><th>MQTT</th></tr></thead>
       <tbody><tr><td colspan="12" class="empty">Chargement…</td></tr></tbody>
     </table></div>
     <p class="chart-foot">Cliquez une ligne pour voir le message JSON exact transmis au broker.</p>

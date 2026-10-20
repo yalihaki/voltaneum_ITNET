@@ -14,7 +14,7 @@ FMT = "%Y-%m-%d %H:%M:%S"
 def _seed(db, minutes_ago=10, predicted=27.0, actual=26.0):
     target = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     sqlite_client.init_db(db)
-    sqlite_client.insert_reading(actual, 24.0, 23.5, 23.5, 39.0, 5.0, 15.0, timestamp=target.strftime(FMT), db_path=db)
+    sqlite_client.insert_reading(24.0, actual, 23.5, 23.5, 39.0, 5.0, 15.0, timestamp=target.strftime(FMT), db_path=db)
     sqlite_client.log_prediction((target - timedelta(seconds=600)).strftime(FMT), target.strftime(FMT),
                                  600, "random_forest", predicted, db_path=db)
 

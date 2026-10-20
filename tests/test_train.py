@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 # Bibliothèque de test du module ml/train.py
+from ml.features import TREND_FEATURES, add_trend_features, trend_features_at
 from ml.train import build_target, find_longest_continuous_segment, train_and_compare
 
 
@@ -89,8 +90,8 @@ class TestBuildTargetMergeAsof:
         """Vérifie que la cible correspond bien à la valeur réelle à t+horizon,
         pas à une ligne arbitrairement décalée."""
         t = pd.date_range("2026-01-01", periods=50, freq="10s")
-        pt01 = np.arange(50, dtype=float)  # valeurs faciles à vérifier : 0, 1, 2, ...
-        df = pd.DataFrame({"timestamp": t, "pt01": pt01})
+        pt02 = np.arange(50, dtype=float)  # valeurs faciles à vérifier : 0, 1, 2, ...
+        df = pd.DataFrame({"timestamp": t, "pt02": pt02})
 
         merged = build_target(df, horizon_seconds=100, tolerance_seconds=2)
         # À t=0 (index 0), t+100s correspond à l'index 10 (10 * 10s = 100s) -> valeur 10.
@@ -104,8 +105,8 @@ class TestBuildTargetMergeAsof:
             list(pd.date_range("2026-01-01 00:00:00", periods=5, freq="10s"))
             + list(pd.date_range("2026-01-01 01:00:00", periods=5, freq="10s"))
         )
-        pt01 = list(range(10))
-        df = pd.DataFrame({"timestamp": timestamps, "pt01": pt01})
+        pt02 = list(range(10))
+        df = pd.DataFrame({"timestamp": timestamps, "pt02": pt02})
 
         merged = build_target(df, horizon_seconds=100, tolerance_seconds=2)
         # Pour les premières lignes (avant le trou), t+100s tombe dans le trou :
@@ -118,7 +119,7 @@ class TestBuildTargetMergeAsof:
     def test_build_target_never_pairs_across_continuity_gap(self):
         timestamps = list(pd.date_range("2026-01-01", periods=3, freq="10s"))
         timestamps += list(pd.date_range("2026-01-01 01:00:00", periods=3, freq="10s"))
-        df = pd.DataFrame({"timestamp": timestamps, "pt01": range(6)})
+        df = pd.DataFrame({"timestamp": timestamps, "pt02": range(6)})
 
         merged = build_target(df, horizon_seconds=3600, tolerance_seconds=2)
 
@@ -258,7 +259,8 @@ class TestTrainAndCompareDegenerateFeatures:
 
     def _make_dataframe_with_frozen_pump(self, n: int = 1500) -> pd.DataFrame:
         rng = np.random.default_rng(7)
-        t = pd.date_range("2026-09-09 15:29:10", periods=n, freq="47s")
+        # Pas de 15 s, celui des instantanés (les tendances cherchent la mesure d'il y a 5 et 10 min).
+        t = pd.date_range("2026-09-09 15:29:10", periods=n, freq="15s")
         outdoor = 20 + 6 * np.sin(np.linspace(0, 4 * np.pi, n)) + rng.normal(0, 0.3, n)
         pt02 = 27 + 0.15 * outdoor + rng.normal(0, 0.1, n)
         return pd.DataFrame(
@@ -295,7 +297,7 @@ class TestTrainAndCompareDegenerateFeatures:
             pytest.skip("données synthétiques sans gain sur la persistance")
         predictor = DualModelPredictor(model_dir=temp_model_dir)
         sample = {"pt01": 30.0, "pt02": 30.3, "pt03": 28.8, "pt04": 28.3, "ht01": 39.0,
-                  "freq_pompe": 0.0, "temp_outdoor": 20.0}
+                  "freq_pompe": 0.0, "temp_outdoor": 20.0, **{name: 0.0 for name in TREND_FEATURES}}
         assert predictor.predict(sample)["out_of_domain"] == []
         assert predictor.predict({**sample, "freq_pompe": 30.0})["out_of_domain"] == ["freq_pompe"]
 
@@ -336,3 +338,35 @@ class TestTrainAndCompareInsufficientVariance:
 
         assert report["status"] == "insufficient_variance"
         assert report["target_std_celsius"] < 0.3
+
+
+class TestTrendFeatures:
+    """Les tendances sont calculées de la même façon à l'entraînement et en service."""
+
+    def _df(self):
+        t = pd.date_range("2026-10-20 10:00:00", periods=60, freq="15s")
+        return pd.DataFrame({"timestamp": t, "pt01": np.arange(60) * 0.1, "pt02": 35.0,
+                             "pt04": np.arange(60) * -0.05})
+
+    def test_training_trend_is_value_now_minus_value_n_minutes_ago(self):
+        out = add_trend_features(self._df())
+        assert out["pt01_d5min"].iloc[:19].isna().all()          # pas encore (presque) 5 min d'historique
+        assert out["pt01_d5min"].iloc[30] == pytest.approx(2.0)   # 20 mesures × 0,1 °C
+        assert out["pt01_d10min"].iloc[50] == pytest.approx(4.0)
+        assert out["pt04_d5min"].iloc[30] == pytest.approx(-1.0)
+
+    def test_service_trend_matches_training(self):
+        df = self._df()
+        trained = add_trend_features(df).iloc[50]
+        ts = [t.timestamp() for t in df["timestamp"]]
+        history = {c: list(zip(ts[:51], df[c].iloc[:51])) for c in ("pt01", "pt02", "pt04")}
+        current = {c: float(df[c].iloc[50]) for c in ("pt01", "pt02", "pt04")}
+        live = trend_features_at(history, ts[50], current)
+        for name in TREND_FEATURES:
+            assert live[name] == pytest.approx(trained[name])
+
+    def test_no_trend_across_a_collection_gap(self):
+        df = self._df()
+        df.loc[30:, "timestamp"] += pd.Timedelta(hours=1)
+        assert add_trend_features(df)["pt01_d5min"].iloc[30:49].isna().all()
+        assert trend_features_at({"pt01": []}, 0.0, {"pt01": 1.0})["pt01_d5min"] is None

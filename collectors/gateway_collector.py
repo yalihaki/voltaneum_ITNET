@@ -123,6 +123,7 @@ class GatewayCollector:
         # Dernière valeur BRUTE de chaque point du nœud capteur, utilisé ou non (KeyNode ->
         # (valeur, instant)) : alimente l'onglet « Catalogue », jamais la régulation.
         self._raw_values: dict[str, tuple[object, float]] = {}
+        self._catalogue_values_reported = False
         self._lock = threading.Lock()
 
         # Toutes les colonnes attendues, initialisées à None tant qu'aucune
@@ -483,7 +484,17 @@ class GatewayCollector:
         extras = {"temp_outdoor_source": outdoor_source, "humidity_outdoor": humidity, "thermal_power_kw": power}
         with self._lock:
             raw_values, self._raw_values = self._raw_values, {}
-        sqlite_client.update_catalogue_values(self.sensor_driver_node, raw_values, db_path=self.db_path)
+        updated = sqlite_client.update_catalogue_values(self.sensor_driver_node, raw_values, db_path=self.db_path)
+        if raw_values and not self._catalogue_values_reported:
+            # Diagnostic, une fois par démarrage : des valeurs reçues qui ne correspondent à aucun
+            # point du catalogue enregistré signalent un écart de codes (KeyNode) entre les deux API.
+            self._catalogue_values_reported = True
+            if updated:
+                logger.info("Catalogue : valeurs reçues pour %d point(s) sur %d.", updated, len(raw_values))
+            else:
+                logger.warning("Catalogue : %d valeur(s) reçue(s) mais aucun point correspondant dans le "
+                               "catalogue enregistré (codes reçus : %s).", len(raw_values),
+                               ", ".join(sorted(map(str, raw_values))[:10]))
 
         if self.on_snapshot is not None:
             try:

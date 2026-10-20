@@ -90,7 +90,7 @@ def _utc_text(epoch_seconds: float) -> str:
 # Instantané courant
 # ---------------------------------------------------------------------------
 def latest_snapshot(db_path: str, now: float | None = None) -> dict:
-    """Dernière ligne de `telemetry`, son âge, la tendance de la grandeur régulée (PT01) et les conditions de
+    """Dernière ligne de `telemetry`, son âge, la tendance de la grandeur surveillée (PT02) et les conditions de
     refroidissement qu'en déduit `control/cooling_advice.py` (même calcul que la boucle de contrôle)."""
     now = time.time() if now is None else now
     with connect_readonly(db_path) as conn:
@@ -104,12 +104,18 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
             return {"empty": True, "server_time": int(now * 1000), "thresholds": thresholds()}
         ts = int(row[1])
         values = {name: _finite(v) for name, v in zip(MEASURES, row[2:2 + len(MEASURES)])}
-        # Tendance de la grandeur régulée : comparaison avec la valeur d'il y a ~10 minutes.
+        # Tendance de la grandeur surveillée : comparaison avec la valeur d'il y a ~10 minutes.
         target = config.TARGET_COLUMN
         past = conn.execute(
             f"SELECT {target} FROM telemetry WHERE timestamp <= ? AND {target} IS NOT NULL "  # nosec B608
             "ORDER BY timestamp DESC LIMIT 1",
             (_utc_text(ts - 600),),
+        ).fetchone()
+        hot, cold = config.DIELECTRIC_HOT_COLUMN, config.DIELECTRIC_COLD_COLUMN
+        load = conn.execute(
+            f"SELECT AVG({hot}) - AVG({cold}), COUNT({hot}), COUNT({cold}), "  # nosec B608
+            f"{'AVG(thermal_power_kw)' if 'thermal_power_kw' in columns else 'NULL'} FROM telemetry "
+            "WHERE timestamp >= ?", (_utc_text(ts - config.REGULATION_TREND_WINDOW_SECONDS),),
         ).fetchone()
         predictions = _latest_predictions(conn, now)
         control = _latest_control(conn, now)
@@ -121,7 +127,8 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
 
     cooling = None
     if current is not None:
-        cooling = compute_cooling_conditions(current, values["temp_outdoor"])
+        load_delta = _finite(load[0]) if load and min(load[1], load[2]) >= 4 else None
+        cooling = compute_cooling_conditions(current, values["temp_outdoor"], load_delta)
 
     return {
         "empty": False,
@@ -132,6 +139,8 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
         "values": values,
         "temp_outdoor_source": row[2 + len(MEASURES)],
         "target_trend_10min": target_trend,
+        # Puissance moyenne sur 10 min : l'instantanée est très bruitée (PT02 lue au degré près).
+        "thermal_power_kw_10min": _round(_finite(load[3])) if load else None,
         "predictions": predictions,
         "control": control,
         "cooling": cooling,
@@ -334,7 +343,7 @@ def pid_settings() -> dict:
         ],
         "loop": [
             item("Cycle de calcul", interval, "CONTROL_LOOP_INTERVAL_SECONDS", "env", "s"),
-            item("Température cible (PT01)", config.TARGET_TEMP, "TARGET_TEMP", "env", "°C"),
+            item("Température cible (PT02)", config.TARGET_TEMP, "TARGET_TEMP", "env", "°C"),
             item("Seuil critique : 100 % immédiat", config.CRITICAL_TEMP, "CRITICAL_TEMP", "env", "°C",
                  "Au-dessus, le PID est court-circuité (mode safety_bypass)."),
             item("Consigne minimale", config.SETPOINT_MIN, "SETPOINT_MIN", "code", "%"),
@@ -382,7 +391,7 @@ def mqtt_formats() -> list[dict]:
             "fields": [
                 {"name": "percent", "type": "nombre", "unit": "%", "desc": "consigne conseillée au ventilateur pour l'étape en cours (0 : repos ou air extérieur seul) ; ne baisse jamais pendant une demande"},
                 {"name": "pid_percent", "type": "nombre", "unit": "%", "desc": "sortie brute du PID au même instant (plancher de la consigne au ventilateur)"},
-                {"name": "mode", "type": "texte", "unit": "", "desc": "mode du PID : pid, feedforward (anticipation ajoutée) ou safety_bypass (PT01 au-dessus du seuil critique)"},
+                {"name": "mode", "type": "texte", "unit": "", "desc": "mode du PID : pid, feedforward (anticipation ajoutée) ou safety_bypass (PT02 au-dessus du seuil critique)"},
                 {"name": "phase", "type": "texte", "unit": "", "desc": "étape : repos, air_exterieur, ventilateur ou critique"},
                 {"name": "event", "type": "texte", "unit": "", "desc": "pourquoi ce message : activation, maintien, renforcement, insuffisant, critique, fin ou renvoi"},
                 {"name": "ts", "type": "nombre", "unit": "s", "desc": "horodatage d'envoi (secondes Unix, UTC)"},
@@ -392,19 +401,21 @@ def mqtt_formats() -> list[dict]:
             **common, "key": "conditions", "topic": config.MQTT_TOPIC_COOLING_CONDITIONS,
             "title": "Conditions de refroidissement (contrat principal)", "enabled": True,
             "fields": [
-                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de PT01 (liquide diélectrique)"},
+                {"name": "target_temp", "type": "nombre", "unit": "°C", "desc": "température cible de PT02 (liquide diélectrique)"},
                 {"name": "critical_temp", "type": "nombre", "unit": "°C", "desc": "seuil critique"},
                 {"name": "outdoor_band", "type": "texte", "unit": "", "desc": "froid, tempere, chaud ou inconnue"},
                 {"name": "fan_on_above_temp", "type": "nombre", "unit": "°C", "desc": "seuil de marche du ventilateur"},
                 {"name": "fan_off_below_temp", "type": "nombre", "unit": "°C", "desc": "seuil d'arrêt du ventilateur"},
                 {"name": "fan_min_freq_hz", "type": "nombre ou null", "unit": "Hz", "desc": "fréquence minimale conseillée"},
+                {"name": "load_delta_t", "type": "nombre ou null", "unit": "°C", "desc": "échauffement dans l'armoire : moyenne sur 10 min de PT02 − PT01"},
+                {"name": "inlet_setpoint_advice", "type": "nombre ou null", "unit": "°C", "desc": "consigne de PT01 conseillée pour tenir PT02 à la cible (cible − échauffement, régulation en cascade)"},
                 {"name": "phase", "type": "texte", "unit": "", "desc": "étape : repos, air_exterieur, ventilateur ou critique"},
                 {"name": "event", "type": "texte", "unit": "", "desc": "pourquoi ce message : activation, maintien, renforcement, insuffisant, critique, fin ou renvoi"},
                 {"name": "command_percent", "type": "nombre", "unit": "%", "desc": "consigne conseillée au ventilateur (0 : repos ou air seul)"},
                 {"name": "cooling_mode", "type": "texte", "unit": "",
                  "desc": "aucun, air_exterieur (ventilateur arrêté, l'air froid suffit) ou ventilateur"},
                 {"name": "cooling_mode_reason", "type": "texte", "unit": "", "desc": "raison du conseil, en clair"},
-                {"name": "t_oil", "type": "nombre", "unit": "°C", "desc": "température PT01 utilisée"},
+                {"name": "t_oil", "type": "nombre", "unit": "°C", "desc": "température PT02 utilisée"},
                 {"name": "t_outdoor", "type": "nombre ou null", "unit": "°C", "desc": "température extérieure utilisée"},
                 {"name": "t_outdoor_source", "type": "texte ou null", "unit": "", "desc": "sensor (capteur) ou weather (API météo)"},
                 {"name": "valid_for_seconds", "type": "nombre", "unit": "s", "desc": f"durée de validité ({3 * interval:g} s) : au-delà, l'automate ignore le message"},
@@ -415,7 +426,7 @@ def mqtt_formats() -> list[dict]:
             **common, "key": "prediction", "topic": config.MQTT_TOPIC_PREDICTION, "title": "Prédiction ML",
             "enabled": True,
             "fields": [
-                {"name": "predictions", "type": "objet", "unit": "°C", "desc": "valeur prévue de PT01 par modèle (random_forest, gradient_boosting)"},
+                {"name": "predictions", "type": "objet", "unit": "°C", "desc": "valeur prévue de PT02 par modèle (random_forest, gradient_boosting)"},
                 {"name": "combined_prediction", "type": "nombre", "unit": "°C", "desc": "valeur retenue (meilleur modèle à l'entraînement), utilisée par le PID"},
                 {"name": "best_model", "type": "texte", "unit": "", "desc": "nom du modèle retenu"},
                 {"name": "disagreement", "type": "nombre", "unit": "°C", "desc": "écart entre les deux modèles"},
@@ -446,7 +457,7 @@ def telemetry_series(db_path: str, start: float, end: float,
                      max_points: int = DEFAULT_MAX_POINTS) -> dict:
     """Mesures entre `start` et `end` (epoch secondes), moyennées par tranche si nécessaire.
 
-    Chaque point porte aussi le min / max de la grandeur régulée (PT01) de sa tranche (bande d'enveloppe), pour
+    Chaque point porte aussi le min / max de la grandeur surveillée (PT02) de sa tranche (bande d'enveloppe), pour
     qu'un pic bref ne disparaisse pas dans la moyenne sur les longues périodes.
     """
     max_points = max(10, min(int(max_points), MAX_POINTS_LIMIT))
@@ -477,7 +488,7 @@ def telemetry_series(db_path: str, start: float, end: float,
 
 def prediction_series(db_path: str, start: float, end: float,
                       max_points: int = DEFAULT_MAX_POINTS) -> dict:
-    """Prédictions de PT01 positionnées à leur ÉCHÉANCE (target_ts), par modèle : sur la
+    """Prédictions de PT02 positionnées à leur ÉCHÉANCE (target_ts), par modèle : sur la
     courbe, elles se superposent à la mesure réelle qu'elles devaient anticiper."""
     max_points = max(10, min(int(max_points), MAX_POINTS_LIMIT))
     bucket = _bucket_seconds(start, end, max_points)
@@ -769,18 +780,18 @@ def settings_summary() -> dict:
     """
     return {
         "process": {
-            "Température cible PT01 (°C)": config.TARGET_TEMP,
-            "Seuil critique PT01 (°C)": config.CRITICAL_TEMP,
-            "Seuil critique diélectrique PT02 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
+            "Température cible PT02 (°C)": config.TARGET_TEMP,
+            "Seuil critique PT02 (°C)": config.CRITICAL_TEMP,
+            "Seuil critique diélectrique PT01 (°C)": config.DIELECTRIC_CRITICAL_TEMP,
             "Hystérésis ventilateur (°C)": config.FAN_HYSTERESIS_CELSIUS,
             "Air seul possible sous (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP if config.FREE_COOLING_ENABLED else "désactivé",
             "… retour au ventilateur au-dessus de (°C)": config.FREE_COOLING_MAX_OUTDOOR_TEMP + config.FREE_COOLING_HYSTERESIS_CELSIUS,
-            "… si écart PT01 − air d'au moins (°C)": config.FREE_COOLING_MIN_GAP_CELSIUS,
+            "… si écart PT02 − air d'au moins (°C)": config.FREE_COOLING_MIN_GAP_CELSIUS,
             "Étapes : effet vérifié après (min)": round(config.REGULATION_EFFECT_WAIT_SECONDS / 60),
-            "Étapes : démarrage si PT01 dépasse la cible de (°C)": config.REGULATION_START_ABOVE_TARGET_CELSIUS,
-            "Étapes : ou si PT01 monte d'au moins (°C / 10 min)": config.REGULATION_HEATING_SLOPE,
-            "Étapes : effet constaté si PT01 baisse d'au moins (°C / 10 min)": config.REGULATION_COOLING_SLOPE,
-            "Étapes : fin quand PT01 revient à la cible moins (°C)": config.REGULATION_RELEASE_BELOW_TARGET_CELSIUS,
+            "Étapes : démarrage si PT02 dépasse la cible de (°C)": config.REGULATION_START_ABOVE_TARGET_CELSIUS,
+            "Étapes : ou si PT02 monte d'au moins (°C / 10 min)": config.REGULATION_HEATING_SLOPE,
+            "Étapes : effet constaté si PT02 baisse d'au moins (°C / 10 min)": config.REGULATION_COOLING_SLOPE,
+            "Étapes : fin quand PT02 revient à la cible moins (°C)": config.REGULATION_RELEASE_BELOW_TARGET_CELSIUS,
             "Étapes : ventilateur au démarrage (%)": config.REGULATION_FAN_START_PERCENT,
             "Étapes : renforcement par pas de (%)": config.REGULATION_STEP_PERCENT,
             "Pompe en marche au-delà de (Hz)": config.PUMP_RUNNING_MIN_HZ,
@@ -807,8 +818,8 @@ def settings_summary() -> dict:
             "Délai entre deux e-mails (min)": config.ALERT_COOLDOWN_MINUTES,
             "Perte de télémétrie après (s)": config.TELEMETRY_TIMEOUT_SECONDS,
             "Désaccord entre modèles (°C)": config.DISAGREEMENT_THRESHOLD_CELSIUS,
-            "PT01 figée après (min)": config.SENSOR_FROZEN_ALERT_MINUTES,
-            "… si PT02 a bougé d'au moins (°C)": config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS,
+            "PT02 figée après (min)": config.SENSOR_FROZEN_ALERT_MINUTES,
+            "… si PT01 a bougé d'au moins (°C)": config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS,
         },
         "retention": {
             "Mesures conservées au moins (jours)": config.RETENTION_DAYS,
@@ -818,11 +829,11 @@ def settings_summary() -> dict:
         "valid_ranges": {k: list(v) for k, v in config.SENSOR_VALID_RANGES.items()},
         "sensors": {long: column.upper() for column, (long, _short) in config.SENSOR_LABELS.items()},
         "flow_direction": {
-            "Diélectrique, côté chaud (sortant de l'armoire)": config.DIELECTRIC_HOT_COLUMN.upper(),
-            "Diélectrique, côté froid (entrant dans l'armoire, régulé)": config.DIELECTRIC_COLD_COLUMN.upper(),
-            "Air, côté chaud (air sortant)": config.COOLANT_HOT_COLUMN.upper(),
-            "Air, côté froid (air entrant)": config.COOLANT_COLD_COLUMN.upper(),
-            "Statut": "donné par l'exploitant (19/10/2026)",
+            "Diélectrique, côté chaud (sortie armoire → CDU, surveillé)": config.DIELECTRIC_HOT_COLUMN.upper(),
+            "Diélectrique, côté froid (CDU → armoire, régulé par l'automate)": config.DIELECTRIC_COLD_COLUMN.upper(),
+            "Refroidissement, côté chaud (CDU → dry cooler)": config.COOLANT_HOT_COLUMN.upper(),
+            "Refroidissement, côté froid (dry cooler → CDU)": config.COOLANT_COLD_COLUMN.upper(),
+            "Statut": "donné par l'exploitant (20/10/2026)",
         },
         "thermal": {
             "Calcul": "débit HT01 × masse volumique × capacité thermique × écart de température",

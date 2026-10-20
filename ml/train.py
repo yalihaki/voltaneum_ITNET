@@ -2,7 +2,12 @@
 ml/train.py — Entraînement et comparaison de modèles de prédiction de température.
 
 En clair : ce module répond à la question "peut-on prédire la température
-PT01 dans 10 minutes à partir des valeurs actuelles des autres capteurs ?".
+PT02 dans 10 minutes à partir des valeurs actuelles des capteurs et de leur
+tendance récente ?". Deux façons d'apprendre sont essayées : l'ÉCART à venir
+(valeur future − valeur actuelle : la prédiction part de la persistance et
+n'apprend que la variation) ou la valeur future elle-même. La meilleure est
+choisie sur une période de validation prise dans l'apprentissage, jamais sur
+la période de test qui sert à juger le modèle (voir ml/features.py).
 Pour y répondre honnêtement, on ne se contente pas d'entraîner un modèle et
 de croire son score : on le compare à une référence bête et méchante — la
 "persistance", qui prédit simplement que la température dans 10 minutes
@@ -33,6 +38,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import config
 from database import sqlite_client
+from ml.features import MODEL_FEATURES, TARGET_MODES, add_trend_features
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,13 @@ def build_target(
     return merged.sort_values("timestamp").drop(columns=["_segment_id"]).reset_index(drop=True)
 
 
+def prepare_frame(df: pd.DataFrame, horizon_seconds: int) -> pd.DataFrame:
+    """Lignes exploitables pour l'horizon : cible future, tendances, aucune entrée manquante.
+    Même calcul pour l'entraînement et pour l'évaluation du modèle installé (ml/auto_retrain.py)."""
+    merged = add_trend_features(build_target(df, horizon_seconds=horizon_seconds))
+    return merged.dropna(subset=MODEL_FEATURES + ["target_future"])
+
+
 def _write_atomically(path: Path, writer) -> None:
     """Écrit `path` via un fichier temporaire puis `os.replace` : jamais de fichier à moitié écrit.
 
@@ -208,8 +221,7 @@ def train_and_compare(
             "trained_at": int(time.time()),
         }
 
-    merged = build_target(df, horizon_seconds=horizon_seconds)
-    usable = merged.dropna(subset=config.FEATURE_COLUMNS + ["target_future"])
+    usable = prepare_frame(df, horizon_seconds)
 
     if len(usable) < MIN_SAMPLES_FOR_TRAINING:
         message = (
@@ -230,7 +242,7 @@ def train_and_compare(
             "trained_at": int(time.time()),
         }
 
-    feature_matrix = usable[config.FEATURE_COLUMNS].to_numpy()
+    feature_matrix = usable[MODEL_FEATURES].to_numpy()
     target_vector = usable["target_future"].to_numpy()
     current_target_vector = usable[config.TARGET_COLUMN].to_numpy()
 
@@ -266,7 +278,7 @@ def train_and_compare(
     # son ensemble, pas seulement le jeu de test.
     feature_std = {
         column: float(np.std(feature_matrix[:, idx]))
-        for idx, column in enumerate(config.FEATURE_COLUMNS)
+        for idx, column in enumerate(MODEL_FEATURES)
     }
     degenerate_features = [
         column
@@ -274,7 +286,7 @@ def train_and_compare(
         if std < FEATURE_DEGENERACY_STD_EPSILON
     ]
 
-    used_features = [c for c in config.FEATURE_COLUMNS if c not in degenerate_features]
+    used_features = [c for c in MODEL_FEATURES if c not in degenerate_features]
     constant_features = {c: float(usable[c].iloc[0]) for c in degenerate_features}
     if not used_features:
         message = ("Toutes les variables d'entrée sont restées figées sur la période : rien à apprendre. "
@@ -286,7 +298,7 @@ def train_and_compare(
 
     split_idx = int(len(usable) * 0.8)
     X_train, X_test = feature_matrix[:split_idx], feature_matrix[split_idx:]
-    y_train, y_test = target_vector[:split_idx], target_vector[split_idx:]
+    y_test = target_vector[split_idx:]
     persistence_pred = current_target_vector[split_idx:]  # "prédiction" = valeur actuelle
 
     if len(X_test) == 0 or len(X_train) == 0:
@@ -304,20 +316,39 @@ def train_and_compare(
             "trained_at": int(time.time()),
         }
 
-    models = {
-        "random_forest": RandomForestRegressor(
-            n_estimators=200, max_depth=12, random_state=42
-        ),
-        "gradient_boosting": GradientBoostingRegressor(
-            n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42
-        ),
-    }
+    def make_models() -> dict:
+        return {
+            "random_forest": RandomForestRegressor(n_estimators=200, max_depth=12, random_state=42),
+            "gradient_boosting": GradientBoostingRegressor(
+                n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42),
+        }
+
+    def learn_target(mode: str, current: np.ndarray, future: np.ndarray) -> np.ndarray:
+        return future - current if mode == "delta" else future
+
+    def reconstruct(mode: str, current: np.ndarray, output: np.ndarray) -> np.ndarray:
+        return current + output if mode == "delta" else output
+
+    # Choix de la cible (écart ou valeur) sur les 20 % les plus récents de l'APPRENTISSAGE :
+    # la période de test reste intacte pour juger le modèle retenu.
+    current_train, future_train = current_target_vector[:split_idx], target_vector[:split_idx]
+    val_idx = int(split_idx * 0.8)
+    validation_rmse: dict[str, float] = {}
+    if 0 < val_idx < split_idx:
+        for mode in TARGET_MODES:
+            scores = []
+            for model in make_models().values():
+                model.fit(X_train[:val_idx], learn_target(mode, current_train[:val_idx], future_train[:val_idx]))
+                guess = reconstruct(mode, current_train[val_idx:], model.predict(X_train[val_idx:]))
+                scores.append(float(np.sqrt(mean_squared_error(future_train[val_idx:], guess))))
+            validation_rmse[mode] = min(scores)
+    target_mode = min(validation_rmse, key=lambda m: validation_rmse[m]) if validation_rmse else TARGET_MODES[0]
 
     fitted_models: dict[str, object] = {}
     metrics: dict[str, dict[str, float]] = {}
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        predictions = model.predict(X_test)
+    for name, model in make_models().items():
+        model.fit(X_train, learn_target(target_mode, current_train, future_train))
+        predictions = reconstruct(target_mode, persistence_pred, model.predict(X_test))
         rmse = float(np.sqrt(mean_squared_error(y_test, predictions)))
         mae = float(mean_absolute_error(y_test, predictions))
         metrics[name] = {"rmse": rmse, "mae": mae}
@@ -345,6 +376,17 @@ def train_and_compare(
         # Variables réellement utilisées par les modèles (ordre de config.FEATURE_COLUMNS) et
         # variables écartées car constantes, avec leur valeur (contrôle « hors domaine »).
         "features": used_features,
+        # Ce que prédisent les modèles : "delta" (écart à la valeur actuelle) ou "absolute",
+        # choisi sur la période de validation (erreurs de validation de chaque façon).
+        "target": target_mode,
+        "validation_rmse": validation_rmse,
+        # Part de chaque entrée dans les décisions du meilleur modèle (somme = 1), de la plus forte
+        # à la plus faible : montre ce qui fait réellement bouger la prédiction.
+        "feature_importance": dict(sorted(
+            ((name, round(float(weight), 4)) for name, weight in
+             zip(used_features, getattr(fitted_models[best_model_name], "feature_importances_", []))),
+            key=lambda item: -item[1])),
+        "target_column": config.TARGET_COLUMN,
         "constant_features": constant_features,
         "target_std_celsius": target_std,
         "feature_std": feature_std,

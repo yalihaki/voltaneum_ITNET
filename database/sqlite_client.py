@@ -483,18 +483,20 @@ def save_catalogue(points: list[dict], columns: dict[str, str], sensor_node: str
 
 
 def update_catalogue_values(dev_node: str, values: dict[str, tuple[object, float]],
-                            db_path: str = SQLITE_DB_PATH) -> None:
+                            db_path: str = SQLITE_DB_PATH) -> int:
     """Dernière valeur brute reçue de chaque point (KeyNode -> (valeur, instant epoch)).
-    Ne lève jamais d'exception."""
+    Retourne le nombre de points du catalogue mis à jour. Ne lève jamais d'exception."""
     if not values:
-        return
+        return 0
     try:
         with connect(db_path) as conn:
-            conn.executemany(
+            cursor = conn.executemany(
                 "UPDATE gateway_catalogue SET last_value = ?, last_seen = ? WHERE dev_node = ? AND key_node = ?",
                 [(json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value,
                   time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)), dev_node, key_node)
                  for key_node, (value, ts) in values.items()],
             )
+            return max(0, cursor.rowcount)
     except sqlite3.Error:
         logger.exception("Échec de mise à jour des valeurs du catalogue")
+        return 0

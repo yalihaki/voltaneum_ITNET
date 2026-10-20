@@ -10,7 +10,7 @@ anticipation se déclenche sur la prédiction). Tant que le PID n'est pas régl�
 l'automaticien, ce choix reste humain.
 
 Un horizon est jugé FIABLE si :
-  1. `ml/train.py` l'a accepté (assez de collecte continue, PT01 varie ; une variable figée est
+  1. `ml/train.py` l'a accepté (assez de collecte continue, PT02 varie ; une variable figée est
      écartée des entrées, pas bloquante) ;
   2. son erreur (RMSE) est au moins AUTO_RETRAIN_MIN_GAIN plus faible que la persistance
      (« la température ne bouge pas ») ;
@@ -43,7 +43,8 @@ import pandas as pd
 
 import config
 from database import sqlite_client
-from ml.train import build_target, train_and_compare
+from ml.features import TREND_COLUMNS, TREND_WINDOWS_SECONDS, trend_name
+from ml.train import prepare_frame, train_and_compare
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,12 @@ LONG_HORIZON_WARNING_SECONDS = 2 * 3600
 _FEATURE_LABELS = {
     "pt01": "PT01", "pt02": "PT02", "pt03": "PT03", "pt04": "PT04", "ht01": "débit HT01",
     "freq_pompe": "fréquence pompe", "temp_outdoor": "température extérieure",
+    **{trend_name(c, w): f"tendance {c.upper()} sur {w // 60} min" for c in TREND_COLUMNS for w in TREND_WINDOWS_SECONDS},
 }
 
 _STATUS_REASONS = {
     "insufficient_data": "données insuffisantes (collecte continue trop courte pour cet horizon)",
-    "insufficient_variance": "PT01 ne varie pas assez pour juger une prédiction",
+    "insufficient_variance": "PT02 ne varie pas assez pour juger une prédiction",
     "no_actionable_signal": "toutes les variables d'entrée sont restées figées",
     "no_skill": "ne fait pas mieux que la persistance (« la température ne bouge pas »)",
 }
@@ -85,7 +87,7 @@ def format_duration(seconds: float) -> str:
 
 def test_span_seconds(df: pd.DataFrame, horizon: int) -> float:
     """Durée couverte par la période de test de `ml/train.py` (20 % des échantillons les plus récents)."""
-    usable = build_target(df, horizon_seconds=horizon).dropna(subset=config.FEATURE_COLUMNS + ["target_future"])
+    usable = prepare_frame(df, horizon)
     if len(usable) < 2:
         return 0.0
     test = usable["timestamp"].iloc[int(len(usable) * 0.8):]
@@ -184,6 +186,8 @@ def _candidate_summary(horizon: int, report: dict, model_dir: Path, root: Path) 
         "persistence_rmse": baseline,
         "gain": None if rmse is None or not baseline else 1.0 - rmse / baseline,
         "n_samples": report.get("n_samples"),
+        "target": report.get("target"),
+        "feature_importance": report.get("feature_importance") or {},
         "model_dir": str(model_dir.relative_to(root)) if eligible else None,
     }
 
@@ -216,13 +220,15 @@ def evaluate_installed(df: pd.DataFrame, model_dir: str = config.MODEL_DIR) -> d
     except Exception:
         logger.exception("Modèle installé illisible : %s", best)
         return None
-    usable = build_target(df, horizon_seconds=horizon).dropna(
-        subset=config.FEATURE_COLUMNS + ["target_future"])   # mêmes lignes que l'entraînement
+    usable = prepare_frame(df, horizon)   # mêmes lignes et mêmes entrées que l'entraînement
     split_idx = int(len(usable) * 0.8)
     test = usable.iloc[split_idx:]
     if len(test) < 5:
         return None
+    # Cible « delta » : le modèle prédit l'écart, prédiction = valeur actuelle + écart prédit.
     predictions = model.predict(test[features].to_numpy())
+    if report.get("target") == "delta":
+        predictions = test[config.TARGET_COLUMN].to_numpy() + predictions
     truth = test["target_future"].to_numpy()
     rmse = float(np.sqrt(np.mean((predictions - truth) ** 2)))
     baseline = float(np.sqrt(np.mean((test[config.TARGET_COLUMN].to_numpy() - truth) ** 2)))

@@ -97,8 +97,8 @@ def test_prediction_monitoring_flow(temp_db_path):
     sqlite_client.init_db(temp_db_path)
 
     sqlite_client.insert_reading(
-        pt01=26.0,
-        pt02=24.0,
+        pt01=24.0,
+        pt02=26.0,
         pt03=23.5,
         pt04=23.5,
         ht01=39.0,
@@ -193,7 +193,7 @@ def test_rolling_rmse_stats_reports_the_real_sample_count(temp_db_path):
     assert sqlite_client.get_rolling_rmse_stats(60, "random_forest", db_path=temp_db_path) is None
     for minute in range(3):
         ts = f"2026-09-13 12:0{minute}:00"
-        sqlite_client.insert_reading(26.0, 24.0, 23.5, 23.5, 39.0, 30.0, 15.0,
+        sqlite_client.insert_reading(24.0, 26.0, 23.5, 23.5, 39.0, 30.0, 15.0,
                                      timestamp=ts, db_path=temp_db_path)
         sqlite_client.log_prediction(ts, ts, 60, "random_forest", 28.0, db_path=temp_db_path)
     sqlite_client.complete_due_predictions("2026-09-13 12:10:00", db_path=temp_db_path)

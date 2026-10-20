@@ -27,7 +27,7 @@ def test_catalogue_is_saved_with_last_values(tmp_path):
     assert cat["source"] == "gateway" and cat["counts"] == {"total": 5, "used": 2, "writable": 1, "with_value": 2}
     first = cat["items"][0]
     assert (first["key_name"], first["column"], first["used"], first["last_value"]) == ("PT01", "pt01", True, "33.4")
-    assert first["value_age_seconds"] == 10.0 and "RÉGULÉE" in first["usage"]
+    assert first["value_age_seconds"] == 10.0 and "cascade" in first["usage"]
     setpoint = next(i for i in cat["items"] if i["key_node"] == "K12")
     assert setpoint["writable"] and not setpoint["used"] and setpoint["usage"] == "Non utilisé"
     other = next(i for i in cat["items"] if i["dev_node"] == "autre_appareil")

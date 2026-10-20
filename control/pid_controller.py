@@ -87,7 +87,7 @@ def compute_setpoint_detailed(
     """Calcule la consigne de refroidissement (0-100%) à publier sur MQTT.
 
     Args:
-        t_oil: température actuelle du bain d'huile (°C, ex. PT01).
+        t_oil: température actuelle du bain d'huile (°C, ex. PT02).
         t_target: température cible (°C, config.TARGET_TEMP).
         t_oil_predicted: température prédite dans l'horizon configuré
             (°C), fournie par ml/predictor.py.

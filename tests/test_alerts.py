@@ -115,22 +115,22 @@ class TestNumberHelper:
 
 class TestCriticalTemperature:
     def test_alert_above_threshold(self):
-        alerts = evaluate_rules(_telemetry(pt01=config.CRITICAL_TEMP + 1), None, _fresh_state())
+        alerts = evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 1), None, _fresh_state())
         assert _names(alerts) == ["critical_temp"]
         assert alerts[0]["level"] == "CRITIQUE"
 
     def test_no_alert_at_or_below_threshold(self):
-        assert evaluate_rules(_telemetry(pt01=config.CRITICAL_TEMP), None, _fresh_state()) == []
+        assert evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP), None, _fresh_state()) == []
 
     def test_cooldown_blocks_second_alert(self):
         state = _fresh_state()
-        hot = _telemetry(pt01=config.CRITICAL_TEMP + 5)
+        hot = _telemetry(pt02=config.CRITICAL_TEMP + 5)
         assert len(evaluate_rules(hot, None, state)) == 1
         assert evaluate_rules(hot, None, state) == []
 
     @pytest.mark.parametrize("bad", ["60", float("nan"), None, True])
     def test_malformed_value_never_crashes_nor_alerts(self, bad):
-        assert evaluate_rules({"pt01": bad}, None, _fresh_state()) == []
+        assert evaluate_rules({"pt02": bad}, None, _fresh_state()) == []
 
 
 class TestTelemetryLost:
@@ -323,12 +323,12 @@ class TestSendEmail:
 
 
 class TestOilSensor:
-    """PT01 absente ou figée : sans elle, aucune consigne n'est publiée."""
+    """PT02 absente ou figée : sans elle, aucune consigne n'est publiée."""
 
-    def _feed(self, state, pt01, at, monkeypatch, pt02=40.0):
+    def _feed(self, state, pt02, at, monkeypatch, pt01=40.0):
         monkeypatch.setattr(alerts.time, "time", lambda: at)
         state["last_telemetry_ts"] = at              # la passerelle émet (comme AlertEngine.on_telemetry)
-        return evaluate_rules({"pt02": pt02, "pt01": pt01, "pt03": 30.0, "ts": at}, None, state)
+        return evaluate_rules({"pt01": pt01, "pt02": pt02, "pt03": 30.0, "ts": at}, None, state)
 
     def test_missing_oil_value_alerts_after_delay(self, monkeypatch):
         state = {"started_at": 0.0}
@@ -343,28 +343,28 @@ class TestOilSensor:
         assert "oil_sensor_missing" not in _names(
             self._feed(state, 35.1, 1000.0 + config.OIL_SENSOR_MISSING_ALERT_SECONDS + 5, monkeypatch))
 
-    def test_frozen_value_alerts_when_pt02_moves(self, monkeypatch):
-        """PT01 bloquée à 34,0 °C alors que PT02, sur le même circuit, bouge de plus d'un degré."""
+    def test_frozen_value_alerts_when_pt01_moves(self, monkeypatch):
+        """PT02 bloquée à 34,0 °C alors que PT01, sur le même circuit, bouge de plus d'un degré."""
         state = {"started_at": 0.0}
         start = 10_000.0
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):
-            assert self._feed(state, 34.0, start + minute * 60, monkeypatch, pt02=32.0 + minute * 0.05) == []
-        frozen = self._feed(state, 34.0, start + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt02=35.0)
+            assert self._feed(state, 34.0, start + minute * 60, monkeypatch, pt01=32.0 + minute * 0.05) == []
+        frozen = self._feed(state, 34.0, start + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt01=35.0)
         assert _names(frozen) == ["oil_sensor_frozen"] and "34.0" in frozen[0]["message"]
-        assert "PT02" in frozen[0]["message"]
+        assert "PT01" in frozen[0]["message"]
 
     def test_stable_process_is_not_called_frozen(self, monkeypatch):
-        """PT01 lue au degré près : constante pendant des heures sur un procédé stable (PT02 ±0,2 °C),
+        """PT02 lue au degré près : constante pendant des heures sur un procédé stable (PT01 ±0,2 °C),
         ce n'est pas une panne — cas réel du 15-16/10/2026."""
         state = {"started_at": 0.0}
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES * 3):
-            assert self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt02=33.2 + (minute % 3) * 0.1) == []
+            assert self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt01=33.2 + (minute % 3) * 0.1) == []
 
     def test_frozen_without_reference_falls_back_to_duration(self, monkeypatch):
         state = {"started_at": 0.0}
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):
-            self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt02=None)
-        frozen = self._feed(state, 34.0, 10_000.0 + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt02=None)
+            self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt01=None)
+        frozen = self._feed(state, 34.0, 10_000.0 + config.SENSOR_FROZEN_ALERT_MINUTES * 60, monkeypatch, pt01=None)
         assert _names(frozen) == ["oil_sensor_frozen"]
 
     def test_moving_value_never_frozen(self, monkeypatch):
@@ -404,7 +404,7 @@ class TestAlertEngine:
 
     def test_critical_temperature_from_a_snapshot(self):
         engine, delivered = self._engine()
-        engine.on_telemetry({"pt02": 40.0, "pt01": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert ("CRITIQUE", "critical_temp") in delivered
 
     def test_watchdog_alerts_when_gateway_silent_since_startup(self):
@@ -423,7 +423,7 @@ class TestAlertEngine:
         for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
             monkeypatch.setattr(config, name, "x")
         engine, delivered = self._engine([False, True])
-        hot = {"pt02": 40.0, "pt01": config.CRITICAL_TEMP + 3, "pt03": 30.0}
+        hot = {"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0}
         engine.on_telemetry(hot)
         engine.on_telemetry(hot)                       # immédiatement : pas de rafale
         assert len(delivered) == 1
@@ -435,7 +435,7 @@ class TestAlertEngine:
         engine, delivered = self._engine()
         for i in range(N):
             engine.on_prediction({"disagreement_flag": True, "disagreement": 2.0, "ts": float(i)})
-            engine.on_telemetry({"pt02": 40.0, "pt01": 36.0, "pt03": 30.0})
+            engine.on_telemetry({"pt01": 40.0, "pt02": 36.0, "pt03": 30.0})
         assert ("ATTENTION", "model_disagreement") in delivered
 
 
@@ -451,7 +451,7 @@ class TestAsynchronousSending:
 
         engine = AlertEngine(deliver=slow_deliver, watchdog_interval_seconds=60)
         started = time.monotonic()
-        engine.on_telemetry({"pt02": 40.0, "pt01": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert time.monotonic() - started < 0.1                  # retour immédiat
         worker = threading.Thread(target=engine.run_forever, daemon=True)
         worker.start()
@@ -470,16 +470,16 @@ class TestDielectricCriticalTemperature:
 
     def test_alert_names_the_overheated_probe(self):
         state = _fresh_state()
-        alerts_ = evaluate_rules({"pt02": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt01": 34.0, "pt03": 80.0, "ts": 1.0},
+        alerts_ = evaluate_rules({"pt01": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt02": 34.0, "pt03": 80.0, "ts": 1.0},
                                  None, state)
         assert _names(alerts_) == ["dielectric_critical_temp"]
-        assert alerts_[0]["level"] == "CRITIQUE" and "PT02" in alerts_[0]["message"] and "PT03" not in alerts_[0]["message"]
+        assert alerts_[0]["level"] == "CRITIQUE" and "PT01" in alerts_[0]["message"] and "PT03" not in alerts_[0]["message"]
 
     def test_no_alert_at_or_below_threshold(self):
         state = _fresh_state()
         at = config.DIELECTRIC_CRITICAL_TEMP
-        assert evaluate_rules({"pt02": at, "pt01": 34.0, "pt03": at + 20, "ts": 1.0}, None, state) == []
+        assert evaluate_rules({"pt01": at, "pt02": 34.0, "pt03": at + 20, "ts": 1.0}, None, state) == []
 
     def test_missing_values_never_alert(self):
         state = _fresh_state()
-        assert evaluate_rules({"pt02": None, "pt01": 34.0, "ts": 1.0}, None, state) == []
+        assert evaluate_rules({"pt01": None, "pt02": 34.0, "ts": 1.0}, None, state) == []

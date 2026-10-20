@@ -664,6 +664,33 @@ class TestPredictions:
         (published,) = app.fake_client.messages(config.MQTT_TOPIC_PREDICTION)
         assert published["combined_prediction"] == 33.5 and "ts" in published
 
+    def test_trend_inputs_come_from_the_recent_measurements(self, app, monkeypatch):
+        """Un modèle à tendances reçoit « valeur actuelle − valeur d'il y a 5 / 10 min », lue en base ;
+        sans assez d'historique, pas de prédiction (le PID travaille sur la mesure)."""
+        from ml.features import TREND_FEATURES
+        self._install_models(app)
+        received = []
+        monkeypatch.setattr(FakePredictor, "required_columns", list(config.FEATURE_COLUMNS) + TREND_FEATURES,
+                            raising=False)
+        original = FakePredictor.predict
+        monkeypatch.setattr(FakePredictor, "predict", lambda self, f: received.append(f) or original(self, f))
+        app.start()
+        feed_measurements(app, t_oil=30.0)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        assert received == []                                    # base vide : aucune tendance possible
+        now = time.time()
+        for ago in range(0, 661, 15):
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - ago))
+            sqlite_client.insert_reading(25.0, 30.0 - ago / 300, 25.0, 25.0 + ago / 600, 10.0, 30.0, 15.0,
+                                         timestamp=ts, db_path=config.SQLITE_DB_PATH)
+        app._control_tick(60.0)
+        (features,) = received
+        assert features["pt02_d5min"] == pytest.approx(1.0, abs=0.1)
+        assert features["pt02_d10min"] == pytest.approx(2.0, abs=0.1)
+        assert features["pt01_d5min"] == pytest.approx(0.0, abs=0.1)
+        assert features["pt04_d10min"] == pytest.approx(-1.0, abs=0.1)
+
     def test_disagreeing_models_are_not_used_by_the_pid(self, app, monkeypatch):
         """Deux modèles en désaccord : la prédiction n'est pas fiable, l'anticipation du PID est
         neutralisée (le PID travaille sur la mesure) et rien n'est noté comme « prédiction utilisée »."""

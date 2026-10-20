@@ -6,7 +6,7 @@ En clair : `ml/train.py` est le "cours du soir" — il entraîne les modèles
 une fois (ou périodiquement) et les range dans un dossier. Ce module-ci est
 l'"élève diplômé" qu'on interroge en production, en continu : il charge les
 modèles déjà entraînés (sans jamais les ré-entraîner lui-même) et répond
-très vite à la question "que vaudra PT01 dans 10 minutes ?".
+très vite à la question "que vaudra PT02 dans 10 minutes ?".
 
 On interroge volontairement DEUX modèles (RandomForest et GradientBoosting)
 plutôt qu'un seul, et on calcule leur désaccord (`disagreement`). En clair :
@@ -28,6 +28,7 @@ import joblib
 import numpy as np
 
 import config
+from ml.features import MODEL_FEATURES, TARGET_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +39,17 @@ OUT_OF_DOMAIN_RATIO = 0.02
 
 
 def compatible_features(report: dict) -> bool:
-    """Vrai si le modèle utilise un sous-ensemble NON VIDE de config.FEATURE_COLUMNS, dans le même
-    ordre, et si toute variable écartée fait aussi partie de config.FEATURE_COLUMNS."""
+    """Vrai si le modèle utilise un sous-ensemble NON VIDE de ml.features.MODEL_FEATURES, dans le
+    même ordre, si toute variable écartée en fait aussi partie, et s'il déclare sa cible (écart ou
+    valeur) sur la grandeur surveillée actuelle (un ancien modèle, ou sur une autre sonde, est refusé)."""
     features = report.get("features")
     constants = report.get("constant_features") or {}
     if not isinstance(features, list) or not features or not isinstance(constants, dict):
         return False
-    return (features == [c for c in config.FEATURE_COLUMNS if c in features]
-            and set(constants) <= set(config.FEATURE_COLUMNS))
+    return (features == [c for c in MODEL_FEATURES if c in features]
+            and set(constants) <= set(MODEL_FEATURES)
+            and report.get("target") in TARGET_MODES
+            and report.get("target_column") == config.TARGET_COLUMN)
 
 
 class DualModelPredictor:
@@ -90,12 +94,14 @@ class DualModelPredictor:
         if not compatible_features(self.training_report):
             raise FileNotFoundError(
                 f"Les modèles de '{self.model_dir}' ont été entraînés avec d'autres variables d'entrée "
-                f"({self.training_report.get('features')}) que celles attendues ({config.FEATURE_COLUMNS}) : "
+                f"({self.training_report.get('features')}) ou une autre cible que celles attendues ({MODEL_FEATURES}, "
+                f"écart de {config.TARGET_COLUMN}) : "
                 f"ré-entraîner (./voltaneum retrain) puis valider (./voltaneum model accept)."
             )
         # Entrées du modèle, et variables écartées car constantes à l'entraînement (valeur apprise).
         self.features: list[str] = list(self.training_report["features"])
         self.constant_features: dict[str, float] = dict(self.training_report.get("constant_features") or {})
+        self.target_mode: str = self.training_report["target"]
 
         self.random_forest = joblib.load(rf_path)
         self.gradient_boosting = joblib.load(gb_path)
@@ -119,8 +125,10 @@ class DualModelPredictor:
 
     @property
     def required_columns(self) -> list[str]:
-        """Mesures nécessaires à une prédiction (entrées + variables constantes à contrôler)."""
-        return self.features + [c for c in self.constant_features if c not in self.features]
+        """Mesures nécessaires à une prédiction (entrées, variables constantes à contrôler et
+        valeur actuelle de la grandeur surveillée, à laquelle s'ajoute l'écart prédit)."""
+        columns = self.features + [c for c in self.constant_features if c not in self.features]
+        return columns + ([config.TARGET_COLUMN] if config.TARGET_COLUMN not in columns else [])
 
     def out_of_domain(self, current_features: dict) -> list[str]:
         """Variables constantes à l'entraînement qui ont changé depuis : le modèle n'a jamais vu
@@ -129,7 +137,7 @@ class DualModelPredictor:
                 if abs(float(current_features[c]) - learned) > max(OUT_OF_DOMAIN_MIN_GAP, OUT_OF_DOMAIN_RATIO * abs(learned))]
 
     def predict(self, current_features: dict) -> dict:
-        """Prédit la valeur future de TARGET_COLUMN à partir des features actuelles.
+        """Prédit la valeur future de TARGET_COLUMN (directement, ou valeur actuelle + écart prédit).
 
         `current_features` doit contenir toutes les clés de `required_columns`.
 
@@ -156,8 +164,10 @@ class DualModelPredictor:
             [[current_features[column] for column in self.features]]
         )
 
-        pred_rf = float(self.random_forest.predict(feature_vector)[0])
-        pred_gb = float(self.gradient_boosting.predict(feature_vector)[0])
+        # Cible « delta » : les modèles prédisent l'écart, prédiction = valeur actuelle + écart.
+        offset = float(current_features[config.TARGET_COLUMN]) if self.target_mode == "delta" else 0.0
+        pred_rf = offset + float(self.random_forest.predict(feature_vector)[0])
+        pred_gb = offset + float(self.gradient_boosting.predict(feature_vector)[0])
 
         predictions = {"random_forest": pred_rf, "gradient_boosting": pred_gb}
         combined_prediction = predictions[self.best_model_name]

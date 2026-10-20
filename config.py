@@ -139,12 +139,12 @@ MAX_GAP_SECONDS: int = _env_int("MAX_GAP_SECONDS", 60)
 # volontairement AU-DESSUS de CRITICAL_TEMP (55 °C). Une borne haute à 55 °C rejetterait
 # toute mesure > 55 °C comme « hors plage » : l'alerte critique et le bypass de sécurité du
 # PID ne verraient alors JAMAIS une surchauffe réelle. `validate_config()` refuse de démarrer
-# si cette condition n'est pas respectée pour la grandeur régulée (TARGET_COLUMN, PT01).
+# si cette condition n'est pas respectée pour la grandeur surveillée (TARGET_COLUMN, PT02).
 SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
-    "pt01": (-20.0, 150.0),      # °C — liquide diélectrique entrant dans l'armoire (grandeur régulée et prédite)
-    "pt02": (-20.0, 150.0),      # °C — liquide diélectrique sortant de l'armoire (non régulé)
-    "pt03": (-20.0, 150.0),      # °C — air sortant (chaud)
-    "pt04": (-20.0, 150.0),      # °C — air entrant (froid)
+    "pt01": (-20.0, 150.0),      # °C — diélectrique refroidi par la CDU, vers l'armoire (régulé par l'automate)
+    "pt02": (-20.0, 150.0),      # °C — diélectrique sortant de l'armoire, vers la CDU (grandeur surveillée et prédite)
+    "pt03": (-20.0, 150.0),      # °C — liquide de refroidissement, sortie CDU vers le dry cooler (chaud)
+    "pt04": (-20.0, 150.0),      # °C — liquide de refroidissement, retour du dry cooler vers la CDU (froid)
     "ht01": (0.0, 15.0),         # m³/h — débit du circuit diélectrique (cahier des charges, à confirmer)
     "freq_pompe": (0.0, 50.0),   # Hz — fréquence du variateur de la pompe (point PUMP, à confirmer)
     "temp_outdoor": (-20.0, 55.0),  # °C — capteur extérieur indépendant
@@ -153,42 +153,44 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
 # ---------------------------------------------------------------------------
 # Noms des mesures, IDENTIQUES sur tous les écrans (interface, terminal, résumé)
 # ---------------------------------------------------------------------------
-# (nom complet, nom court pour le synoptique). Rôle des sondes donné par l'exploitant (19/10/2026) :
-#   - PT01 : liquide diélectrique ENTRANT dans l'armoire (refroidi) — grandeur RÉGULÉE et prédite ;
-#   - PT02 : liquide diélectrique SORTANT de l'armoire (réchauffé par les équipements) — non régulé ;
-#   - PT03 : AIR sortant, chaud (a emporté la chaleur) ;
-#   - PT04 : AIR entrant, froid.
-# Remplace la lecture du 16/10/2026 (PT02 régulée, PT03 / PT04 sur une boucle de liquide de
-# refroidissement). Modifiables dans .env (PT01_LABEL … PT04_SHORT).
+# Installation (exploitant, 20/10/2026) : deux circuits séparés par la CDU (échangeur).
+#
+#   Armoire ──PT02 (chaud)──► CDU ──PT01 (refroidi, régulé par l'automate)──► Armoire
+#   Dry cooler ──PT04 (froid)──► CDU ──PT03 (réchauffé)──► Dry cooler
+#
+#   - PT02 : état du diélectrique dans l'armoire (après les équipements) : c'est elle qui dit s'il
+#            faut refroidir davantage → grandeur SURVEILLÉE et PRÉDITE par Voltaneum (TARGET_COLUMN) ;
+#   - PT01 : diélectrique refroidi par la CDU et renvoyé dans l'armoire : RÉGULÉ par l'automate ;
+#   - PT03 / PT04 : liquide de refroidissement (eau glycolée) entre la CDU et le dry cooler.
+# (nom complet, nom court pour le synoptique), modifiables dans .env (PT01_LABEL … PT04_SHORT).
 SENSOR_LABELS: dict[str, tuple[str, str]] = {
-    "pt01": (_env_str("PT01_LABEL", "PT01 · diélectrique entrant (régulé)"),
-             _env_str("PT01_SHORT", "PT01 · diélec. entrant")),
-    "pt02": (_env_str("PT02_LABEL", "PT02 · diélectrique sortant"), _env_str("PT02_SHORT", "PT02 · diélec. sortant")),
-    "pt03": (_env_str("PT03_LABEL", "PT03 · air sortant (chaud)"), _env_str("PT03_SHORT", "PT03 · air sortant")),
-    "pt04": (_env_str("PT04_LABEL", "PT04 · air entrant (froid)"), _env_str("PT04_SHORT", "PT04 · air entrant")),
+    "pt01": (_env_str("PT01_LABEL", "PT01 · diélectrique vers l'armoire (régulé automate)"),
+             _env_str("PT01_SHORT", "PT01 · diélec. vers armoire")),
+    "pt02": (_env_str("PT02_LABEL", "PT02 · diélectrique sortie armoire (surveillé)"),
+             _env_str("PT02_SHORT", "PT02 · diélec. sortie armoire")),
+    "pt03": (_env_str("PT03_LABEL", "PT03 · refroidissement, CDU → dry cooler"),
+             _env_str("PT03_SHORT", "PT03 · vers dry cooler")),
+    "pt04": (_env_str("PT04_LABEL", "PT04 · refroidissement, dry cooler → CDU"),
+             _env_str("PT04_SHORT", "PT04 · retour dry cooler")),
 }
-# Sondes de chaque circuit (utilisées par les alertes et l'affichage). « COOLANT » désigne
-# désormais le côté AIR (nom des réglages conservé pour ne pas casser les .env existants).
+# Sondes de chaque circuit (utilisées par les alertes et l'affichage).
 DIELECTRIC_COLUMNS: tuple[str, ...] = ("pt01", "pt02")
 COOLANT_COLUMNS: tuple[str, ...] = ("pt03", "pt04")
 
-# Côté CHAUD / FROID de chaque circuit (donné par l'exploitant, cohérent avec les mesures du
-# 15/10/2026 : PT02 33,9 > PT01 33,3 > PT03 33,0 > PT04 32,1 °C) :
-#   - diélectrique : PT02 = sortie d'armoire (chaud), PT01 = entrée d'armoire (refroidi) ;
-#   - air : PT03 = air sortant (chaud), PT04 = air entrant (froid).
-# Modifiable dans .env.
+# Côté CHAUD / FROID de chaque circuit (cohérent avec les mesures : PT02 > PT01 > PT03 > PT04,
+# échangeur à contre-courant). Modifiable dans .env.
 DIELECTRIC_HOT_COLUMN: str = _env_str("DIELECTRIC_HOT_COLUMN", "pt02").lower()
 DIELECTRIC_COLD_COLUMN: str = _env_str("DIELECTRIC_COLD_COLUMN", "pt01").lower()
 COOLANT_HOT_COLUMN: str = _env_str("COOLANT_HOT_COLUMN", "pt03").lower()
 COOLANT_COLD_COLUMN: str = _env_str("COOLANT_COLD_COLUMN", "pt04").lower()
 
 # Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique
-# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). Le cahier des charges place HT01 sur le circuit
-# « bain d'huile », c'est-à-dire le DIÉLECTRIQUE : par défaut PT02 − PT01 et les propriétés d'une
-# huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K). PT03 / PT04 étant de l'AIR, HT01 (débit de liquide)
-# ne peut pas s'appliquer à leur écart.
-# Attention : PT02 semble lue au degré près ; avec un écart de ~0,6 °C, la puissance instantanée est
-# très bruitée (lire une moyenne). Tant que THERMAL_POWER_CONFIRMED=false, c'est une estimation.
+# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). HT01 est sur le circuit diélectrique : par défaut
+# PT02 − PT01 et une huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K). Si HT01 est en fait sur la
+# boucle du dry cooler : THERMAL_POWER_HOT=pt03, THERMAL_POWER_COLD=pt04, 1040 et 3800 (eau glycolée).
+# Attention : PT02 est lue au degré près ; avec un écart de ~0,6 °C, la puissance instantanée est
+# très bruitée : l'interface affiche aussi sa moyenne sur 10 min. Estimation tant que
+# THERMAL_POWER_CONFIRMED=false.
 THERMAL_FLUID_DENSITY_KG_M3: float = _env_float("THERMAL_FLUID_DENSITY_KG_M3", 850.0)
 THERMAL_FLUID_HEAT_CAPACITY_J_KG_K: float = _env_float("THERMAL_FLUID_HEAT_CAPACITY_J_KG_K", 1900.0)
 THERMAL_POWER_HOT: str = _env_str("THERMAL_POWER_HOT", DIELECTRIC_HOT_COLUMN).lower()
@@ -199,13 +201,13 @@ THERMAL_POWER_CONFIRMED: bool = _env_bool("THERMAL_POWER_CONFIRMED", False)
 # Machine learning
 # ---------------------------------------------------------------------------
 MODEL_DIR: str = _env_path("MODEL_DIR", "models")
-# Variables d'entrée des modèles. PT01 ACTUELLE en fait partie : prédire PT01 dans 10 min sans
-# connaître sa valeur actuelle obligeait le modèle à la deviner, et la persistance (qui, elle,
-# la connaît) le battait d'office aux horizons courts. Les modèles enregistrent cette liste ;
-# un modèle entraîné avec une autre liste est refusé au chargement.
-# Un modèle entraîné quand PT02 était la grandeur régulée a une autre liste : il est refusé.
-FEATURE_COLUMNS: list[str] = ["pt01", "pt02", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor"]
-TARGET_COLUMN: str = "pt01"
+# Mesures d'entrée des modèles (valeurs actuelles ; les tendances s'y ajoutent, ml/features.py).
+# PT02 ACTUELLE en fait partie : sans elle, la persistance (qui la connaît) battrait d'office le
+# modèle. Les modèles enregistrent leur liste ; une autre liste est refusée au chargement.
+FEATURE_COLUMNS: list[str] = ["pt02", "pt01", "pt03", "pt04", "ht01", "freq_pompe", "temp_outdoor"]
+# Grandeur SURVEILLÉE et PRÉDITE : PT02, l'état du diélectrique dans l'armoire. Elle est comparée à
+# TARGET_TEMP par la régulation par étapes, et protégée par CRITICAL_TEMP.
+TARGET_COLUMN: str = "pt02"
 # Horizons dont l'erreur en production est suivie ; 600 s = horizon par défaut d'un entraînement.
 PREDICTION_HORIZONS_SECONDS: list[int] = [30, 60, 120, 300, 600]
 # Tolérance du rapprochement d'horodatage entre une mesure et sa valeur future (secondes).
@@ -236,10 +238,9 @@ PID_FEEDFORWARD_REFERENCE_HORIZON_SECONDS: int = 600
 CONTROL_LOOP_INTERVAL_SECONDS: float = _env_float("CONTROL_LOOP_INTERVAL_SECONDS", 60.0)
 TARGET_TEMP: float = _env_float("TARGET_TEMP", 35.0)
 CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
-# Seuil critique des AUTRES sondes du liquide diélectrique (PT02 ; PT01 relève de CRITICAL_TEMP) :
-# c'est ce liquide qui baigne et protège le matériel. PT02 (sortie d'armoire) est la plus chaude :
-# c'est elle que voient les équipements les plus exposés. Par défaut le même seuil que
-# CRITICAL_TEMP ; à fixer avec l'exploitant.
+# Seuil critique de l'AUTRE sonde du diélectrique (PT01, renvoyée dans l'armoire ; PT02 relève de
+# CRITICAL_TEMP). PT01 est normalement plus froide que PT02 : un dépassement signifie que la CDU
+# ne refroidit plus (ou sert de secours si PT02 est absente). À fixer avec l'exploitant.
 DIELECTRIC_CRITICAL_TEMP: float = _env_float("DIELECTRIC_CRITICAL_TEMP", CRITICAL_TEMP)
 # Point de départ prudent pour un procédé thermique lent échantillonné toutes les 60 s :
 # Kp = 10 %/°C, temps d'intégration Ti = Kp/Ki = 500 s (≈ 8 cycles), pas de dérivée (sur une
@@ -279,21 +280,21 @@ OUTDOOR_BANDS: tuple[tuple[float, str, float, float], ...] = (
 FAN_HYSTERESIS_CELSIUS: float = 2.0
 
 # Régulation PAR ÉTAPES (control/supervisor.py) : un conseil n'est publié que lorsqu'il y a
-# quelque chose à dire (PT01 se réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle
+# quelque chose à dire (PT02 se réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle
 # chaque minute. VALEURS INDICATIVES, à valider avec l'automaticien.
 # Temps laissé au bain pour réagir avant de juger l'effet d'une consigne (s).
 REGULATION_EFFECT_WAIT_SECONDS: float = _env_float("REGULATION_EFFECT_WAIT_SECONDS", 600.0)
-# Fenêtre de calcul de la tendance de PT01 (s).
+# Fenêtre de calcul de la tendance de PT02 (s).
 REGULATION_TREND_WINDOW_SECONDS: float = _env_float("REGULATION_TREND_WINDOW_SECONDS", 600.0)
-# Démarrage : PT01 au-dessus de la cible de plus de cet écart (°C)...
+# Démarrage : PT02 au-dessus de la cible de plus de cet écart (°C)...
 REGULATION_START_ABOVE_TARGET_CELSIUS: float = _env_float("REGULATION_START_ABOVE_TARGET_CELSIUS", 0.5)
-# ... ou PT01 qui monte d'au moins cette pente (°C / 10 min) près de la cible.
+# ... ou PT02 qui monte d'au moins cette pente (°C / 10 min) près de la cible.
 REGULATION_HEATING_SLOPE: float = _env_float("REGULATION_HEATING_SLOPE", 0.3)
-# Effet constaté : PT01 baisse d'au moins cette pente (°C / 10 min).
+# Effet constaté : PT02 baisse d'au moins cette pente (°C / 10 min).
 REGULATION_COOLING_SLOPE: float = _env_float("REGULATION_COOLING_SLOPE", 0.2)
-# Fin de la demande : PT01 revenue à la cible moins cet écart (°C).
+# Fin de la demande : PT02 revenue à la cible moins cet écart (°C).
 REGULATION_RELEASE_BELOW_TARGET_CELSIUS: float = _env_float("REGULATION_RELEASE_BELOW_TARGET_CELSIUS", 1.0)
-# Consigne de démarrage du ventilateur (%) et pas de renforcement (%) quand PT01 ne baisse pas.
+# Consigne de démarrage du ventilateur (%) et pas de renforcement (%) quand PT02 ne baisse pas.
 REGULATION_FAN_START_PERCENT: float = _env_float("REGULATION_FAN_START_PERCENT", 30.0)
 REGULATION_STEP_PERCENT: float = _env_float("REGULATION_STEP_PERCENT", 20.0)
 
@@ -303,8 +304,17 @@ FREE_COOLING_ENABLED: bool = _env_bool("FREE_COOLING_ENABLED", True)
 FREE_COOLING_MAX_OUTDOOR_TEMP: float = _env_float("FREE_COOLING_MAX_OUTDOOR_TEMP", 10.0)    # °C
 # Une fois l'air sous le seuil, il faut le dépasser de cet écart pour revenir au ventilateur.
 FREE_COOLING_HYSTERESIS_CELSIUS: float = _env_float("FREE_COOLING_HYSTERESIS_CELSIUS", 2.0)
-# Écart minimal PT01 − air extérieur pour que l'échange naturel suffise (°C).
+# Écart minimal PT02 − air extérieur pour que l'échange naturel suffise (°C).
 FREE_COOLING_MIN_GAP_CELSIUS: float = _env_float("FREE_COOLING_MIN_GAP_CELSIUS", 15.0)
+
+# Conseil de consigne pour PT01 (régulation EN CASCADE). L'automate régule PT01 (sortie CDU) ;
+# Voltaneum surveille PT02 (sortie armoire). En régime établi PT02 = PT01 + ΔT, où ΔT = PT02 − PT01
+# est l'échauffement apporté par les équipements (moyenne sur REGULATION_TREND_WINDOW_SECONDS).
+# Pour tenir PT02 à TARGET_TEMP, la consigne de PT01 à conseiller est donc TARGET_TEMP − ΔT, bornée
+# à [INLET_SETPOINT_MIN, TARGET_TEMP]. C'est le levier naturel : agir sur la consigne que l'automate
+# régule déjà, plutôt que sur le ventilateur qu'il pilote lui-même. Publié en INFORMATION
+# (`inlet_setpoint_advice`), jamais écrit dans l'automate. Borne basse indicative, à valider.
+INLET_SETPOINT_MIN: float = _env_float("INLET_SETPOINT_MIN", 25.0)
 
 SETPOINT_MIN: float = 0.0
 SETPOINT_MAX: float = 100.0
@@ -372,13 +382,13 @@ FLOW_MIN_M3H: float = _env_float("FLOW_MIN_M3H", 0.5)
 EFFICIENCY_ALERT_ENABLED: bool = _env_bool("EFFICIENCY_ALERT_ENABLED", False)
 EFFICIENCY_MIN_EXPECTED: float = _env_float("EFFICIENCY_MIN_EXPECTED", 0.0)
 EFFICIENCY_MAX_EXPECTED: float = _env_float("EFFICIENCY_MAX_EXPECTED", 1.0)
-# PT01 (grandeur régulée) sans valeur alors que la passerelle émet : alerte après ce délai (s).
+# PT02 (grandeur surveillée) sans valeur alors que la passerelle émet : alerte après ce délai (s).
 OIL_SENSOR_MISSING_ALERT_SECONDS: int = _env_int("OIL_SENSOR_MISSING_ALERT_SECONDS", 120)
-# PT01 strictement constante pendant ce délai (min) : valeur suspecte (0 = règle désactivée)...
+# PT02 strictement constante pendant ce délai (min) : valeur suspecte (0 = règle désactivée)...
 SENSOR_FROZEN_ALERT_MINUTES: int = _env_int("SENSOR_FROZEN_ALERT_MINUTES", 60)
-# ... SEULEMENT si, pendant ce temps, l'autre sonde du même circuit (PT02) a varié d'au moins cet
-# écart (°C) : un procédé stable peut garder la même valeur longtemps sans panne. Sans PT02, la
-# durée seule fait foi.
+# ... SEULEMENT si, pendant ce temps, l'autre sonde du même circuit (PT01) a varié d'au moins cet
+# écart (°C). PT02 est lue au degré près : sur un procédé stable, elle peut rester à 34,0 °C
+# pendant des heures sans être en panne. Sans PT01, la durée seule fait foi.
 SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS: float = _env_float("SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS", 1.0)
 
 # ---------------------------------------------------------------------------

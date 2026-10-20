@@ -17,7 +17,7 @@ Le système doit :
 1. collecter les mesures de la passerelle industrielle ;
 2. valider et historiser les mesures dans SQLite ;
 3. publier la télémétrie sur MQTT ;
-4. prédire l'évolution de la température `PT01` (diélectrique entrant, grandeur régulée) ;
+4. prédire l'évolution de la température `PT02` (état du diélectrique dans l'armoire, grandeur surveillée) ;
 5. comparer les modèles ML à une baseline de persistance ;
 6. mesurer la qualité des prédictions après observation de la valeur réelle ;
 7. publier la température cible et les conditions de refroidissement à suivre (seuils de marche et d'arrêt du ventilateur selon la température extérieure) ;
@@ -46,29 +46,14 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 
 | Point | Rôle | Colonne SQLite |
 |---|---|---|
-| `PT01` | **liquide diélectrique ENTRANT dans l'armoire** (refroidi) — **grandeur régulée et prédite** | `pt01` |
-| `PT02` | **liquide diélectrique SORTANT de l'armoire** (le plus chaud), non régulé | `pt02` |
-| `PT03` | **air sortant**, chaud | `pt03` |
-| `PT04` | **air entrant**, froid | `pt04` |
+| `PT01` | **liquide diélectrique refroidi par la CDU**, renvoyé dans l'armoire — **régulé par l'automate** | `pt01` |
+| `PT02` | **liquide diélectrique sortant de l'armoire**, vers la CDU (le plus chaud) — **grandeur surveillée et prédite** | `pt02` |
+| `PT03` | **liquide de refroidissement** (eau glycolée), sortie CDU vers le dry cooler | `pt03` |
+| `PT04` | **liquide de refroidissement**, retour du dry cooler vers la CDU (le plus froid) | `pt04` |
 | `HT01` | débit du circuit « bain d'huile », donc diélectrique (à confirmer) | `ht01` |
 | fréquence | fréquence de la **pompe** (point `PUMP`, à confirmer) | `freq_pompe` |
 
-**Mise à jour du 19/10/2026 (exploitant)** : la grandeur régulée est désormais **PT01** (`config.TARGET_COLUMN`), et PT03 / PT04 sont des températures d'**air**. Partout où ce document dit « PT02 régulée / bain », lire **PT01** ; l'alerte `dielectric_critical_temp` porte sur **PT02** et l'alerte « sonde figée » sur PT01 (référence PT02). Les réglages `COOLANT_*` désignent le côté air (noms conservés). Les modèles entraînés pour PT02 sont refusés (liste d'entrées différente) : un ré-entraînement est nécessaire.
-
-Les sections ci-dessous qui décrivent l'échangeur et la boucle d'eau glycolée datent de la lecture du 16/10/2026.
-| capteur extérieur physique | température extérieure (source prioritaire ; repli sur l'API météo si le capteur n'a pas de valeur, voir §6.5) | `temp_outdoor` (+ `temp_outdoor_source`) |
-
-Plages de validité (`config.SENSOR_VALID_RANGES`) :
-
-| Colonne | Plage valide |
-|---|---|
-| `pt01` à `pt04` | −20 … 150 °C |
-| `ht01` | 0 … 15 m³/h |
-| `freq_pompe` | 0 … 50 Hz |
-| `temp_outdoor` | −20 … 55 °C |
-
-La borne haute des sondes de température est **volontairement supérieure au seuil critique** (55 °C) : une borne à 55 °C rejetterait toute mesure supérieure comme « hors plage », et l'alerte critique comme le bypass du PID ne verraient jamais une surchauffe réelle. `validate_config()` refuse de démarrer si la borne haute de `pt02` ne dépasse pas `CRITICAL_TEMP`.
-
+**Installation (exploitant, 20/10/2026)** : `Armoire ─PT02─► CDU ─PT01─► Armoire` (diélectrique) et `Dry cooler ─PT04─► CDU ─PT03─► Dry cooler` (eau glycolée). PT02 est l'état de l'armoire : Voltaneum la surveille et la prédit (`config.TARGET_COLUMN`). PT01 est régulée par l'automate ; Voltaneum publie à titre d'information une **consigne de PT01 conseillée** (régulation en cascade, voir « Régulation en cascade » au §6.4). La lecture du 19/10/2026 (PT01 surveillée, PT03 / PT04 sur l'air) est abandonnée.
 Aucun capteur de température de pièce ou de baie ne doit être inventé ou ajouté implicitement.
 
 Confirmé par l'automaticien (16/10/2026) : deux circuits séparés par un échangeur, le **liquide diélectrique** de la cuve (PT01, PT02 — PT02 régulée), à droite sur le synoptique, et le **liquide de refroidissement** de la boucle du dry cooler (PT03, PT04), à gauche. Les noms affichés sont définis une seule fois (`config.SENSOR_LABELS`, réglables dans `.env` : `PT01_LABEL`…`PT04_SHORT`) et identiques sur tous les écrans.
@@ -339,6 +324,8 @@ Règles : rien n'est publié si PT02 est invalide ou si les mesures sont périm�
 
 **Air extérieur seul (`control/cooling_mode.py`).** Par air froid, le dry cooler évacue assez de chaleur **ventilateur arrêté**, par simple circulation naturelle de l'air à travers ses ailettes : c'est la première étape proposée à l'activation si l'air est sous `FREE_COOLING_MAX_OUTDOOR_TEMP` (10 °C) et si l'écart PT02 − air atteint `FREE_COOLING_MIN_GAP_CELSIUS` (15 °C). Hystérésis sur l'air : l'air seul reste permis jusqu'à 10 + `FREE_COOLING_HYSTERESIS_CELSIUS` = 12 °C. Si PT02 ne baisse pas après l'attente, ou si l'air se réchauffe, l'étape suivante est le ventilateur. L'état réel du ventilateur n'étant pas mesuré, Voltaneum ne peut pas vérifier que le conseil est suivi : c'est l'étape « insuffisant » qui le révèle.
 
+**Régulation en cascade (`control/cooling_advice.py`, 20/10/2026).** L'automate régule PT01 (sortie CDU) ; Voltaneum surveille PT02 (sortie armoire). En régime établi, PT02 = PT01 + ΔT, ΔT étant l'échauffement apporté par les équipements. Les conditions publiées contiennent `load_delta_t` (moyenne sur 10 min de PT02 − PT01, qui lisse la lecture au degré près de PT02) et `inlet_setpoint_advice` = `TARGET_TEMP` − ΔT, borné à [`INLET_SETPOINT_MIN`, `TARGET_TEMP`] : la consigne de PT01 qui tiendrait PT02 à la cible. C'est le levier physiquement juste : agir sur la consigne que l'automate régule déjà, plutôt que sur le ventilateur qu'il pilote lui-même. Information seulement, jamais écrite dans l'automate ; à valider avec l'automaticien (actionneur réellement piloté par l'automate, plage de consigne).
+
 Exigences côté automate (ou pont) : ignorer un message plus vieux que `valid_for_seconds` et retomber sur sa propre régulation ; rester dans ses bornes de variateur ; respecter son mode manuel / automatique, ses arrêts d'urgence et ses temporisations ; limiter la vitesse de variation ; ne jamais être piloté en écriture par ce projet. À ma connaissance, le S7-200 SMART n'a pas de client MQTT natif : un pont est probablement nécessaire (à confirmer).
 
 ### 6.5 Capteur extérieur, météo et SMTP
@@ -452,10 +439,13 @@ Avant une purge, `database/backup.py` crée une copie cohérente via l'API SQLit
 
 ### 8.1 Entrées et cible
 
-Features : `pt02` (valeur actuelle), `pt01`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`.  
-Cible : `pt02` à l'horizon, c'est-à-dire la température du bain que voient les équipements et que régule l'automate. On la prédit parce que le bain réagit lentement (grosse masse de liquide) : savoir 10 minutes à l'avance qu'il va dépasser la cible permet de refroidir plus tôt, au lieu de corriger après coup. Les entrées décrivent ce qui la fait bouger : la charge (écart PT02 − PT01 côté diélectrique), la capacité d'évacuation (PT03, PT04, air extérieur) et le débit. La valeur actuelle de `pt02` fait partie des entrées : sans elle, le modèle devait la deviner alors que la persistance, à laquelle il est comparé, la connaît. PT01, lue au dixième de degré, aide aussi le modèle à voir les variations que PT02, au degré près, ne montre pas encore.
+Mise à jour du 20/10/2026 (`ml/features.py`).
 
-Une variable **restée constante** sur toute la période (cas actuel : la pompe à 30 Hz) est **écartée des entrées** et sa valeur mémorisée (`constant_features`) : elle n'apporte aucune information, et la règle précédente (« une variable figée, aucun modèle ») bloquait l'apprentissage pour toujours. Si cette variable s'écarte ensuite de sa valeur apprise (plus de max(0,5 ; 2 %)), la prédiction est déclarée **hors domaine** (`out_of_domain`) et le PID l'ignore jusqu'au prochain ré-entraînement. Chaque modèle enregistre sa liste de variables ; un modèle dont la liste n'est pas un sous-ensemble ordonné de `config.FEATURE_COLUMNS` est refusé au chargement.  
+Entrées : mesures actuelles `pt02`, `pt01`, `pt03`, `pt04`, `ht01`, `freq_pompe`, `temp_outdoor`, puis **tendances** `pt01_d5min`, `pt01_d10min`, `pt02_d5min`, `pt02_d10min`, `pt04_d5min`, `pt04_d10min` (valeur maintenant − valeur relevée il y a 5 / 10 min, à ± un intervalle d'instantané, jamais à travers un trou de collecte). Le ventilateur du dry cooler n'est pas mesuré, mais ses marches et arrêts se lisent sur la tendance de l'air entrant (PT04) et du diélectrique : sans tendance, le modèle ne voyait qu'une photo de l'instant. Le même code calcule les tendances à l'entraînement (historique) et en service (dernières mesures en base) ; sans historique suffisant, aucune prédiction n'est faite.
+
+Cible : `pt02` à l'horizon (grandeur surveillée, lue au degré près : erreur de quantification ≈ 0,3 °C). Deux façons d'apprendre sont essayées à chaque entraînement : l'**écart** à venir (`target` = `delta`, prédiction = valeur actuelle + écart prédit : le modèle part de la persistance et n'apprend que la variation) et la **valeur** future (`absolute`). Le choix se fait sur les 20 % les plus récents de la période d'apprentissage ; la période de test reste intacte pour juger le modèle retenu. Le rapport enregistre `target`, `target_column` et `validation_rmse` ; un modèle sans ces informations (antérieur) ou sur une autre grandeur surveillée est refusé. Le rapport donne aussi l'importance de chaque entrée (`feature_importance`), affichée par `./voltaneum retrain`.
+
+Une variable **restée constante** sur toute la période (cas actuel : la pompe à 30 Hz) est **écartée des entrées** et sa valeur mémorisée (`constant_features`) : elle n'apporte aucune information, et la règle précédente (« une variable figée, aucun modèle ») bloquait l'apprentissage pour toujours. Si cette variable s'écarte ensuite de sa valeur apprise (plus de max(0,5 ; 2 %)), la prédiction est déclarée **hors domaine** (`out_of_domain`) et le PID l'ignore jusqu'au prochain ré-entraînement. Chaque modèle enregistre sa liste de variables ; un modèle dont la liste n'est pas un sous-ensemble ordonné de `ml.features.MODEL_FEATURES` est refusé au chargement.  
 Horizon de production actuel : `600` secondes.
 
 ### 8.2 Entraînement

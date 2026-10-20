@@ -52,3 +52,23 @@ def test_message_carries_target_and_validity():
     c = compute_cooling_conditions(36.0, 20.0)
     assert c["target_temp"] == config.TARGET_TEMP
     assert c["valid_for_seconds"] == config.REGULATION_EFFECT_WAIT_SECONDS + 3 * config.CONTROL_LOOP_INTERVAL_SECONDS
+
+
+def test_inlet_setpoint_advice_is_target_minus_load():
+    """Régulation en cascade : PT02 = PT01 + échauffement, donc consigne PT01 = cible − échauffement."""
+    from control.cooling_advice import inlet_setpoint_advice
+    assert inlet_setpoint_advice(0.6) == round(config.TARGET_TEMP - 0.6, 1)
+    assert inlet_setpoint_advice(-0.4) == config.TARGET_TEMP          # échauffement négatif : bruit
+    assert inlet_setpoint_advice(80.0) == config.INLET_SETPOINT_MIN   # borne basse
+    assert inlet_setpoint_advice(None) is None
+    c = compute_cooling_conditions(35.0, 15.0, 0.62)
+    assert c["load_delta_t"] == 0.62 and c["inlet_setpoint_advice"] == round(config.TARGET_TEMP - 0.62, 1)
+    assert compute_cooling_conditions(35.0, 15.0)["inlet_setpoint_advice"] is None
+
+
+def test_mean_load_delta_smooths_the_one_degree_reading():
+    from control.cooling_advice import mean_load_delta
+    hot = [(i, 34.0 if i % 2 else 35.0) for i in range(40)]       # PT02 au degré près : 34 / 35
+    cold = [(i, 33.9) for i in range(40)]
+    assert mean_load_delta(hot, cold) == pytest.approx(0.6)
+    assert mean_load_delta(hot[:2], cold) is None

@@ -42,9 +42,30 @@ def fan_thresholds(offset: float) -> tuple[float, float]:
     return centre + config.FAN_HYSTERESIS_CELSIUS / 2, centre - config.FAN_HYSTERESIS_CELSIUS / 2
 
 
-def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | None:
-    """Conditions de refroidissement à publier, ou None si la grandeur régulée (PT01) est invalide
-    (on ne publie rien plutôt que de publier des conditions sur une mesure fausse)."""
+def mean_load_delta(hot: list[tuple[float, float]], cold: list[tuple[float, float]],
+                    min_points: int = 4) -> float | None:
+    """Moyenne de la sonde chaude moins moyenne de la sonde froide sur une fenêtre ([(instant,
+    valeur)]). La moyenne lisse la lecture au degré près de PT02. None si trop peu de mesures."""
+    if len(hot) < min_points or len(cold) < min_points:
+        return None
+    return sum(v for _, v in hot) / len(hot) - sum(v for _, v in cold) / len(cold)
+
+
+def inlet_setpoint_advice(load_delta_t: float | None) -> float | None:
+    """Consigne de PT01 qui tiendrait PT02 à la cible en régime établi (régulation en cascade) :
+    TARGET_TEMP − ΔT, ΔT = moyenne récente de PT02 − PT01 (négatif ramené à 0), bornée à
+    [INLET_SETPOINT_MIN, TARGET_TEMP]. None si ΔT est inconnu."""
+    if load_delta_t is None or not math.isfinite(load_delta_t):
+        return None
+    advice = config.TARGET_TEMP - max(0.0, load_delta_t)
+    return round(min(config.TARGET_TEMP, max(config.INLET_SETPOINT_MIN, advice)), 1)
+
+
+def compute_cooling_conditions(t_oil: float, t_outdoor: float | None,
+                               load_delta_t: float | None = None) -> dict | None:
+    """Conditions de refroidissement à publier, ou None si la grandeur surveillée (PT02) est invalide
+    (on ne publie rien plutôt que de publier des conditions sur une mesure fausse).
+    `load_delta_t` : moyenne récente de PT02 − PT01 (°C), pour le conseil de consigne de PT01."""
     if t_oil is None or not math.isfinite(t_oil):
         return None
 
@@ -62,6 +83,9 @@ def compute_cooling_conditions(t_oil: float, t_outdoor: float | None) -> dict | 
         # Valeurs mesurées, pour la traçabilité côté automate.
         "t_oil": t_oil,
         "t_outdoor": t_outdoor if outdoor_ok else None,
+        # Régulation en cascade : échauffement mesuré dans l'armoire et consigne de PT01 conseillée.
+        "load_delta_t": None if load_delta_t is None or not math.isfinite(load_delta_t) else round(load_delta_t, 2),
+        "inlet_setpoint_advice": inlet_setpoint_advice(load_delta_t),
         # Au-delà de cette durée sans nouveau message, l'automate doit ignorer ces conditions et
         # reprendre sa propre régulation. Les messages ne partent qu'aux étapes (control/supervisor.py) :
         # pendant une demande, un message au plus tard à chaque vérification de l'effet.

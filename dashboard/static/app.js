@@ -9,16 +9,16 @@
   // Noms des sondes : valeurs par défaut identiques à config.py, remplacées par celles du serveur
   // (réglables dans .env) dès le premier instantané — voir applyLabels().
   const LABELS = {
-    pt01: 'PT01 · diélectrique entrant (régulé)', pt02: 'PT02 · diélectrique sortant',
-    pt03: 'PT03 · air sortant (chaud)', pt04: 'PT04 · air entrant (froid)',
+    pt01: 'PT01 · diélectrique vers l\'armoire (régulé automate)', pt02: 'PT02 · diélectrique sortie armoire (surveillé)',
+    pt03: 'PT03 · refroidissement, CDU → dry cooler', pt04: 'PT04 · refroidissement, dry cooler → CDU',
     ht01: 'HT01 · débit', freq_pompe: 'Fréquence pompe', temp_outdoor: 'Air extérieur',
     thermal_power_kw: 'Puissance dissipée (estimée)', humidity_outdoor: 'Humidité extérieure',
   };
   const UNITS = { pt01: '°C', pt02: '°C', pt03: '°C', pt04: '°C', ht01: 'm³/h', freq_pompe: 'Hz', temp_outdoor: '°C', thermal_power_kw: 'kW', humidity_outdoor: '%' };
   const DIGITS = { pt01: 1, pt02: 1, pt03: 1, pt04: 1, ht01: 2, freq_pompe: 1, temp_outdoor: 1, thermal_power_kw: 1, humidity_outdoor: 0 };
-  const COLORS = { pt01: '--s1', pt02: '--s2', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7', thermal_power_kw: '--s2', humidity_outdoor: '--s7' };
-  // Grandeur régulée (config.TARGET_COLUMN, transmise par le serveur dans les seuils).
-  let REG = 'pt01';
+  const COLORS = { pt01: '--s2', pt02: '--s1', pt03: '--s3', pt04: '--s4', temp_outdoor: '--s5', freq_pompe: '--s5', ht01: '--s7', thermal_power_kw: '--s2', humidity_outdoor: '--s7' };
+  // Grandeur surveillée (config.TARGET_COLUMN, transmise par le serveur dans les seuils).
+  let REG = 'pt02';
   const regName = () => REG.toUpperCase();
   const MODEL_LABELS = { random_forest: 'Forêt aléatoire', gradient_boosting: 'Gradient boosting', baseline_persistence: 'Persistance (référence)' };
   const MODEL_COLORS = { random_forest: '--pred', gradient_boosting: '--pred-2' };
@@ -185,7 +185,7 @@
 
   // ================================================================ noms des sondes
   // Les noms viennent du serveur (config.SENSOR_LABELS, réglables dans .env) : synoptique, tuile
-  // de la grandeur régulée, courbes et légendes de l'historique affichent tous le même nom.
+  // de la grandeur surveillée, courbes et légendes de l'historique affichent tous le même nom.
   let labelsApplied = '';
   function applyLabels(labels) {
     if (!labels) return;
@@ -274,15 +274,17 @@
     else if (src === 'sensor') { teHint.append(el('span', 'chip ok', 'capteur'), document.createTextNode(' mesure locale')); }
 
     // Puissance dissipée estimée (débit × écart de température)
-    const tpw = tile('thermal_power_kw');
-    setNumber($('.v', tpw), v.thermal_power_kw, 1);
-    tpw.className = 'tile' + (v.thermal_power_kw == null ? ' absent' : '');
+    // Valeur affichée : moyenne sur 10 min (l'instantanée est très bruitée, PT02 lue au degré près).
+    const tpw = tile('thermal_power_kw'), tpMean = s.thermal_power_kw_10min ?? v.thermal_power_kw;
+    setNumber($('.v', tpw), tpMean, 1);
+    tpw.className = 'tile' + (tpMean == null ? ' absent' : '');
     const tpConf = th.thermal_power || {};
     const tpHint = $('.hint', tpw); tpHint.replaceChildren();
-    if (v.thermal_power_kw == null) tpHint.textContent = 'débit ou températures absents';
+    if (tpMean == null) tpHint.textContent = 'débit ou températures absents';
     else {
       tpHint.append(tpConf.confirmed ? el('span', 'chip ok', 'confirmé') : el('span', 'chip warn', 'estimation'),
-        document.createTextNode(' ' + (tpConf.hot || 'pt03').toUpperCase() + ' − ' + (tpConf.cold || 'pt04').toUpperCase() + ' × débit'));
+        document.createTextNode(' moy. 10 min · ' + (tpConf.hot || 'pt02').toUpperCase() + ' − ' + (tpConf.cold || 'pt01').toUpperCase() + ' × débit'
+          + (v.thermal_power_kw == null ? '' : ' · instant. ' + num(v.thermal_power_kw) + ' kW')));
     }
     setPill('#pill-ext', src === 'sensor' ? 'ok' : src === 'weather' ? 'warn' : '', src === 'sensor' ? 'Air ext. : capteur' : src === 'weather' ? 'Air ext. : météo' : 'Air ext. : absent');
     $('#pill-ext').hidden = false;
@@ -316,6 +318,8 @@
       dd('fan_off_below_temp').textContent = num(cool.fan_off_below_temp) + ' °C';
       dd('fan_min_freq_hz').textContent = cool.fan_min_freq_hz == null ? 'non conseillée' : num(cool.fan_min_freq_hz, 0) + ' Hz';
       dd('critical_temp').textContent = num(cool.critical_temp) + ' °C';
+      dd('load_delta_t').textContent = cool.load_delta_t == null ? '—' : signed(cool.load_delta_t, 2) + ' °C';
+      dd('inlet_setpoint_advice').textContent = cool.inlet_setpoint_advice == null ? '—' : num(cool.inlet_setpoint_advice) + ' °C';
     } else {
       $$('#cooling dd').forEach(d => { d.textContent = '—'; });
     }

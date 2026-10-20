@@ -22,6 +22,7 @@ from control.trend import slope_per_10min
 from control.pid_controller import compute_setpoint_detailed
 from control.thermal import estimate_power_kw
 from database import sqlite_client
+from ml.features import MODEL_FEATURES
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,9 @@ def _utc(epoch: float) -> str:
 
 class _Process:
     """Modèle thermique grossier, dans l'ordre des mesures réelles (PT02 > PT01 > PT03 > PT04) :
-    les équipements chauffent le liquide diélectrique, qui sort de l'armoire chaud (PT02) et y
-    revient refroidi (PT01, grandeur régulée) ; l'air entre froid (PT04) et ressort chaud (PT03). Pour que la démonstration ait de quoi apprendre, la « fréquence » y varie et
+    les équipements chauffent le diélectrique de l'armoire (PT02), la CDU le refroidit (PT01, renvoyé
+    dans l'armoire) ; la boucle d'eau glycolée emporte la chaleur (PT03 chaud) vers le dry cooler,
+    qui la rend à l'air (PT04 froid). Pour que la démonstration ait de quoi apprendre, la « fréquence » y varie et
     représente l'effort de refroidissement (sur le site, la pompe reste à 30 Hz)."""
 
     def __init__(self, seed: int = 7) -> None:
@@ -47,7 +49,7 @@ class _Process:
         self.freq = 25.0
         self.pid_state: dict = {}
         self.supervisor_state: dict = {}
-        self.recent: list[tuple[float, float]] = []    # (instant, PT01) : tendance pour les étapes
+        self.recent: list[tuple[float, float]] = []    # (instant, PT02) : tendance pour les étapes
 
     def outdoor(self, t: float) -> float:
         hour = (t / 3600) % 24
@@ -63,10 +65,10 @@ class _Process:
         self.freq += (max(0.0, min(50.0, target_freq)) - self.freq) * 0.08 + self.rng.gauss(0, 0.3)
         self.freq = max(0.0, min(50.0, self.freq))
         flow = 0.0 if self.freq < 3 else 0.6 + self.freq * 0.065 + self.rng.gauss(0, 0.03)
-        coolant_cold = ext + 0.55 * (self.oil - ext)          # air entrant (PT04)
+        coolant_cold = ext + 0.55 * (self.oil - ext)          # sortie du dry cooler (PT04)
         return {
-            "pt01": round(self.oil - 0.6 * load + self.rng.gauss(0, 0.05), 2),   # diélectrique entrant
-            "pt02": round(self.oil, 2),                                            # diélectrique sortant
+            "pt01": round(self.oil - 0.6 * load + self.rng.gauss(0, 0.05), 2),   # sortie CDU, vers l'armoire
+            "pt02": round(self.oil),                                               # sortie armoire, lue au degré près
             "pt03": round(coolant_cold + 0.9 * load + self.rng.gauss(0, 0.05), 2),
             "pt04": round(coolant_cold + self.rng.gauss(0, 0.1), 2),
             "ht01": round(max(0.0, flow), 3),
@@ -114,7 +116,7 @@ def _log_control(conn, process: _Process, ts: float, values: dict, predicted: fl
     slope = slope_per_10min(process.recent, window)
     decision, process.supervisor_state = decide(
         t_oil, slope, t_ext, detail.setpoint, predicted, ts, process.supervisor_state)
-    cond = compute_cooling_conditions(t_oil, t_ext) or {}
+    cond = compute_cooling_conditions(t_oil, t_ext, values["pt02"] - values["pt01"]) or {}
     event = decision.event
     step = {"phase": decision.phase, "event": event, "cooling_mode": decision.cooling_mode,
             "cooling_mode_reason": decision.reason, "command_percent": decision.command_percent}
@@ -253,7 +255,7 @@ def _write_demo_training_report(history: list[tuple[float, float]], horizon: int
     report = {
         "status": "ok", "best_model": "gradient_boosting", "beats_persistence": True,
         "trained_at": int(time.time()), "n_samples": len(history), "horizon_seconds": horizon,
-        "features": list(config.FEATURE_COLUMNS),
+        "features": list(MODEL_FEATURES), "target": "delta", "target_column": config.TARGET_COLUMN,
         "random_forest": {"rmse": 0.35, "mae": 0.28},
         "gradient_boosting": {"rmse": 0.28, "mae": 0.22},
         "baseline_persistence": {"rmse": round(max(persistence, 0.45), 3), "mae": round(max(persistence, 0.45) * 0.8, 3)},
