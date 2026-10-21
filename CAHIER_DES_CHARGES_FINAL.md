@@ -50,7 +50,7 @@ Le projet ne remplace ni l'automate, ni les sécurités électriques, ni la supe
 | `PT02` | **liquide diélectrique sortant de l'armoire**, vers la CDU (le plus chaud) — **grandeur surveillée et prédite** | `pt02` |
 | `PT03` | **liquide de refroidissement** (eau glycolée), sortie CDU vers le dry cooler | `pt03` |
 | `PT04` | **liquide de refroidissement**, retour du dry cooler vers la CDU (le plus froid) | `pt04` |
-| `HT01` | débit du circuit « bain d'huile », donc diélectrique (à confirmer) | `ht01` |
+| `HT01` | débit du **liquide diélectrique**, de l'armoire vers la CDU (confirmé le 21/10/2026) | `ht01` |
 | fréquence | fréquence de la **pompe** (point `PUMP`, à confirmer) | `freq_pompe` |
 
 **Installation (exploitant, 20/10/2026)** : `Armoire ─PT02─► CDU ─PT01─► Armoire` (diélectrique) et `Dry cooler ─PT04─► CDU ─PT03─► Dry cooler` (eau glycolée). PT02 est l'état de l'armoire : Voltaneum la surveille et la prédit (`config.TARGET_COLUMN`). PT01 est régulée par l'automate ; Voltaneum publie à titre d'information une **consigne de PT01 conseillée** (régulation en cascade, voir « Régulation en cascade » au §6.4). La lecture du 19/10/2026 (PT01 surveillée, PT03 / PT04 sur l'air) est abandonnée.
@@ -74,7 +74,7 @@ Conséquences prises en compte par le logiciel :
 - **limite physique** : le dry cooler ne peut pas refroidir sous la température de l'air. PT02 ne descend jamais sous l'air extérieur + les écarts d'approche du dry cooler et de l'échangeur ; par air chaud, la cible peut devenir inatteignable même à 100 %. D'où l'anticipation météo (`FEEDFORWARD_OUTDOOR_HOT_THRESHOLD`, forcément sous `TARGET_TEMP`) et les seuils avancés par air chaud ;
 - **inertie** : la boucle d'eau réagit en dizaines de secondes, le bain (grosse masse de liquide) en dizaines de minutes : c'est ce délai qui justifie de **prédire PT02** pour agir avant la dérive ;
 - **mesure de PT02** : elle semble lue au degré près (valeurs entières 33, 34, 35 °C). Une valeur constante pendant une heure n'est donc pas une panne en soi (voir l'alerte « PT02 figée », §10) ;
-- **puissance évacuée** : `thermal_power_kw` = débit HT01 × masse volumique × capacité thermique × (sonde chaude − sonde froide). HT01 étant sur le circuit « bain d'huile », la valeur par défaut est PT02 − PT01 avec une huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K) : environ 2,8 kW sur les relevés. Si HT01 est en fait sur la boucle du dry cooler : PT03 − PT04 et 1040 / 3800 (eau glycolée). Avec un écart d'environ 0,6 °C et PT02 au degré près, la valeur instantanée est très bruitée : lire une moyenne. Estimation tant que `THERMAL_POWER_CONFIRMED=false` ;
+- **puissance évacuée** : `thermal_power_kw` = débit HT01 × masse volumique × capacité thermique × (sonde chaude − sonde froide). HT01 mesure le débit du diélectrique entre l'armoire et la CDU (confirmé le 21/10/2026) : écart PT02 − PT01, avec par défaut les propriétés d'une huile diélectrique type (≈ 850 kg/m³, 1900 J/kg/K, à remplacer par celles de la fiche technique du fluide) : environ 2,8 kW sur les relevés. Avec un écart d'environ 0,6 °C et PT02 au degré près, la valeur instantanée est très bruitée : lire une moyenne. Estimation tant que `THERMAL_POWER_CONFIRMED=false` ;
 - **efficacité de l'échangeur** : ε = max(PT02 − PT01, PT03 − PT04) / (PT02 − PT04), entre 0 et 1 (≈ 0,47 sur les relevés). L'alerte de dérive reste désactivée tant que la plage normale n'est pas connue.
 
 Grandeurs dérivées, enregistrées à chaque instantané :
@@ -655,7 +655,7 @@ La connexion aux passerelles (`10.0.1.33`, `10.0.1.34`) et au broker d'entrepris
 
 Les paramètres suivants restent à confirmer sur le terrain :
 
-- `PUMP` comme fréquence de la pompe ; côté chaud / froid de chaque paire de sondes ; circuit de HT01 ;
+- `PUMP` comme fréquence de la pompe ; propriétés du fluide diélectrique (fiche technique) ;
 - gains PID ;
 - seuil critique ;
 - bandes de température extérieure, décalages, hystérésis et fréquences conseillées (`OUTDOOR_BANDS`) ;

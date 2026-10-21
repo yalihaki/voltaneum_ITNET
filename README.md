@@ -109,8 +109,9 @@ capteur extérieur (cas actuel, `OUTDOOR_SENSOR_MODE=none`), la température vie
 est **régulée par l'automate**. Voltaneum publie donc aussi une **consigne de PT01 conseillée**
 (régulation en cascade : cible − échauffement moyen PT02 − PT01). Ordre mesuré cohérent :
 PT02 > PT01 > PT03 > PT04. S'y ajoute la **puissance
-dissipée estimée** (débit HT01 × écart PT02 − PT01 × propriétés du diélectrique), affichée comme
-estimation tant que débit, fluide et sondes ne sont pas confirmés (`THERMAL_POWER_CONFIRMED`).
+dissipée estimée** (débit HT01 du diélectrique, armoire → CDU, × écart PT02 − PT01 × propriétés du
+fluide), affichée en moyenne sur 10 min et comme estimation tant que les propriétés du fluide ne
+sont pas renseignées (`THERMAL_POWER_CONFIRMED`).
 
 ## 5. Alertes
 

@@ -145,7 +145,7 @@ SENSOR_VALID_RANGES: dict[str, tuple[float, float]] = {
     "pt02": (-20.0, 150.0),      # °C — diélectrique sortant de l'armoire, vers la CDU (grandeur surveillée et prédite)
     "pt03": (-20.0, 150.0),      # °C — liquide de refroidissement, sortie CDU vers le dry cooler (chaud)
     "pt04": (-20.0, 150.0),      # °C — liquide de refroidissement, retour du dry cooler vers la CDU (froid)
-    "ht01": (0.0, 15.0),         # m³/h — débit du circuit diélectrique (cahier des charges, à confirmer)
+    "ht01": (0.0, 15.0),         # m³/h — débit du diélectrique, armoire → CDU (confirmé 21/10/2026)
     "freq_pompe": (0.0, 50.0),   # Hz — fréquence du variateur de la pompe (point PUMP, à confirmer)
     "temp_outdoor": (-20.0, 55.0),  # °C — capteur extérieur indépendant
 }
@@ -185,9 +185,10 @@ COOLANT_HOT_COLUMN: str = _env_str("COOLANT_HOT_COLUMN", "pt03").lower()
 COOLANT_COLD_COLUMN: str = _env_str("COOLANT_COLD_COLUMN", "pt04").lower()
 
 # Puissance thermique dissipée ESTIMÉE (kW) = débit HT01 × masse volumique × capacité thermique
-# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). HT01 est sur le circuit diélectrique : par défaut
-# PT02 − PT01 et une huile diélectrique (≈ 850 kg/m³, 1900 J/kg/K). Si HT01 est en fait sur la
-# boucle du dry cooler : THERMAL_POWER_HOT=pt03, THERMAL_POWER_COLD=pt04, 1040 et 3800 (eau glycolée).
+# × (THERMAL_POWER_HOT − THERMAL_POWER_COLD). HT01 mesure le débit du DIÉLECTRIQUE, entre l'armoire
+# et la CDU (confirmé par l'exploitant le 21/10/2026) : écart PT02 − PT01. Reste à confirmer : la
+# masse volumique et la capacité thermique du fluide (fiche technique ; ≈ 850 kg/m³ et
+# 1900 J/kg/K pour une huile diélectrique type), et PT02 au dixième de degré.
 # Attention : PT02 est lue au degré près ; avec un écart de ~0,6 °C, la puissance instantanée est
 # très bruitée : l'interface affiche aussi sa moyenne sur 10 min. Estimation tant que
 # THERMAL_POWER_CONFIRMED=false.

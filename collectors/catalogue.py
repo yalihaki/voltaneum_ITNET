@@ -33,7 +33,7 @@ POINT_DESCRIPTIONS: dict[str, tuple[str, bool]] = {
     "PT02": ("Diélectrique sortant de l'armoire, vers la CDU (°C) : état de l'armoire", True),
     "PT03": ("Liquide de refroidissement, sortie CDU vers le dry cooler (°C)", True),
     "PT04": ("Liquide de refroidissement, retour du dry cooler vers la CDU (°C)", True),
-    "HT01": ("Débit du circuit diélectrique (m³/h)", True),
+    "HT01": ("Débit du diélectrique, de l'armoire vers la CDU (m³/h)", True),
     "PUMP": ("Fréquence de la pompe (Hz)", True),
     "Pump frequency": ("Fréquence de la pompe (Hz)", True),
     "Frequence": ("Fréquence de la pompe (Hz)", True),

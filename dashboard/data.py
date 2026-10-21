@@ -841,6 +841,6 @@ def settings_summary() -> dict:
                                             f"{config.SENSOR_LABELS[config.THERMAL_POWER_COLD][0]}",
             "Masse volumique du fluide (kg/m³)": config.THERMAL_FLUID_DENSITY_KG_M3,
             "Capacité thermique (J/kg/K)": config.THERMAL_FLUID_HEAT_CAPACITY_J_KG_K,
-            "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION à confirmer (circuit de HT01, fluide et sondes)",
+            "Statut": "confirmé" if config.THERMAL_POWER_CONFIRMED else "ESTIMATION : propriétés du fluide à confirmer (fiche technique), PT02 lue au degré près",
         },
     }
