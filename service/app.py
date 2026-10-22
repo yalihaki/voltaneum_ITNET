@@ -98,6 +98,9 @@ class VoltaneumApp:
         self._prediction_used = False
         # Prochain contrôle de l'installation (horloge monotone) : le premier dès le premier cycle.
         self._next_plant_check = 0.0
+        # Changements de réglages de l'automate signalés à partir de cet instant (UTC) : ceux d'avant
+        # le démarrage ne sont pas renvoyés.
+        self._plant_changes_since = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         self._disagreement_reported = False
         self._out_of_domain_reported = False
         self._retrain_process: subprocess.Popen | None = None
@@ -264,8 +267,11 @@ class VoltaneumApp:
             return
         self._next_plant_check = now + config.PLANT_CHECK_INTERVAL_SECONDS
         try:
-            for level, rule, message in run_plant_checks(config.SQLITE_DB_PATH):
+            checked_at = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            for level, rule, message in run_plant_checks(config.SQLITE_DB_PATH,
+                                                         changes_since=self._plant_changes_since):
                 self.alerts.report(level, rule, message)
+            self._plant_changes_since = checked_at
         except Exception:
             logger.exception("Contrôles de l'installation en échec")
 

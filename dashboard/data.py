@@ -785,6 +785,21 @@ def catalogue(db_path: str, now: float | None = None) -> dict:
     }
 
 
+def catalogue_changes(db_path: str, limit: int = 50) -> list[dict]:
+    """Derniers changements de valeur des points de réglage / mode de l'automate (les plus récents
+    d'abord), d'après le journal `catalogue_changes`. Liste vide si le journal n'existe pas encore."""
+    with connect_readonly(db_path) as conn:
+        if not _table_exists(conn, "catalogue_changes"):
+            return []
+        rows = conn.execute(
+            "SELECT CAST(strftime('%s', timestamp) AS INTEGER), key_name, key_node, old_value, new_value "
+            "FROM catalogue_changes WHERE dev_node = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
+            (config.SENSOR_DRIVER_NODE, int(limit)),
+        ).fetchall()
+    return [{"ts": int(ts) * 1000, "key_name": name, "key_node": node, "old": old, "new": new}
+            for ts, name, node, old, new in rows]
+
+
 def thresholds() -> dict:
     """Seuils utiles à l'affichage (aucun identifiant ni adresse)."""
     return {

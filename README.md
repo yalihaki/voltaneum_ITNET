@@ -127,11 +127,17 @@ sont pas renseignées (`THERMAL_POWER_CONFIRMED`).
 | `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT01 a bougé d'au moins 1 °C |
 | `safety_bypass_active` | CRITIQUE | shunt de sécurité actif sur l'automate (`Emergency stop bypass`, `Phase sequence bypass`), lu dans le catalogue ; rappel une fois par jour |
 | `automate_setpoint_mismatch` | ATTENTION | consigne de l'automate (`Temperature setpoint`, `VD500`) à plus de `AUTOMATE_SETPOINT_TOLERANCE_CELSIUS` de `TARGET_TEMP` ; une fois par jour |
+| `automate_mode_changed` | ATTENTION | un point de réglage ou de mode de l'automate a changé (auto / manuel, marche / arrêt, demande manuelle, consigne, shunt), avec l'ancienne et la nouvelle valeur ; un e-mail par contrôle de 15 min au plus ; historique : `./voltaneum catalogue --changes` |
 | `fan_short_cycling` | ATTENTION | ventilateur du dry cooler démarré plus de `FAN_STARTS_PER_HOUR_MAX` fois sur la dernière heure (démarrage = PT04 −1,5 °C en 30 s) ; une fois par jour |
 | `cooling_ineffective` | ATTENTION | consigne au maximum et PT02 ne baisse toujours pas (ventilateur, dry cooler ou automate à vérifier) |
 | `model_disagreement` | ATTENTION | les deux modèles divergent (la prédiction n'est alors pas utilisée) |
 | `outdoor_sensor_weather_mismatch` | ATTENTION | capteur extérieur et météo très différents |
 | `storage_*` | ATTENTION / CRITIQUE | stockage presque plein, purge, sauvegarde impossible (dont la quotidienne) |
+
+**E-mails explicites** (`notifications/alert_texts.py`) : sujet en clair (« [Voltaneum] CRITIQUE —
+Shunt de sécurité actif sur l'automate »), puis ce qui se passe, pourquoi c'est important, que faire,
+les mesures au moment de l'alerte, les commandes `./voltaneum` pour vérifier et le délai avant un
+rappel. Le journal (onglet Alertes) garde le message court.
 
 Chaque alerte est journalisée une fois (onglet Alertes) et envoyée par e-mail si SMTP est
 configuré, avec un délai entre deux e-mails d'une même règle (un jour pour PT02 figée). Les

@@ -157,6 +157,23 @@ CREATE TABLE IF NOT EXISTS gateway_catalogue (
 """
 
 
+# Journal des CHANGEMENTS de valeur des points du catalogue NON utilisés comme mesures (modes, consignes,
+# shunts, registres...) : une ligne seulement quand la valeur change, jamais toutes les 15 s. Sert à
+# `./voltaneum catalogue --changes` et à l'alerte « changement de mode de l'automate »
+# (notifications/plant_checks.py). Cas réel : passage en mode manuel le 22/10/2026, vu après coup.
+_CREATE_CATALOGUE_CHANGES_SQL = """
+CREATE TABLE IF NOT EXISTS catalogue_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    dev_node TEXT NOT NULL,
+    key_node TEXT NOT NULL,
+    key_name TEXT,
+    old_value TEXT,
+    new_value TEXT
+);
+"""
+
+
 @contextmanager
 def connect(db_path: str = SQLITE_DB_PATH) -> Iterator[sqlite3.Connection]:
     """Ouvre une connexion SQLite, la valide (commit) ou l'annule (rollback), puis la FERME.
@@ -205,6 +222,7 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
                 conn.execute(f"ALTER TABLE control_log ADD COLUMN {column} {sql_type}")  # nosec B608
         conn.execute(_CREATE_CONTROL_INDEX_SQL)
         conn.execute(_CREATE_CATALOGUE_TABLE_SQL)
+        conn.execute(_CREATE_CATALOGUE_CHANGES_SQL)
 
     try:
         os.chmod(db_path, 0o600)
@@ -527,16 +545,32 @@ def save_catalogue(points: list[dict], columns: dict[str, str], sensor_node: str
 def update_catalogue_values(dev_node: str, values: dict[str, tuple[object, float]],
                             db_path: str = SQLITE_DB_PATH) -> int:
     """Dernière valeur brute reçue de chaque point (KeyNode -> (valeur, instant epoch)).
+
+    Pour les points qui ne sont pas des mesures (column_name vide : modes, consignes, shunts...), un
+    CHANGEMENT de valeur est aussi journalisé dans `catalogue_changes` (ancienne et nouvelle valeur).
     Retourne le nombre de points du catalogue mis à jour. Ne lève jamais d'exception."""
     if not values:
         return 0
+    encoded = {key_node: (json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value, ts)
+               for key_node, (value, ts) in values.items()}
     try:
         with connect(db_path) as conn:
+            conn.execute(_CREATE_CATALOGUE_CHANGES_SQL)
+            previous = {key: (name, old) for key, name, old in conn.execute(
+                "SELECT key_node, key_name, last_value FROM gateway_catalogue "
+                "WHERE dev_node = ? AND column_name IS NULL", (dev_node,))}
+            changes = [(time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)), dev_node, key, previous[key][0],
+                        previous[key][1], new)
+                       for key, (new, ts) in encoded.items()
+                       if key in previous and previous[key][1] is not None and previous[key][1] != new]
+            if changes:
+                conn.executemany(
+                    "INSERT INTO catalogue_changes (timestamp, dev_node, key_node, key_name, old_value, new_value) "
+                    "VALUES (?, ?, ?, ?, ?, ?)", changes)
             cursor = conn.executemany(
                 "UPDATE gateway_catalogue SET last_value = ?, last_seen = ? WHERE dev_node = ? AND key_node = ?",
-                [(json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value,
-                  time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)), dev_node, key_node)
-                 for key_node, (value, ts) in values.items()],
+                [(value, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)), dev_node, key_node)
+                 for key_node, (value, ts) in encoded.items()],
             )
             return max(0, cursor.rowcount)
     except sqlite3.Error:

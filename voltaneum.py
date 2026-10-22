@@ -229,6 +229,24 @@ def cmd_catalogue(args: argparse.Namespace) -> int:
 
     from dashboard.data import DatabaseUnavailable, catalogue
 
+    if args.changes:
+        from dashboard.data import catalogue_changes
+
+        try:
+            changes = catalogue_changes(args.db, limit=args.changes)
+        except DatabaseUnavailable as exc:
+            print(f"Catalogue indisponible : {exc}")
+            return 1
+        if not changes:
+            print("Aucun changement de réglage ou de mode de l'automate enregistré (journal tenu depuis la "
+                  "mise à jour du 22/10/2026 ; les mesures PT01…PUMP n'y figurent pas).")
+            return 0
+        print(f"Derniers changements de réglage / mode de l'automate ({len(changes)}, les plus récents d'abord) :\n")
+        print(f"{'HEURE (locale)':<16} {'POINT':<30} {'AVANT':>10}  {'APRÈS':<10}")
+        for c in changes:
+            when = time.strftime("%d/%m %H:%M:%S", time.localtime(c["ts"] / 1000))
+            print(f"{when:<16} {str(c['key_name'])[:30]:<30} {str(c['old'])[:10]:>10}  {str(c['new'])[:10]:<10}")
+        return 0
     try:
         cat = catalogue(args.db)
     except DatabaseUnavailable as exc:
@@ -440,6 +458,8 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--db", default=config.SQLITE_DB_PATH)
     cat.add_argument("--details", action="store_true", help="afficher comment Voltaneum utilise chaque point")
     cat.add_argument("--used", action="store_true", help="seulement les points utilisés")
+    cat.add_argument("--changes", type=int, nargs="?", const=50, default=0, metavar="N",
+                     help="les N derniers changements de réglage / mode de l'automate (défaut 50)")
     cat.set_defaults(func=cmd_catalogue)
 
     preds = sub.add_parser("predictions", help="vérifier les prédictions : prédit / réel à l'échéance / erreur")

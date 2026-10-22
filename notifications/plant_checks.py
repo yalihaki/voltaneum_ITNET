@@ -18,8 +18,13 @@ de les découvrir à la main :
      Constaté : 236 démarrages par jour, un toutes les 5 min (12 par heure, jusqu'à 18 par air
      chaud), ce qui use le moteur et les contacteurs.
 
-Les trois sont des situations DURABLES : rappel une fois par jour au plus (notifications/alerts.py,
-RULE_COOLDOWN_MINUTES). Voltaneum ne corrige rien lui-même : il n'écrit jamais dans l'automate.
+  4. automate_mode_changed (ATTENTION) : un point de réglage ou de mode de l'automate a changé de
+     valeur (auto / manuel, marche / arrêt, demande manuelle de la pompe, consigne, shunt...),
+     d'après le journal `catalogue_changes`. Constaté : passage en mode MANUEL le 22/10/2026 entre
+     9:02 et 17:14, découvert après coup. Un e-mail par contrôle (15 min) regroupe les changements.
+
+Les trois premiers sont des situations DURABLES : rappel une fois par jour au plus
+(notifications/alerts.py, RULE_COOLDOWN_MINUTES). Voltaneum ne corrige rien lui-même : il n'écrit jamais dans l'automate.
 Une valeur de catalogue trop ancienne (point qui ne remonte plus) n'est pas jugée.
 """
 
@@ -28,6 +33,7 @@ from __future__ import annotations
 import sqlite3
 import statistics
 import time
+from datetime import datetime, timezone
 
 import config
 from database import sqlite_client
@@ -112,8 +118,50 @@ def fan_findings(pt04_points: list[tuple[float, float]], now: float) -> list[tup
              "l'automate. Démarrages déduits des chutes rapides de PT04.")]
 
 
-def run_plant_checks(db_path: str = config.SQLITE_DB_PATH, now: float | None = None) -> list[tuple[str, str, str]]:
-    """Tous les contrôles de l'installation, à partir de la base. Ne lève jamais d'exception."""
+# Lecture en clair des valeurs booléennes de quelques points de mode (sinon : « ancienne → nouvelle »).
+_MODE_MEANINGS: dict[str, dict[str, str]] = {
+    "DIAG Auto mode M4.2": {"true": "mode AUTOMATIQUE", "false": "mode MANUEL"},
+    "AUTO REQUEST M4.2": {"true": "demande de mode automatique ACTIVE", "false": "demande de mode automatique RETIRÉE"},
+    "MANUAL PUMP REQUEST M4.3": {"true": "pompe en marche MANUELLE demandée", "false": "demande de marche manuelle RETIRÉE"},
+    "ON/OFF": {"true": "installation en MARCHE", "false": "installation à l'ARRÊT"},
+    "Emergency stop bypass": {"true": "arrêt d'urgence SHUNTÉ", "false": "shunt de l'arrêt d'urgence LEVÉ"},
+    "Phase sequence bypass": {"true": "contrôle des phases SHUNTÉ", "false": "shunt du contrôle des phases LEVÉ"},
+}
+# Au-delà de ce nombre de changements d'un même point en une fois, il est résumé (point qui varie
+# en permanence : ce n'est plus un réglage).
+MAX_CHANGES_DETAILED = 3
+
+
+def mode_change_findings(changes: list[tuple[str, str, str, str]]) -> list[tuple[str, str, str]]:
+    """Une alerte qui décrit, en clair, les changements de réglages / modes de l'automate.
+    `changes` : [(horodatage UTC, nom du point, ancienne valeur, nouvelle valeur)], du plus ancien
+    au plus récent."""
+    if not changes:
+        return []
+    by_point: dict[str, list[tuple[str, str, str]]] = {}
+    for ts, name, old, new in changes:
+        by_point.setdefault(name or "?", []).append((ts, str(old), str(new)))
+    lines = []
+    for name, events in by_point.items():
+        meanings = _MODE_MEANINGS.get(name, {})
+        if len(events) > MAX_CHANGES_DETAILED:
+            lines.append(f"- {name} : a changé {len(events)} fois (dernière valeur {events[-1][2]})")
+            continue
+        for ts, old, new in events:
+            when = (datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    .astimezone().strftime("%d/%m %H:%M"))
+            meaning = meanings.get(new.strip().lower())
+            lines.append(f"- {when} · {name} : {old} → {new}" + (f" ({meaning})" if meaning else ""))
+    names = ", ".join(by_point)
+    return [("ATTENTION", "automate_mode_changed",
+             f"Réglage ou mode de l'automate modifié ({names}) :\n" + "\n".join(lines))]
+
+
+def run_plant_checks(db_path: str = config.SQLITE_DB_PATH, now: float | None = None,
+                     changes_since: str | None = None) -> list[tuple[str, str, str]]:
+    """Tous les contrôles de l'installation, à partir de la base. `changes_since` (UTC, AAAA-MM-JJ
+    HH:MM:SS) : signaler les changements de réglages / modes postérieurs à cet instant (None : non
+    vérifié). Ne lève jamais d'exception."""
     now = time.time() if now is None else now
     findings: list[tuple[str, str, str]] = []
     try:
@@ -125,6 +173,14 @@ def run_plant_checks(db_path: str = config.SQLITE_DB_PATH, now: float | None = N
                  time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - CATALOGUE_VALUE_MAX_AGE_SECONDS))),
             ).fetchall()
         findings.extend(catalogue_findings({name: value for name, value in rows if name}))
+        if changes_since is not None:
+            with sqlite_client.connect(db_path) as conn:
+                changes = conn.execute(
+                    "SELECT timestamp, key_name, old_value, new_value FROM catalogue_changes "
+                    "WHERE dev_node = ? AND timestamp > ? ORDER BY timestamp, id",
+                    (config.SENSOR_DRIVER_NODE, changes_since),
+                ).fetchall()
+            findings.extend(mode_change_findings(changes))
     except sqlite3.Error:
         pass   # catalogue pas encore relevé (table absente) : rien à juger
     pt04 = sqlite_client.recent_values(config.COOLANT_COLD_COLUMN, now - 3600 - 60, db_path=db_path)

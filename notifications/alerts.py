@@ -41,6 +41,9 @@ RULE_COOLDOWN_MINUTES: dict[str, int] = {
     "oil_sensor_frozen": 24 * 60,
     # Contrôles de l'installation (notifications/plant_checks.py) : situations durables.
     "safety_bypass_active": 24 * 60, "automate_setpoint_mismatch": 24 * 60, "fan_short_cycling": 24 * 60,
+    # Chaque changement de réglage est un événement distinct : pas de délai (un e-mail par contrôle
+    # de 15 min au plus, qui regroupe les changements).
+    "automate_mode_changed": 0,
 }
 
 
@@ -106,6 +109,18 @@ def send_email_detailed(subject: str, body: str, attachment: Path | None = None)
 _smtp_missing_reported = False
 
 
+def _snapshot_for_email() -> dict | None:
+    """Mesures du moment pour l'e-mail (dernière ligne en base) ; None si la base est illisible :
+    l'alerte part quand même."""
+    try:
+        from dashboard import data
+
+        return data.latest_snapshot(config.SQLITE_DB_PATH)
+    except Exception:
+        logger.exception("Mesures indisponibles pour l'e-mail d'alerte")
+        return None
+
+
 def deliver_alert(level: str, rule_name: str, message: str) -> bool:
     """Point de sortie UNIQUE de toutes les alertes (procédé, stockage, modèles) :
     une ligne dans `alerts_log` sous le vrai nom de règle, plus un e-mail si SMTP est configuré.
@@ -113,7 +128,13 @@ def deliver_alert(level: str, rule_name: str, message: str) -> bool:
     global _smtp_missing_reported
     sent = False
     if smtp_configured():
-        sent = send_email(f"[Voltaneum][{level}] {rule_name}", message)
+        # E-mail explicite et autonome (notifications/alert_texts.py) : titre en clair, explication,
+        # actions, mesures du moment, commandes de vérification. Le journal garde le message court.
+        from notifications.alert_texts import compose
+
+        subject, body = compose(level, rule_name, message, _snapshot_for_email(),
+                                reminder_minutes=cooldown_seconds(rule_name) / 60)
+        sent = send_email(subject, body)
     elif not _smtp_missing_reported:
         logger.warning("E-mail non configuré (SMTP_*, ALERT_EMAIL_*) : les alertes sont seulement "
                        "journalisées en base et visibles dans l'interface.")
