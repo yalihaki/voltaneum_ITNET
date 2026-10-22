@@ -243,6 +243,12 @@ CRITICAL_TEMP: float = _env_float("CRITICAL_TEMP", 55.0)
 # CRITICAL_TEMP). PT01 est normalement plus froide que PT02 : un dépassement signifie que la CDU
 # ne refroidit plus (ou sert de secours si PT02 est absente). À fixer avec l'exploitant.
 DIELECTRIC_CRITICAL_TEMP: float = _env_float("DIELECTRIC_CRITICAL_TEMP", CRITICAL_TEMP)
+# Les alertes CRITIQUES de température (critical_temp, dielectric_critical_temp) exigent ce nombre de
+# mesures CONSÉCUTIVES au-delà du seuil (1 = immédiat). Les relevés contiennent de rares pics isolés
+# d'une seule mesure (+2 °C pendant 15 s, voir database/quality.py) : à 2, un pic ne déclenche plus
+# d'e-mail CRITIQUE à tort, pour 15 s de délai seulement sur un vrai dépassement (qui, lui, dure).
+# La régulation (étape « critique », bypass du PID) reste immédiate : en cas de doute, elle refroidit.
+CRITICAL_CONFIRMATION_SAMPLES: int = _env_int("CRITICAL_CONFIRMATION_SAMPLES", 2)
 # Point de départ prudent pour un procédé thermique lent échantillonné toutes les 60 s :
 # Kp = 10 %/°C, temps d'intégration Ti = Kp/Ki = 500 s (≈ 8 cycles), pas de dérivée (sur une
 # mesure à 0,1 °C de résolution échantillonnée à 60 s, elle n'amplifie que le bruit).
@@ -391,6 +397,11 @@ SENSOR_FROZEN_ALERT_MINUTES: int = _env_int("SENSOR_FROZEN_ALERT_MINUTES", 60)
 # écart (°C). PT02 est lue au degré près : sur un procédé stable, elle peut rester à 34,0 °C
 # pendant des heures sans être en panne. Sans PT01, la durée seule fait foi.
 SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS: float = _env_float("SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS", 1.0)
+# Pics isolés (database/quality.py) : une mesure de température qui s'écarte de plus de ce seuil (°C)
+# de ses DEUX voisines, puis revient, est une erreur de lecture. Elle reste en base mais est écartée
+# de l'apprentissage, des tendances et des statistiques. Au-dessus de la marche de 1 °C de PT02 (lue
+# au degré près) et des pics observés (2,1 et 2,3 °C) en dessous.
+SPIKE_THRESHOLD_CELSIUS: float = _env_float("SPIKE_THRESHOLD_CELSIUS", 1.5)
 
 # ---------------------------------------------------------------------------
 # Protection automatique du stockage (purge pilotée par la TAILLE de la base)
@@ -584,6 +595,8 @@ def validate_config() -> None:
     _require(REGULATION_EFFECT_WAIT_SECONDS >= CONTROL_LOOP_INTERVAL_SECONDS,
              "REGULATION_EFFECT_WAIT_SECONDS doit couvrir au moins un cycle de contrôle.")
     _require(SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS > 0, "SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS doit être positif.")
+    _require(SPIKE_THRESHOLD_CELSIUS > 0, "SPIKE_THRESHOLD_CELSIUS doit être positif.")
+    _require(CRITICAL_CONFIRMATION_SAMPLES >= 1, "CRITICAL_CONFIRMATION_SAMPLES doit valoir au moins 1.")
     _require(THERMAL_FLUID_DENSITY_KG_M3 > 0 and THERMAL_FLUID_HEAT_CAPACITY_J_KG_K > 0,
              "THERMAL_FLUID_DENSITY_KG_M3 et THERMAL_FLUID_HEAT_CAPACITY_J_KG_K doivent être positifs.")
     dielectric_upper = min(SENSOR_VALID_RANGES[c][1] for c in DIELECTRIC_COLUMNS)

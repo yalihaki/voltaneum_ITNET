@@ -38,6 +38,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import config
 from database import sqlite_client
+from database.quality import drop_spikes
 from ml.features import MODEL_FEATURES, TARGET_MODES, add_trend_features
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,16 @@ def build_target(
 
 def prepare_frame(df: pd.DataFrame, horizon_seconds: int) -> pd.DataFrame:
     """Lignes exploitables pour l'horizon : cible future, tendances, aucune entrée manquante.
-    Même calcul pour l'entraînement et pour l'évaluation du modèle installé (ml/auto_retrain.py)."""
+    Même calcul pour l'entraînement et pour l'évaluation du modèle installé (ml/auto_retrain.py).
+
+    Les pics isolés (database/quality.py : une mesure aberrante qui revient aussitôt) sont d'abord
+    remplacés par des valeurs absentes : sinon le modèle apprendrait qu'une température peut sauter
+    de 2 °C en 15 s, et un pic pris comme cible ou comme point de tendance fausserait l'erreur
+    mesurée. Les lignes concernées sont simplement écartées (une sur plusieurs milliers)."""
+    df, spikes = drop_spikes(df.sort_values("timestamp").reset_index(drop=True))
+    if any(spikes.values()):
+        logger.info("Pics isolés écartés de l'apprentissage : %s",
+                    ", ".join(f"{c.upper()} {n}" for c, n in spikes.items() if n))
     merged = add_trend_features(build_target(df, horizon_seconds=horizon_seconds))
     return merged.dropna(subset=MODEL_FEATURES + ["target_future"])
 

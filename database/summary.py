@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 import config
+from database.quality import SPIKE_COLUMNS, drop_spikes, spike_mask
 
 # Mesures résumées en bas de l'affichage : colonne -> (libellé, unité).
 MEASURES: dict[str, tuple[str, str]] = {
@@ -23,7 +24,13 @@ MEASURES: dict[str, tuple[str, str]] = {
 
 def summarize(df: pd.DataFrame) -> str:
     """Tableau lisible : min et max (avec leur horodatage), moyenne et nombre de valeurs
-    de chaque mesure ; une mesure qui n'a jamais varié est signalée."""
+    de chaque mesure ; une mesure qui n'a jamais varié est signalée.
+
+    Les pics isolés des sondes de température (database/quality.py) sont écartés du minimum, du
+    maximum et de la moyenne — sinon une seule mesure parasite devient le « record » de la période —
+    puis comptés et datés dans la section « Qualité des mesures »."""
+    raw = df.sort_values("timestamp").reset_index(drop=True)
+    df, _ = drop_spikes(raw)
     lines = [
         f"Résumé par mesure — du {df['timestamp'].min()} au {df['timestamp'].max()} (UTC), "
         f"{len(df)} ligne(s)",
@@ -60,13 +67,36 @@ def summarize(df: pd.DataFrame) -> str:
             f"{int(sources.get('weather', 0))} de l'API météo, "
             f"{int(df['temp_outdoor'].isna().sum())} absente(s)."
         )
+    lines.extend(spike_report(raw))
     lines.extend(coherence(df))
     return "\n".join(lines)
 
 
+def spike_report(df: pd.DataFrame, shown: int = 5) -> list[str]:
+    """Pics isolés par sonde, avec leurs premières dates (à transmettre à l'automaticien : ce sont des
+    erreurs de lecture de la sonde, du module d'entrée ou de la transmission)."""
+    lines = ["", f"Qualité des mesures (pic isolé : écart > {config.SPIKE_THRESHOLD_CELSIUS:g} °C avec les deux "
+                 "mesures voisines, puis retour) :"]
+    found = False
+    for column in SPIKE_COLUMNS:
+        if column not in df:
+            continue
+        mask = spike_mask(df[column])
+        if not mask.any():
+            continue
+        found = True
+        when = ", ".join(f"{df.loc[i, 'timestamp']} ({pd.to_numeric(df.loc[i, column]):.1f} °C)"
+                         for i in mask[mask].index[:shown])
+        more = f" … (+{int(mask.sum()) - shown})" if mask.sum() > shown else ""
+        lines.append(f"  {column.upper()} : {int(mask.sum())} pic(s), écartés des statistiques — {when}{more}")
+    if not found:
+        lines.append("  aucun pic isolé")
+    return lines
+
+
 def coherence(df: pd.DataFrame) -> list[str]:
-    """Contrôle physique AU MÊME INSTANT : la sonde chaude de chaque circuit doit être au moins égale
-    à la sonde froide (PT02 ≥ PT01 côté diélectrique, PT03 ≥ PT04 côté refroidissement), et une
+    """Contrôle physique AU MÊME INSTANT (sur les mesures sans pics isolés) : la sonde chaude de
+    chaque circuit doit être au moins égale à la sonde froide (PT02 ≥ PT01 côté diélectrique, PT03 ≥ PT04 côté refroidissement), et une
     sonde lue au degré près est signalée. Une inversion au-delà de 0,5 °C ne s'explique pas par un
     simple arrondi au degré : troncature de la valeur ou décalage d'étalonnage, à voir avec
     l'automaticien."""

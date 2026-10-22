@@ -358,6 +358,14 @@ Un enregistrement par cycle de contrôle (60 s) : `timestamp`, `t_oil`, `t_targe
 
 SQLite utilise WAL et un index sur les timestamps.
 
+### 7.2 bis Pics isolés de mesure
+
+Constat (relevés du contrôleur, `./voltaneum data --around`) : de rares mesures de température sautent d'environ 2 °C pendant une seule mesure puis reviennent (PT01 34,6 → 36,7 → 34,6 °C le 18/10/2026 à 05:07:50 UTC ; PT04 32,9 → 35,2 → 33,0 °C le 16/10/2026 à 17:21:16 UTC), sans qu'aucune autre mesure ne bouge. 200 L de liquide ne gagnent pas 2 °C en 15 s : ce sont des erreurs de lecture (sonde, module d'entrée de l'automate ou transmission), à signaler à l'automaticien.
+
+Règle (`database/quality.py`) : une mesure de PT01 à PT04 est un pic isolé si elle s'écarte de plus de `SPIKE_THRESHOLD_CELSIUS` (1,5 °C) de la mesure précédente ET de la suivante, dans le même sens, et si la suivante revient près de la précédente. Ne sont pas concernés : les cycles du ventilateur du dry cooler (PT04 −3 °C en 30 s sans retour), les marches de 1 °C de PT02 (lue au degré près), un vrai échauffement qui dure.
+
+Traitement : les pics restent enregistrés (traçabilité) ; ils sont écartés de l'apprentissage (`ml/train.py`), des calculs de tendance en service (`sqlite_client.recent_values` : régulation par étapes, entrées de tendance, échauffement moyen) et des minimum / maximum / moyenne de `./voltaneum data`, qui les compte et les date (section « Qualité des mesures »). La dernière mesure reçue, sans suivante, ne peut pas être jugée : d'où la confirmation sur deux mesures des alertes critiques (§10).
+
 ### 7.2 Trous de données
 
 Les trous sont conservés dans l'historique et signalés dans l'analyse. L'entraînement ne doit pas relier artificiellement deux segments séparés par plus de `MAX_GAP_SECONDS`.
@@ -534,8 +542,9 @@ Le moteur d'alertes tourne **dans le processus principal** : il est alimenté di
 
 Règles :
 
-- PT02 critique (`critical_temp`, CRITIQUE, immédiate) ;
-- **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, immédiate) : PT01 au-delà de `DIELECTRIC_CRITICAL_TEMP` (PT02, aussi diélectrique, relève du seuil critique de la grandeur régulée) (55 °C par défaut) — c'est la température qui protège les équipements immergés ;
+- PT02 critique (`critical_temp`, CRITIQUE) : PT02 au-delà de `CRITICAL_TEMP` sur `CRITICAL_CONFIRMATION_SAMPLES` mesures consécutives distinctes (2 par défaut, soit 15 s ; 1 = immédiat) ;
+- **liquide diélectrique critique** (`dielectric_critical_temp`, CRITIQUE, même confirmation) : PT01 (sortie CDU) au-delà de `DIELECTRIC_CRITICAL_TEMP` (55 °C par défaut) — la CDU ne refroidit plus, ou secours si PT02 est absente.
+  Pourquoi deux mesures : les relevés contiennent de rares pics isolés d'une seule mesure (§7.2 bis) ; sans confirmation, un pic près du seuil enverrait un e-mail CRITIQUE à tort. Un vrai dépassement dure ; la régulation (étape « critique », bypass du PID) reste, elle, immédiate ;
 - **pompe en marche sans débit** (`pump_without_flow`, CRITIQUE) : fréquence > `PUMP_RUNNING_MIN_HZ` et débit < `FLOW_MIN_M3H` sur `ALERT_CONFIRMATION_CYCLES` échantillons distincts ; une valeur absente ne déclenche jamais la règle ;
 - perte de télémétrie (`telemetry_lost`, CRITIQUE) ;
 - **PT02 absente** alors que la passerelle émet (`oil_sensor_missing`, ATTENTION, après `OIL_SENSOR_MISSING_ALERT_SECONDS`) : aucune consigne n'est alors publiée ;

@@ -114,19 +114,39 @@ class TestNumberHelper:
 
 
 class TestCriticalTemperature:
-    def test_alert_above_threshold(self):
-        alerts = evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 1), None, _fresh_state())
+    """Confirmée sur CRITICAL_CONFIRMATION_SAMPLES mesures distinctes (2 par défaut)."""
+
+    def test_alert_above_threshold_on_the_second_sample(self):
+        state = _fresh_state()
+        assert evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 1, ts=1.0), None, state) == []
+        alerts = evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 1, ts=2.0), None, state)
         assert _names(alerts) == ["critical_temp"]
-        assert alerts[0]["level"] == "CRITIQUE"
+        assert alerts[0]["level"] == "CRITIQUE" and "2 mesures consécutives" in alerts[0]["message"]
+
+    def test_isolated_spike_never_alerts(self):
+        """Cas réel (18/10/2026) : une seule mesure aberrante, puis retour à la normale."""
+        state = _fresh_state()
+        for ts, value in ((1.0, 35.0), (2.0, config.CRITICAL_TEMP + 2), (3.0, 35.0), (4.0, 35.0)):
+            assert evaluate_rules(_telemetry(pt02=value, ts=ts), None, state) == []
+
+    def test_same_sample_read_twice_counts_once(self):
+        state = _fresh_state()
+        hot = _telemetry(pt02=config.CRITICAL_TEMP + 1, ts=7.0)
+        assert evaluate_rules(hot, None, state) == [] and evaluate_rules(hot, None, state) == []
+
+    def test_immediate_when_confirmation_is_one(self, monkeypatch):
+        monkeypatch.setattr(config, "CRITICAL_CONFIRMATION_SAMPLES", 1)
+        alerts = evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 1), None, _fresh_state())
+        assert _names(alerts) == ["critical_temp"] and "consécutives" not in alerts[0]["message"]
 
     def test_no_alert_at_or_below_threshold(self):
         assert evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP), None, _fresh_state()) == []
 
     def test_cooldown_blocks_second_alert(self):
         state = _fresh_state()
-        hot = _telemetry(pt02=config.CRITICAL_TEMP + 5)
-        assert len(evaluate_rules(hot, None, state)) == 1
-        assert evaluate_rules(hot, None, state) == []
+        evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 5, ts=1.0), None, state)
+        assert len(evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 5, ts=2.0), None, state)) == 1
+        assert evaluate_rules(_telemetry(pt02=config.CRITICAL_TEMP + 5, ts=3.0), None, state) == []
 
     @pytest.mark.parametrize("bad", ["60", float("nan"), None, True])
     def test_malformed_value_never_crashes_nor_alerts(self, bad):
@@ -405,6 +425,8 @@ class TestAlertEngine:
     def test_critical_temperature_from_a_snapshot(self):
         engine, delivered = self._engine()
         engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        assert delivered == []                                     # une mesure : pas encore confirmée
+        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert ("CRITIQUE", "critical_temp") in delivered
 
     def test_watchdog_alerts_when_gateway_silent_since_startup(self):
@@ -451,7 +473,8 @@ class TestAsynchronousSending:
 
         engine = AlertEngine(deliver=slow_deliver, watchdog_interval_seconds=60)
         started = time.monotonic()
-        engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
+        for _ in range(2):                                        # alerte confirmée sur 2 mesures
+            engine.on_telemetry({"pt01": 40.0, "pt02": config.CRITICAL_TEMP + 3, "pt03": 30.0})
         assert time.monotonic() - started < 0.1                  # retour immédiat
         worker = threading.Thread(target=engine.run_forever, daemon=True)
         worker.start()
@@ -466,12 +489,13 @@ def test_durable_defect_is_recalled_once_a_day_not_every_30_min():
 
 
 class TestDielectricCriticalTemperature:
-    """Le liquide diélectrique (cuve) protège les équipements : alerte CRITIQUE immédiate."""
+    """PT01 (sortie CDU) au-delà de son seuil : alerte CRITIQUE, confirmée sur 2 mesures."""
 
     def test_alert_names_the_overheated_probe(self):
         state = _fresh_state()
-        alerts_ = evaluate_rules({"pt01": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt02": 34.0, "pt03": 80.0, "ts": 1.0},
-                                 None, state)
+        hot = {"pt01": config.DIELECTRIC_CRITICAL_TEMP + 2, "pt02": 34.0, "pt03": 80.0}
+        assert evaluate_rules({**hot, "ts": 1.0}, None, state) == []
+        alerts_ = evaluate_rules({**hot, "ts": 2.0}, None, state)
         assert _names(alerts_) == ["dielectric_critical_temp"]
         assert alerts_[0]["level"] == "CRITIQUE" and "PT01" in alerts_[0]["message"] and "PT03" not in alerts_[0]["message"]
 

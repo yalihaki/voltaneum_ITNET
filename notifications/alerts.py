@@ -196,25 +196,37 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
             alerts.append({"level": level, "rule_name": rule_name, "message": message})
             state["last_sent_at"][rule_name] = now
 
-    # --- CRITIQUE : grandeur surveillée (PT02, diélectrique de l'armoire) au-delà du seuil critique ---
-    # Immédiat : aucune confirmation multi-cycles (sécurité du procédé).
+    # --- CRITIQUE : températures du diélectrique au-delà de leur seuil -------------------------
+    # Deux règles, comptées sur des MESURES DISTINCTES (une même mesure relue ne compte qu'une fois) :
+    #   - critical_temp            : PT02, grandeur surveillée (état de l'armoire) > CRITICAL_TEMP ;
+    #   - dielectric_critical_temp : l'autre sonde du diélectrique (PT01, sortie CDU) >
+    #                                DIELECTRIC_CRITICAL_TEMP — la CDU ne refroidit plus, ou secours
+    #                                si PT02 est absente.
+    # Chacune exige CRITICAL_CONFIRMATION_SAMPLES mesures CONSÉCUTIVES au-delà du seuil (2 par défaut,
+    # soit 15 s). Pourquoi : les relevés contiennent de rares pics isolés d'une seule mesure (+2 °C
+    # pendant 15 s, database/quality.py) ; sans confirmation, un pic près du seuil enverrait un e-mail
+    # CRITIQUE à tort. Un vrai dépassement dure : il est signalé avec 15 s de retard au plus. Une mesure
+    # absente ou sous le seuil remet le compteur à zéro. La RÉGULATION, elle, reste immédiate
+    # (control/supervisor.py) : en cas de doute, elle refroidit.
     regulated = config.TARGET_COLUMN.upper()
     t_oil = _number(telemetry, config.TARGET_COLUMN)
-    if t_oil is not None and t_oil > config.CRITICAL_TEMP:
-        emit("CRITIQUE", "critical_temp",
-             f"{regulated} (diélectrique de l'armoire) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C")
-
-    # --- CRITIQUE : autres sondes du liquide diélectrique (cuve) au-delà de leur seuil ---
-    # C'est le liquide dans lequel baignent les équipements : sa température les protège. PT02
-    # (diélectrique, grandeur surveillée) relève déjà de la règle précédente. Immédiat.
     dielectric = [c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN]
     overheated = [(column.upper(), value) for column in dielectric
                   if (value := _number(telemetry, column)) is not None and value > config.DIELECTRIC_CRITICAL_TEMP]
-    if overheated:
+    if telemetry is not None and _is_new_sample(state, "critical_temperatures", telemetry):
+        _update_counter(state, "critical_temp", t_oil is not None and t_oil > config.CRITICAL_TEMP)
+        _update_counter(state, "dielectric_critical_temp", bool(overheated))
+    needed = max(1, config.CRITICAL_CONFIRMATION_SAMPLES)
+    confirmed = "" if needed == 1 else f" ({needed} mesures consécutives)"
+    if t_oil is not None and state["consecutive_counts"].get("critical_temp", 0) >= needed:
+        emit("CRITIQUE", "critical_temp",
+             f"{regulated} (diélectrique de l'armoire) = {t_oil:.1f} °C > seuil {config.CRITICAL_TEMP:.0f} °C"
+             + confirmed)
+    if overheated and state["consecutive_counts"].get("dielectric_critical_temp", 0) >= needed:
         detail = ", ".join(f"{name} = {value:.1f} °C" for name, value in overheated)
         emit("CRITIQUE", "dielectric_critical_temp",
-             f"Liquide diélectrique trop chaud : {detail} > seuil {config.DIELECTRIC_CRITICAL_TEMP:.0f} °C "
-             "— équipements immergés exposés. Vérifier le refroidissement sur site.")
+             f"Liquide diélectrique trop chaud : {detail} > seuil {config.DIELECTRIC_CRITICAL_TEMP:.0f} °C"
+             f"{confirmed} — équipements immergés exposés. Vérifier le refroidissement sur site.")
 
     # --- CRITIQUE : pompe en marche (fréquence non nulle) sans débit ------------
     # Une pompe qui tourne sans débit (vanne fermée, circuit bouché, désamorçage, variateur ou

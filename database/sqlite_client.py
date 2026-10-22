@@ -27,6 +27,7 @@ import pandas as pd
 
 import config
 from config import SQLITE_DB_PATH
+from database.quality import drop_spike_points
 
 logger = logging.getLogger(__name__)
 
@@ -421,9 +422,15 @@ def log_control(record: dict, db_path: str = SQLITE_DB_PATH) -> None:
         logger.exception("Échec d'écriture dans control_log")
 
 
-def recent_values(column: str, since_epoch: float, db_path: str = SQLITE_DB_PATH) -> list[tuple[float, float]]:
-    """(instant en s, valeur) de `column` depuis `since_epoch`, pour le calcul de tendance.
-    Liste vide si la base est indisponible (la régulation continue sans tendance)."""
+def recent_values(column: str, since_epoch: float, db_path: str = SQLITE_DB_PATH,
+                  without_spikes: bool = True) -> list[tuple[float, float]]:
+    """(instant en s, valeur) de `column` depuis `since_epoch`, pour les calculs de tendance en
+    service (régulation par étapes, entrées de tendance des modèles, échauffement moyen).
+
+    Les pics isolés (database/quality.py) sont retirés par défaut : un seul point aberrant de +2 °C
+    suffirait à fausser une pente sur 10 min ou une entrée de tendance. La dernière mesure, qui n'a
+    pas encore de suivante, est toujours gardée. Liste vide si la base est indisponible (la
+    régulation continue sans tendance)."""
     if column not in ("pt01", "pt02", "pt03", "pt04"):
         raise ValueError(f"colonne non autorisée : {column}")
     try:
@@ -436,7 +443,8 @@ def recent_values(column: str, since_epoch: float, db_path: str = SQLITE_DB_PATH
     except sqlite3.Error:
         logger.exception("Lecture de la tendance de %s impossible", column)
         return []
-    return [(float(t), float(v)) for t, v in rows]
+    points = [(float(t), float(v)) for t, v in rows]
+    return drop_spike_points(points) if without_spikes else points
 
 
 def _first(point: dict, *keys: str) -> str | None:

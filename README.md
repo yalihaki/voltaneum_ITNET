@@ -37,7 +37,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum watch` | **supervision en direct dans le terminal** (sans navigateur) |
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
-| `./voltaneum data` | résumé des mesures (min / max / moyenne, mesures figées) et 10 dernières lignes (remplace `check_data.py`) ; options `--rows 50`, `--hours 24`, `--csv export.csv` |
+| `./voltaneum data` | résumé des mesures (min / max / moyenne sans les pics isolés, mesures figées), **qualité des mesures** (pics isolés datés), **cohérence physique** (sonde chaude ≥ sonde froide) et 10 dernières lignes ; options `--rows 50`, `--hours 24`, `--csv export.csv`, `--around "AAAA-MM-JJ HH:MM"` (mesures 10 min avant et après un instant UTC, `--minutes` pour changer la fenêtre) |
 | `./voltaneum catalogue` | **catalogue de l'automate** : chaque point, sa dernière valeur, utilisé ou non et comment (`--details`, `--used`) |
 | `./voltaneum export` | **un fichier CSV par élément** (mesures, consignes PID, alertes, prédictions, ré-entraînements) dans `exports/` ; `--days 7` (défaut), `--hours 24`, `--all`, `--only mesures,alertes` |
 | `./voltaneum model` | modèle proposé : `accept`, `reject --note "…"`, `rollback` |
@@ -117,8 +117,8 @@ sont pas renseignées (`THERMAL_POWER_CONFIRMED`).
 
 | Règle | Niveau | Déclenchement |
 |---|---|---|
-| `critical_temp` | CRITIQUE | PT02 > `CRITICAL_TEMP` (immédiat) |
-| `dielectric_critical_temp` | CRITIQUE | PT01 (sortie CDU ; PT02 relève de `CRITICAL_TEMP`) > `DIELECTRIC_CRITICAL_TEMP` (immédiat) |
+| `critical_temp` | CRITIQUE | PT02 > `CRITICAL_TEMP` sur `CRITICAL_CONFIRMATION_SAMPLES` mesures consécutives (2, soit 15 s) |
+| `dielectric_critical_temp` | CRITIQUE | PT01 (sortie CDU ; PT02 relève de `CRITICAL_TEMP`) > `DIELECTRIC_CRITICAL_TEMP`, même confirmation |
 | `pump_without_flow` | CRITIQUE | fréquence > 5 Hz et débit < 0,5 m³/h, confirmé |
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
 | `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |
@@ -132,6 +132,15 @@ Chaque alerte est journalisée une fois (onglet Alertes) et envoyée par e-mail 
 configuré, avec un délai entre deux e-mails d'une même règle (un jour pour PT02 figée). Les
 e-mails partent d'un thread dédié : un serveur SMTP lent ne retarde jamais la collecte. La règle d'efficacité de
 l'échangeur est désactivée tant que sa formule n'est pas validée (`EFFICIENCY_ALERT_ENABLED`).
+
+**Pics isolés de mesure** (`database/quality.py`). Les relevés contiennent de rares erreurs de
+lecture : une seule mesure qui saute d'environ 2 °C puis revient 15 s plus tard (PT01 le 18/10 à
+05:07:50, PT04 le 16/10 à 17:21:16). Règle : écart de plus de `SPIKE_THRESHOLD_CELSIUS` (1,5 °C) avec
+la mesure précédente ET la suivante, puis retour. Les cycles du ventilateur (PT04 −3 °C en 30 s, sans
+retour) et les marches de 1 °C de PT02 ne sont pas concernés. Les pics restent en base, mais sont
+écartés de l'apprentissage, des tendances en service et des statistiques de `./voltaneum data`, qui
+les date pour l'automaticien. Les alertes critiques de température demandent 2 mesures consécutives
+pour qu'un pic ne déclenche pas d'e-mail ; la régulation, elle, réagit immédiatement.
 
 ## 6. Prédiction et ré-entraînement
 

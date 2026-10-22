@@ -818,6 +818,8 @@ def settings_summary() -> dict:
             "Délai entre deux e-mails (min)": config.ALERT_COOLDOWN_MINUTES,
             "Perte de télémétrie après (s)": config.TELEMETRY_TIMEOUT_SECONDS,
             "Désaccord entre modèles (°C)": config.DISAGREEMENT_THRESHOLD_CELSIUS,
+            "Alertes critiques de température confirmées sur (mesures)": config.CRITICAL_CONFIRMATION_SAMPLES,
+            "Pic isolé de mesure : écart avec ses voisines au-delà de (°C)": config.SPIKE_THRESHOLD_CELSIUS,
             "PT02 figée après (min)": config.SENSOR_FROZEN_ALERT_MINUTES,
             "… si PT01 a bougé d'au moins (°C)": config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS,
         },
