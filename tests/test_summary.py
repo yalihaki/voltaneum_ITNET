@@ -56,3 +56,19 @@ def test_missing_database_is_never_created(tmp_path, capsys):
     missing = tmp_path / "absente.db"
     assert print_summary(str(missing)) == 1
     assert not missing.exists()
+
+
+def test_coherence_flags_a_cold_probe_above_the_hot_one():
+    from database.summary import coherence
+    n = 200
+    df = pd.DataFrame({
+        "timestamp": [f"2026-10-18 05:{i // 60:02d}:{i % 60:02d}" for i in range(n)],
+        "pt01": [34.0] * (n - 1) + [36.7],      # froid
+        "pt02": [35.0] * n,                     # chaud, lue au degré près
+        "pt03": [33.0] * n, "pt04": [32.0] * n,
+    })
+    text = "\n".join(coherence(df))
+    assert "PT02 ≥ PT01 attendu : inversé sur 1 mesure(s)" in text and "1.7 °C" in text
+    assert "troncature ou étalonnage" in text
+    assert "PT03 ≥ PT04 attendu : toujours respecté" in text
+    assert "PT02 : 100% de valeurs entières" in text

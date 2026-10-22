@@ -60,7 +60,46 @@ def summarize(df: pd.DataFrame) -> str:
             f"{int(sources.get('weather', 0))} de l'API météo, "
             f"{int(df['temp_outdoor'].isna().sum())} absente(s)."
         )
+    lines.extend(coherence(df))
     return "\n".join(lines)
+
+
+def coherence(df: pd.DataFrame) -> list[str]:
+    """Contrôle physique AU MÊME INSTANT : la sonde chaude de chaque circuit doit être au moins égale
+    à la sonde froide (PT02 ≥ PT01 côté diélectrique, PT03 ≥ PT04 côté refroidissement), et une
+    sonde lue au degré près est signalée. Une inversion au-delà de 0,5 °C ne s'explique pas par un
+    simple arrondi au degré : troncature de la valeur ou décalage d'étalonnage, à voir avec
+    l'automaticien."""
+    lines = ["", "Cohérence physique (au même instant) :"]
+    for hot, cold, circuit in ((config.DIELECTRIC_HOT_COLUMN, config.DIELECTRIC_COLD_COLUMN, "diélectrique"),
+                               (config.COOLANT_HOT_COLUMN, config.COOLANT_COLD_COLUMN, "refroidissement")):
+        if hot not in df or cold not in df:
+            continue
+        both = df[["timestamp", hot, cold]].apply(pd.to_numeric, errors="coerce").assign(timestamp=df["timestamp"])
+        both = both.dropna(subset=[hot, cold])
+        if both.empty:
+            continue
+        gap = both[cold] - both[hot]                        # > 0 : sonde froide au-dessus de la chaude
+        inverted = gap[gap > 0]
+        head = f"  {circuit:<15} {hot.upper()} ≥ {cold.upper()} attendu : "
+        if inverted.empty:
+            lines.append(head + "toujours respecté")
+            continue
+        worst = inverted.idxmax()
+        row = both.loc[worst]
+        line = (head + f"inversé sur {len(inverted)} mesure(s) ({len(inverted) / len(both):.1%}), "
+                f"au pire de {gap[worst]:.1f} °C le {row['timestamp']} "
+                f"({cold.upper()} {row[cold]:.1f}, {hot.upper()} {row[hot]:.1f})")
+        if gap[worst] > 0.5:
+            line += " -> plus qu'un arrondi au degré : troncature ou étalonnage à vérifier"
+        lines.append(line)
+    for column in config.DIELECTRIC_COLUMNS + config.COOLANT_COLUMNS:
+        if column in df:
+            valid = pd.to_numeric(df[column], errors="coerce").dropna()
+            if len(valid) > 100 and (valid == valid.round()).mean() > 0.99:
+                lines.append(f"  {column.upper()} : {(valid == valid.round()).mean():.0%} de valeurs entières "
+                             "-> lue au degré près (au dixième pour un usage fiable)")
+    return lines if len(lines) > 2 else []
 
 
 def load_telemetry(db_path: str, hours: float | None = None) -> pd.DataFrame:
