@@ -58,20 +58,48 @@ def test_missing_database_is_never_created(tmp_path, capsys):
     assert not missing.exists()
 
 
-def test_coherence_flags_a_cold_probe_above_the_hot_one():
-    from database.summary import coherence
-    n = 200
-    df = pd.DataFrame({
+def _probes(n=200, pt01=34.3, pt02=35.0, pt03=33.4, pt04=32.6):
+    return pd.DataFrame({
         "timestamp": [f"2026-10-18 05:{i // 60:02d}:{i % 60:02d}" for i in range(n)],
-        "pt01": [34.0] * (n - 1) + [36.7],      # froid
-        "pt02": [35.0] * n,                     # chaud, lue au degré près
-        "pt03": [33.0] * n, "pt04": [32.0] * n,
+        "pt01": [pt01] * n, "pt02": [pt02] * n, "pt03": [pt03] * n, "pt04": [pt04] * n,
     })
+
+
+def test_inversion_within_rounding_is_normal():
+    """PT02 au degré, PT01 au dixième : une inversion de 0,4 °C s'explique par l'arrondi (cas réel :
+    0,6 °C le 18/10 à 12:45, sous les 0,75 °C d'arrondi et de précision)."""
+    from database.summary import coherence
+    df = _probes()
+    df.loc[50, "pt01"] = 35.4
     text = "\n".join(coherence(df))
-    assert "PT02 ≥ PT01 attendu : inversé sur 1 mesure(s)" in text and "1.7 °C" in text
-    assert "troncature ou étalonnage" in text
+    assert "PT02 ≥ PT01 attendu : inversé sur 1 mesure(s)" in text and "dans l'arrondi et la précision des sondes (jusqu'à 0.75 °C)" in text
     assert "PT03 ≥ PT04 attendu : toujours respecté" in text
-    assert "PT02 : 100% de valeurs entières" in text
+    assert "PT02 : 100% de valeurs entières" in text and "PT01 :" not in text.split("respecté")[-1]
+
+
+def test_inversion_beyond_rounding_points_to_a_transient_and_the_command():
+    """PT03 / PT04 au dixième : 1,1 °C d'inversion n'est pas un arrondi (cas réel du 16/10 21:45)."""
+    from database.summary import coherence
+    df = _probes()
+    df.loc[80, "pt04"] = 33.1
+    df.loc[80, "pt03"] = 32.0
+    text = "\n".join(coherence(df))
+    assert "au pire de 1.1 °C" in text and "transitoire probable" in text
+    assert 'vérifier : ./voltaneum data --around "2026-10-18 05:01"' in text
+    assert "arrondi au degré" not in text
+
+
+def test_power_is_summarized_as_a_ten_minute_mean():
+    """Puissance instantanée de −2 à +7 kW (PT02 au degré) : le résumé donne la moyenne sur 10 min."""
+    from database.summary import power_mean, summarize
+    n = 200
+    df = _probes(n)
+    df["timestamp"] = pd.date_range("2026-10-20 19:00:00", periods=n, freq="15s").strftime("%Y-%m-%d %H:%M:%S")
+    df["thermal_power_kw"] = [7.0 if i % 2 else -1.9 for i in range(n)]
+    mean = power_mean(df)
+    assert mean.iloc[:19].isna().all() and mean.iloc[50:].between(2.4, 2.7).all()
+    power = next(line for line in summarize(df).splitlines() if line.startswith("Puissance"))
+    assert "moy. 10 min" in power and "-1.9" not in power and "7.0" not in power
 
 
 def test_around_shows_the_window_and_the_inversions(tmp_path):

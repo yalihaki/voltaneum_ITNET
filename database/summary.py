@@ -18,8 +18,32 @@ MEASURES: dict[str, tuple[str, str]] = {
     "ht01": ("HT01 · débit circuit diélectrique", "m³/h"),
     "freq_pompe": ("Fréquence pompe", "Hz"),
     "temp_outdoor": ("Température extérieure", "°C"),
-    "thermal_power_kw": ("Puissance dissipée (estimée)", "kW"),
+    "thermal_power_kw": ("Puissance (estimée, moy. 10 min)", "kW"),
 }
+
+# Fenêtre de la moyenne glissante de la puissance (s) et nombre minimal de mesures pour la calculer.
+POWER_MEAN_WINDOW_SECONDS = 600
+POWER_MEAN_MIN_SAMPLES = 20
+
+
+def power_mean(df: pd.DataFrame) -> pd.Series:
+    """Puissance dissipée en MOYENNE GLISSANTE sur 10 min, comme la tuile de l'interface.
+
+    Pourquoi : la puissance instantanée vaut débit × (PT02 − PT01) avec un écart d'environ 0,6 °C et
+    PT02 lue au degré près ; une marche de PT02 fait passer la valeur instantanée de −2 à +7 kW, ce
+    qui n'a aucun sens physique (les équipements ne refroidissent pas le liquide). La moyenne sur
+    10 min (≈ 40 mesures) lisse cette marche. Les mesures où PT02 ou PT01 est un pic isolé
+    (database/quality.py) sont écartées avant la moyenne ; une fenêtre trop pauvre (moins de
+    POWER_MEAN_MIN_SAMPLES mesures, par exemple après un trou de collecte) ne donne pas de valeur."""
+    if "thermal_power_kw" not in df:
+        return pd.Series(dtype=float)
+    power = pd.to_numeric(df["thermal_power_kw"], errors="coerce")
+    for column in (config.THERMAL_POWER_HOT, config.THERMAL_POWER_COLD):
+        if column in df:
+            power = power.where(~spike_mask(df[column]))
+    indexed = pd.Series(power.to_numpy(), index=pd.to_datetime(df["timestamp"]))
+    mean = indexed.rolling(f"{POWER_MEAN_WINDOW_SECONDS}s", min_periods=POWER_MEAN_MIN_SAMPLES).mean()
+    return pd.Series(mean.to_numpy(), index=df.index)
 
 
 def summarize(df: pd.DataFrame) -> str:
@@ -28,9 +52,12 @@ def summarize(df: pd.DataFrame) -> str:
 
     Les pics isolés des sondes de température (database/quality.py) sont écartés du minimum, du
     maximum et de la moyenne — sinon une seule mesure parasite devient le « record » de la période —
-    puis comptés et datés dans la section « Qualité des mesures »."""
+    puis comptés et datés dans la section « Qualité des mesures ». La puissance est résumée en
+    moyenne glissante sur 10 min (voir `power_mean`)."""
     raw = df.sort_values("timestamp").reset_index(drop=True)
     df, _ = drop_spikes(raw)
+    if "thermal_power_kw" in df:
+        df["thermal_power_kw"] = power_mean(raw)
     lines = [
         f"Résumé par mesure — du {df['timestamp'].min()} au {df['timestamp'].max()} (UTC), "
         f"{len(df)} ligne(s)",
@@ -94,12 +121,32 @@ def spike_report(df: pd.DataFrame, shown: int = 5) -> list[str]:
     return lines
 
 
+# Précision cumulée de deux sondes de température industrielles (°C) : deux sondes saines peuvent
+# différer d'autant en mesurant le même liquide (PT100 classe A : ±0,15 °C vers 35 °C chacune).
+PROBE_ACCURACY_CELSIUS = 0.2
+
+
+def resolution(values: pd.Series) -> float:
+    """Résolution apparente d'une sonde : 1 °C si (presque) toutes ses valeurs sont entières (cas de
+    PT02), sinon 0,1 °C."""
+    valid = pd.to_numeric(values, errors="coerce").dropna()
+    return 1.0 if len(valid) > 100 and (valid == valid.round()).mean() > 0.99 else 0.1
+
+
 def coherence(df: pd.DataFrame) -> list[str]:
-    """Contrôle physique AU MÊME INSTANT (sur les mesures sans pics isolés) : la sonde chaude de
-    chaque circuit doit être au moins égale à la sonde froide (PT02 ≥ PT01 côté diélectrique, PT03 ≥ PT04 côté refroidissement), et une
-    sonde lue au degré près est signalée. Une inversion au-delà de 0,5 °C ne s'explique pas par un
-    simple arrondi au degré : troncature de la valeur ou décalage d'étalonnage, à voir avec
-    l'automaticien."""
+    """Contrôle physique AU MÊME INSTANT, sur les mesures sans pics isolés : la sonde chaude de chaque
+    circuit doit être au moins égale à la froide (PT02 ≥ PT01 côté diélectrique, PT03 ≥ PT04 côté
+    refroidissement).
+
+    Une inversion peut avoir trois causes, que le message distingue :
+      - l'ARRONDI et la PRÉCISION des sondes : demi-résolution de chaque sonde (0,5 °C pour PT02 lue
+        au degré, 0,05 °C pour une sonde au dixième) plus PROBE_ACCURACY_CELSIUS ; une inversion
+        sous ce total (0,75 °C côté diélectrique, 0,3 °C côté refroidissement) est normale ;
+      - un TRANSITOIRE : chaque sonde voit le liquide qui passe devant elle maintenant, le liquide
+        met du temps à faire le tour ; au démarrage / arrêt du ventilateur, la sonde froide peut
+        passer brièvement au-dessus de la chaude (vu sur PT03 / PT04, au dixième toutes les deux) ;
+      - un ÉTALONNAGE ou une troncature : inversion durable et fréquente.
+    La commande `--around` proposée affiche les mesures autour du pire cas pour trancher."""
     lines = ["", "Cohérence physique (au même instant) :"]
     for hot, cold, circuit in ((config.DIELECTRIC_HOT_COLUMN, config.DIELECTRIC_COLD_COLUMN, "diélectrique"),
                                (config.COOLANT_HOT_COLUMN, config.COOLANT_COLD_COLUMN, "refroidissement")):
@@ -117,18 +164,21 @@ def coherence(df: pd.DataFrame) -> list[str]:
             continue
         worst = inverted.idxmax()
         row = both.loc[worst]
-        line = (head + f"inversé sur {len(inverted)} mesure(s) ({len(inverted) / len(both):.1%}), "
-                f"au pire de {gap[worst]:.1f} °C le {row['timestamp']} "
-                f"({cold.upper()} {row[cold]:.1f}, {hot.upper()} {row[hot]:.1f})")
-        if gap[worst] > 0.5:
-            line += " -> plus qu'un arrondi au degré : troncature ou étalonnage à vérifier"
-        lines.append(line)
+        rounding = (resolution(both[hot]) + resolution(both[cold])) / 2 + PROBE_ACCURACY_CELSIUS
+        lines.append(head + f"inversé sur {len(inverted)} mesure(s) ({len(inverted) / len(both):.1%}), "
+                     f"au pire de {gap[worst]:.1f} °C le {row['timestamp']} "
+                     f"({cold.upper()} {row[cold]:.1f}, {hot.upper()} {row[hot]:.1f})")
+        if gap[worst] <= rounding + 1e-9:
+            lines.append(f"{'':<18}-> dans l'arrondi et la précision des sondes (jusqu'à {rounding:.2f} °C) : normal")
+        else:
+            lines.append(f"{'':<18}-> au-delà de l'arrondi et de la précision des sondes ({rounding:.2f} °C) : transitoire probable "
+                         "(démarrage / arrêt du ventilateur) ; si l'écart dure, étalonnage ou troncature")
+            lines.append(f"{'':<21}vérifier : ./voltaneum data --around \"{str(row['timestamp'])[:16]}\"")
     for column in config.DIELECTRIC_COLUMNS + config.COOLANT_COLUMNS:
-        if column in df:
+        if column in df and resolution(df[column]) == 1.0:
             valid = pd.to_numeric(df[column], errors="coerce").dropna()
-            if len(valid) > 100 and (valid == valid.round()).mean() > 0.99:
-                lines.append(f"  {column.upper()} : {(valid == valid.round()).mean():.0%} de valeurs entières "
-                             "-> lue au degré près (au dixième pour un usage fiable)")
+            lines.append(f"  {column.upper()} : {(valid == valid.round()).mean():.0%} de valeurs entières "
+                         "-> lue au degré près (au dixième pour un usage fiable)")
     return lines if len(lines) > 2 else []
 
 

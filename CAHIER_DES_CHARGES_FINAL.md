@@ -366,6 +366,8 @@ Règle (`database/quality.py`) : une mesure de PT01 à PT04 est un pic isolé si
 
 Traitement : les pics restent enregistrés (traçabilité) ; ils sont écartés de l'apprentissage (`ml/train.py`), des calculs de tendance en service (`sqlite_client.recent_values` : régulation par étapes, entrées de tendance, échauffement moyen) et des minimum / maximum / moyenne de `./voltaneum data`, qui les compte et les date (section « Qualité des mesures »). La dernière mesure reçue, sans suivante, ne peut pas être jugée : d'où la confirmation sur deux mesures des alertes critiques (§10).
 
+Contrôle de cohérence (`./voltaneum data`) : au même instant, la sonde chaude de chaque circuit doit être au moins égale à la froide (PT02 ≥ PT01, PT03 ≥ PT04). Une inversion inférieure à la demi-résolution des deux sondes plus 0,2 °C de précision (0,75 °C côté diélectrique, PT02 étant lue au degré ; 0,3 °C côté refroidissement) est normale ; au-delà, c'est un transitoire probable (démarrage / arrêt du ventilateur, temps de transport du liquide), ou un étalonnage si l'écart dure : le résumé donne la commande `--around` qui affiche les mesures autour du pire cas. La puissance y est résumée en moyenne glissante sur 10 min, comme dans l'interface (la valeur instantanée, de −2 à +7 kW, n'a pas de sens physique avec PT02 au degré).
+
 ### 7.2 Trous de données
 
 Les trous sont conservés dans l'historique et signalés dans l'analyse. L'entraînement ne doit pas relier artificiellement deux segments séparés par plus de `MAX_GAP_SECONDS`.

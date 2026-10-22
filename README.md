@@ -37,7 +37,7 @@ démarre tout en arrière-plan. Mise à jour : `git pull && ./voltaneum restart`
 | `./voltaneum watch` | **supervision en direct dans le terminal** (sans navigateur) |
 | `./voltaneum run` | tout au premier plan (Ctrl+C) |
 | `./voltaneum diagnose` | configuration, passerelle, broker, météo, e-mail, base, modèle (lecture seule) |
-| `./voltaneum data` | résumé des mesures (min / max / moyenne sans les pics isolés, mesures figées), **qualité des mesures** (pics isolés datés), **cohérence physique** (sonde chaude ≥ sonde froide) et 10 dernières lignes ; options `--rows 50`, `--hours 24`, `--csv export.csv`, `--around "AAAA-MM-JJ HH:MM"` (mesures 10 min avant et après un instant UTC, `--minutes` pour changer la fenêtre) |
+| `./voltaneum data` | résumé des mesures (min / max / moyenne sans les pics isolés, puissance en moyenne 10 min, mesures figées), **qualité des mesures** (pics isolés datés), **cohérence physique** (sonde chaude ≥ sonde froide ; inversion dans l'arrondi des sondes, ou transitoire à vérifier avec la commande `--around` proposée) et 10 dernières lignes ; options `--rows 50`, `--hours 24`, `--csv export.csv`, `--around "AAAA-MM-JJ HH:MM"` (mesures 10 min avant et après un instant UTC, `--minutes` pour changer la fenêtre) |
 | `./voltaneum catalogue` | **catalogue de l'automate** : chaque point, sa dernière valeur, utilisé ou non et comment (`--details`, `--used`) |
 | `./voltaneum export` | **un fichier CSV par élément** (mesures, consignes PID, alertes, prédictions, ré-entraînements) dans `exports/` ; `--days 7` (défaut), `--hours 24`, `--all`, `--only mesures,alertes` |
 | `./voltaneum model` | modèle proposé : `accept`, `reject --note "…"`, `rollback` |
