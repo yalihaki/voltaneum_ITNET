@@ -129,13 +129,52 @@ def latest_rows(df: pd.DataFrame, count: int) -> str:
     return tail.to_string(index=False, na_rep="—", float_format=lambda v: f"{v:.2f}")
 
 
+def around(db_path: str, at: str, minutes: float = 10) -> str:
+    """Mesures de `minutes` avant à `minutes` après l'instant `at` (UTC, comme les dates du
+    résumé), avec les écarts chaud − froid de chaque circuit : un écart négatif est une inversion.
+    Sert à voir si une inversion est un transitoire (évolution progressive) ou un pic isolé."""
+    center = pd.Timestamp(at)
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"base introuvable : {path}")
+    start = (center - pd.Timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (center + pd.Timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as connection:
+        df = pd.read_sql_query("SELECT * FROM telemetry WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp",
+                               connection, params=(start, end))
+    if df.empty:
+        return f"Aucune mesure entre {start} et {end} (UTC)."
+    hot_d, cold_d = config.DIELECTRIC_HOT_COLUMN, config.DIELECTRIC_COLD_COLUMN
+    hot_c, cold_c = config.COOLANT_HOT_COLUMN, config.COOLANT_COLD_COLUMN
+    table = pd.DataFrame({"heure UTC": pd.to_datetime(df["timestamp"]).dt.strftime("%H:%M:%S")})
+    for column in ("pt01", "pt02", "pt03", "pt04", "ht01", "freq_pompe"):
+        if column in df:
+            table[column] = pd.to_numeric(df[column], errors="coerce")
+    table[f"{hot_d}-{cold_d}"] = pd.to_numeric(df[hot_d], errors="coerce") - pd.to_numeric(df[cold_d], errors="coerce")
+    table[f"{hot_c}-{cold_c}"] = pd.to_numeric(df[hot_c], errors="coerce") - pd.to_numeric(df[cold_c], errors="coerce")
+    nearest = (pd.to_datetime(df["timestamp"]) - center).abs().idxmin()
+    table[""] = ["<- instant demandé" if i == nearest else "" for i in table.index]
+    header = (f"Mesures du {start} au {end} (UTC), {len(df)} ligne(s). Écart chaud − froid négatif = "
+              "sonde froide au-dessus de la chaude.")
+    return header + "\n" + table.to_string(index=False, na_rep="—", float_format=lambda v: f"{v:.2f}")
+
+
 def _local_tz():
     return datetime.now().astimezone().tzinfo
 
 
-def print_summary(db_path: str, rows: int = 10, hours: float | None = None, csv_path: str | None = None) -> int:
+def print_summary(db_path: str, rows: int = 10, hours: float | None = None, csv_path: str | None = None,
+                  at: str | None = None, minutes: float = 10) -> int:
     """Affiche le résumé de la base et ses dernières mesures ; exporte en CSV si demandé.
+    Avec `at` : seulement les mesures autour de cet instant (voir `around`).
     Retourne un code de sortie (0 = OK)."""
+    if at:
+        try:
+            print(around(db_path, at, minutes))
+        except (sqlite3.Error, FileNotFoundError, ValueError) as exc:
+            print(f"Impossible d'afficher les mesures autour de {at!r} : {exc}")
+            return 1
+        return 0
     try:
         df = load_telemetry(db_path, hours)
     except (sqlite3.Error, FileNotFoundError) as exc:

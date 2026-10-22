@@ -72,3 +72,20 @@ def test_coherence_flags_a_cold_probe_above_the_hot_one():
     assert "troncature ou étalonnage" in text
     assert "PT03 ≥ PT04 attendu : toujours respecté" in text
     assert "PT02 : 100% de valeurs entières" in text
+
+
+def test_around_shows_the_window_and_the_inversions(tmp_path):
+    from database import sqlite_client
+    from database.summary import around, print_summary
+    db = str(tmp_path / "a.db")
+    sqlite_client.init_db(db)
+    for minute in range(30):
+        pt01 = 36.7 if minute == 15 else 34.0
+        sqlite_client.insert_reading(pt01, 35.0, 33.5, 33.0, 10.4, 30.0, 12.0,
+                                     timestamp=f"2026-10-18 04:{50 + minute // 6:02d}:{(minute % 6) * 10:02d}",
+                                     db_path=db)
+    text = around(db, "2026-10-18 04:52:30", minutes=1)
+    assert "04:52:30" in text and "<- instant demandé" in text and "-1.70" in text
+    assert "04:50:00" not in text                       # hors de la fenêtre de ±1 min
+    assert "Aucune mesure" in around(db, "2026-10-19 12:00", minutes=1)
+    assert print_summary(db, at="pas une date") == 1
