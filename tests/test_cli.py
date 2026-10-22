@@ -74,3 +74,62 @@ def test_export_only_some_elements(env, tmp_path):
     assert voltaneum.main(["export", "--db", db, "--only", "mesures,alertes", "--dir", str(out)]) == 0
     assert len(list(out.glob("*.csv"))) == 2
     assert voltaneum.main(["export", "--db", db, "--only", "bidon", "--dir", str(out)]) == 2
+
+
+def test_copie_makes_a_readable_copy_and_prints_the_scp_command(env, capsys):
+    """La copie doit contenir les écritures récentes (mode WAL) et se relire telle quelle."""
+    import gzip
+    import sqlite3
+    import types
+    db, tmp_path = env
+    folder = tmp_path / "copies"
+    for _ in range(voltaneum.COPIE_RETENTION + 1):
+        assert voltaneum.cmd_copie(types.SimpleNamespace(db=db, dir=str(folder), mail=False)) == 0
+    archives = sorted(folder.glob("voltaneum-*.db.gz"))
+    assert 1 <= len(archives) <= voltaneum.COPIE_RETENTION              # pas d'accumulation
+    plain = tmp_path / "relue.db"
+    plain.write_bytes(gzip.decompress(archives[-1].read_bytes()))
+    with sqlite3.connect(plain) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == _rows(db)
+    out = capsys.readouterr().out
+    assert "scp " in out and "gunzip " in out and "./voltaneum data --db" in out and "--mail" in out
+
+
+def test_copie_refuses_a_missing_database(tmp_path, capsys):
+    import types
+    assert voltaneum.cmd_copie(types.SimpleNamespace(db=str(tmp_path / "absente.db"), dir=str(tmp_path), mail=True)) == 1
+
+
+def test_copie_by_mail_attaches_the_archive(env, monkeypatch, capsys):
+    """VPS injoignable depuis le poste : la copie part en pièce jointe par le SMTP des alertes."""
+    import types
+    from unittest.mock import MagicMock
+
+    from notifications import alerts
+    db, tmp_path = env
+    for name, value in {"SMTP_HOST": "smtp.example.org", "SMTP_PORT": 587, "SMTP_USER": "u", "SMTP_PASSWORD": "p",
+                        "ALERT_EMAIL_FROM": "voltaneum@example.org", "ALERT_EMAIL_TO": "moi@example.org"}.items():
+        monkeypatch.setattr(config, name, value)
+    smtp_cls = MagicMock()
+    monkeypatch.setattr(alerts.smtplib, "SMTP", smtp_cls)
+    assert voltaneum.cmd_copie(types.SimpleNamespace(db=db, dir=str(tmp_path / "c"), mail=True)) == 0
+    message = smtp_cls.return_value.__enter__.return_value.send_message.call_args.args[0]
+    (attachment,) = list(message.iter_attachments())
+    assert attachment.get_filename().endswith(".db.gz") and message["To"] == "moi@example.org"
+    assert "Envoyée par e-mail à moi@example.org" in capsys.readouterr().out
+
+
+def test_copie_by_mail_without_smtp_says_why(env, monkeypatch, capsys):
+    import types
+    db, tmp_path = env
+    monkeypatch.setattr(config, "SMTP_HOST", None)
+    assert voltaneum.cmd_copie(types.SimpleNamespace(db=db, dir=str(tmp_path / "c"), mail=True)) == 1
+    assert "E-mail NON envoyé : configuration e-mail incomplète" in capsys.readouterr().out
+
+
+def test_copie_too_big_for_a_mail_is_refused(env, monkeypatch, capsys):
+    import types
+    db, tmp_path = env
+    monkeypatch.setattr(voltaneum, "COPIE_MAIL_MAX_MB", 0)
+    assert voltaneum.cmd_copie(types.SimpleNamespace(db=db, dir=str(tmp_path / "c"), mail=True)) == 1
+    assert "Trop volumineuse" in capsys.readouterr().out

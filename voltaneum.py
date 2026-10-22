@@ -29,6 +29,12 @@ import config
 LOG_DIR = Path(config.PROJECT_ROOT) / "logs"
 
 
+# Nombre de copies de la base gardées par `./voltaneum copie`.
+COPIE_RETENTION = 3
+# Taille maximale (Mo, compressée) d'une copie envoyée par e-mail (`./voltaneum copie --mail`).
+COPIE_MAIL_MAX_MB = 20
+
+
 def _setup_logging(log_file: str | None) -> None:
     handler: logging.Handler = logging.StreamHandler()
     if log_file:
@@ -252,6 +258,61 @@ def cmd_catalogue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_copie(args: argparse.Namespace) -> int:
+    """Copie de la base à récupérer sur un autre poste (analyse, tests, ré-entraînement hors ligne).
+
+    Copier `voltaneum.db` à la main pendant que Voltaneum tourne donnerait une base incomplète ou
+    incohérente : en mode WAL, les dernières écritures sont encore dans `voltaneum.db-wal`. On
+    utilise donc la sauvegarde SQLite (même méthode que la sauvegarde quotidienne, lecture seule
+    pour la base de production), compressée. Seules les COPIE_RETENTION dernières copies sont
+    gardées (pas d'accumulation sur le disque).
+
+    Récupération :
+      - `--mail` : envoi en pièce jointe à ALERT_EMAIL_TO, par le SMTP des alertes. C'est la voie
+        normale quand le serveur (VPS) n'est pas joignable depuis le poste. Refusé au-delà de
+        COPIE_MAIL_MAX_MB (limite usuelle des messageries : 20 à 25 Mo).
+      - sinon : la commande `scp` à lancer depuis le poste, s'il joint le serveur."""
+    import socket
+    from datetime import datetime
+
+    from database.backup import create_backup
+
+    if not Path(args.db).is_file():
+        print(f"Base introuvable : {args.db}")
+        return 1
+    folder = Path(args.dir)
+    archive = create_backup(args.db, str(folder), retention_count=COPIE_RETENTION)
+    size = archive.stat().st_size / 1024**2
+    host = socket.gethostname()
+    print(f"Copie cohérente de la base : {archive.resolve()} ({size:.1f} Mo, compressée)")
+    if args.mail:
+        from notifications.alerts import send_email_detailed
+
+        if size > COPIE_MAIL_MAX_MB:
+            print(f"Trop volumineuse pour un e-mail ({size:.1f} Mo > {COPIE_MAIL_MAX_MB} Mo) : utiliser "
+                  "`./voltaneum data --hours 168 --csv mesures.csv` (une semaine) ou scp.")
+            return 1
+        body = (f"Copie de la base Voltaneum du serveur {host}, faite le "
+                f"{datetime.now().strftime('%d/%m/%Y à %H:%M')}.\n\n"
+                "Sur votre poste, dans le dossier du projet Voltaneum :\n"
+                f"  gunzip {archive.name}\n"
+                f"  ./voltaneum data --db {archive.name[:-3]}\n\n"
+                "Ce fichier contient toutes les mesures de l'installation : ne pas le diffuser.\n")
+        error = send_email_detailed(f"[Voltaneum] Copie de la base {host} {archive.name[10:25]}", body, archive)
+        if error:
+            print(f"E-mail NON envoyé : {error}")
+            return 1
+        print(f"Envoyée par e-mail à {config.ALERT_EMAIL_TO} (pièce jointe {archive.name}).")
+        return 0
+    print("\nSur votre poste (pas ici), dans le dossier du projet :")
+    print(f"  scp {getpass.getuser()}@{host}:{archive.resolve()} .")
+    print(f"  gunzip {archive.name}")
+    print(f"  ./voltaneum data --db {archive.name[:-3]}")
+    print("Si votre poste ne joint pas ce serveur : ./voltaneum copie --mail (envoi à l'adresse des alertes).")
+    print(f"\nLes {COPIE_RETENTION} dernières copies sont gardées dans {folder}/ (les plus anciennes sont supprimées).")
+    return 0
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     """Liste les sauvegardes, ou restaure l'une d'elles (Voltaneum doit être arrêté)."""
     from database.backup import create_backup, restore_backup
@@ -367,6 +428,14 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--details", action="store_true", help="afficher comment Voltaneum utilise chaque point")
     cat.add_argument("--used", action="store_true", help="seulement les points utilisés")
     cat.set_defaults(func=cmd_catalogue)
+
+    copie = sub.add_parser("copie", help="copie cohérente de la base, à récupérer sur votre poste (scp)")
+    copie.add_argument("--db", default=config.SQLITE_DB_PATH)
+    copie.add_argument("--dir", default=str(Path(config.PROJECT_ROOT) / "exports" / "copies"),
+                       help="dossier des copies (défaut : exports/copies)")
+    copie.add_argument("--mail", action="store_true",
+                       help="envoyer la copie en pièce jointe à l'adresse des alertes (ALERT_EMAIL_TO)")
+    copie.set_defaults(func=cmd_copie)
 
     restore = sub.add_parser("restore", help="lister les sauvegardes, ou en restaurer une (Voltaneum arrêté)")
     restore.add_argument("archive", nargs="?", help="nom de la sauvegarde (voir la liste)")

@@ -20,7 +20,8 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
-from email.mime.text import MIMEText
+from email.message import EmailMessage
+from pathlib import Path
 
 import config
 from database import sqlite_client
@@ -49,30 +50,49 @@ def smtp_configured() -> bool:
 # Envoi SMTP — contrat 5.5
 # ---------------------------------------------------------------------------
 
-def send_email(subject: str, body: str) -> bool:
+def send_email(subject: str, body: str, attachment: Path | None = None) -> bool:
     """Envoie un e-mail (STARTTLS vérifié). Ne lève jamais d'exception : retourne False en cas
-    d'échec ou de configuration incomplète (une panne SMTP n'interrompt jamais le système)."""
+    d'échec ou de configuration incomplète (une panne SMTP n'interrompt jamais le système).
+    Voir `send_email_detailed` pour la cause d'un échec."""
+    return send_email_detailed(subject, body, attachment) is None
+
+
+def send_email_detailed(subject: str, body: str, attachment: Path | None = None) -> str | None:
+    """Envoie un e-mail à ALERT_EMAIL_TO avec le SMTP des alertes, éventuellement avec un fichier
+    joint (utilisé par `./voltaneum copie --mail`). Retourne None si l'envoi a réussi, sinon la
+    cause en clair. Ne lève jamais d'exception.
+
+    Sécurité : STARTTLS avec certificat ET nom d'hôte du serveur vérifiés ; aucun saut de ligne dans
+    le sujet (pas d'injection d'en-têtes) ; destinataire fixé par la configuration, jamais par
+    l'appelant."""
     smtp_host, smtp_user, smtp_password = config.SMTP_HOST, config.SMTP_USER, config.SMTP_PASSWORD
     sender, recipient = config.ALERT_EMAIL_FROM, config.ALERT_EMAIL_TO
     if not (smtp_host and smtp_user and smtp_password and sender and recipient):
-        return False
+        return "configuration e-mail incomplète (SMTP_HOST, SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL_FROM, ALERT_EMAIL_TO)"
 
-    msg = MIMEText(body)
+    msg = EmailMessage()
     # Les en-têtes ne doivent jamais contenir de saut de ligne (injection d'en-têtes).
     msg["Subject"] = " ".join(subject.split())
     msg["From"] = sender
     msg["To"] = recipient
+    msg.set_content(body)
+    if attachment is not None:
+        try:
+            data = Path(attachment).read_bytes()
+        except OSError as exc:
+            return f"pièce jointe illisible : {exc}"
+        msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=Path(attachment).name)
     try:
-        with smtplib.SMTP(smtp_host, config.SMTP_PORT, timeout=15) as server:
+        with smtplib.SMTP(smtp_host, config.SMTP_PORT, timeout=60 if attachment else 15) as server:
             # Contexte par défaut : certificat ET nom d'hôte du serveur vérifiés.
             server.starttls(context=ssl.create_default_context())
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
         logger.info("E-mail envoyé : %s", msg["Subject"])
-        return True
+        return None
     except (smtplib.SMTPException, OSError) as exc:
         logger.error("Échec d'envoi SMTP (%s) : %s", msg["Subject"], exc)
-        return False
+        return f"échec SMTP : {exc}"
 
 
 _smtp_missing_reported = False
