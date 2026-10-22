@@ -517,3 +517,25 @@ class TestDielectricCriticalTemperature:
     def test_missing_values_never_alert(self):
         state = _fresh_state()
         assert evaluate_rules({"pt01": None, "pt02": 34.0, "ts": 1.0}, None, state) == []
+
+
+def test_daily_reminders_survive_a_restart(tmp_path, monkeypatch):
+    """Cas réel du 22/10/2026 : « shunt de sécurité » envoyé à 13:57 puis de nouveau à 14:14, après un
+    ./voltaneum restart. Le délai entre deux e-mails est repris de alerts_log au démarrage."""
+    db = str(tmp_path / "a.db")
+    sqlite_client.init_db(db)
+    for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO"):
+        monkeypatch.setattr(config, name, "x")
+    sqlite_client.log_alert("CRITIQUE", "safety_bypass_active", "shunts", email_sent=True, db_path=db)
+    sqlite_client.log_alert("ATTENTION", "automate_setpoint_mismatch", "36 °C", email_sent=False, db_path=db)
+    delivered = []
+    engine = AlertEngine(deliver=lambda level, rule, message: delivered.append(rule) or True, synchronous=True)
+    assert engine.restore_cooldowns(db) == 1                      # seul l'e-mail réellement parti compte
+    engine.report("CRITIQUE", "safety_bypass_active", "shunts")
+    engine.report("ATTENTION", "automate_setpoint_mismatch", "36 °C")
+    assert delivered == ["automate_setpoint_mismatch"]            # échec précédent : renvoyé
+
+
+def test_restore_cooldowns_never_fails_on_a_missing_table(tmp_path):
+    engine = AlertEngine(synchronous=True)
+    assert engine.restore_cooldowns(str(tmp_path / "absente.db")) == 0

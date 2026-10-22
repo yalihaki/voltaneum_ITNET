@@ -417,6 +417,22 @@ class TestControlTick:
             rows = conn.execute("SELECT phase, event, mqtt_sent FROM control_log").fetchall()
         assert rows == [("repos", None, None)] * 5
 
+    def test_failed_message_is_resent_only_while_it_is_still_valid(self, app):
+        """Broker absent (cas réel du contrôleur) : le message d'étape non transmis est renvoyé tant
+        qu'il est valable côté automate (`valid_for_seconds`), puis abandonné ; avant, « renvoi ·
+        NON transmis » repartait chaque minute, sans fin."""
+        app.start()
+        FakeOutdoorSensor.value = 15.0
+        feed_measurements(app, t_oil=config.TARGET_TEMP - 1)
+        app._resend_pending, app._resend_since = True, time.time() - 60
+        app._control_tick(60.0)                                  # encore valable : renvoi
+        app._resend_since = time.time() - main_module.STEP_MESSAGE_VALIDITY_SECONDS - 60
+        app._control_tick(60.0)                                  # expiré : abandonné
+        app._control_tick(60.0)
+        with sqlite_client.connect(config.SQLITE_DB_PATH) as conn:
+            events = [r[0] for r in conn.execute("SELECT event FROM control_log ORDER BY id")]
+        assert events == ["renvoi", None, None] and app._resend_pending is False
+
     def test_heating_bath_sends_one_message_then_waits(self, app):
         app.start()
         FakeOutdoorSensor.value = 15.0

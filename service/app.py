@@ -57,6 +57,10 @@ from notifications.alerts import AlertEngine
 
 logger = logging.getLogger("voltaneum.app")
 
+# Durée de validité d'un message d'étape côté automate (champ `valid_for_seconds` des conditions) :
+# au-delà, un message non transmis n'est plus renvoyé.
+STEP_MESSAGE_VALIDITY_SECONDS = config.REGULATION_EFFECT_WAIT_SECONDS + 3 * config.CONTROL_LOOP_INTERVAL_SECONDS
+
 # Format des horodatages stockés dans SQLite (UTC).
 _DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 # Période de contrôle des threads par le superviseur (secondes).
@@ -90,6 +94,7 @@ class VoltaneumApp:
         self._pid_state: dict = {}
         self._supervisor_state: dict = {}     # étape de la régulation (control/supervisor.py)
         self._resend_pending = False          # dernier message d'étape non transmis
+        self._resend_since: float | None = None   # instant du premier échec de ce message
         self._prediction_used = False
         # Prochain contrôle de l'installation (horloge monotone) : le premier dès le premier cycle.
         self._next_plant_check = 0.0
@@ -122,6 +127,8 @@ class VoltaneumApp:
             logger.warning("Broker MQTT distant (%s) sans TLS : les messages circulent en clair.", config.MQTT_HOST)
 
         self.alerts = AlertEngine()
+        # Délais entre deux e-mails repris de la base : un redémarrage ne renvoie pas les alertes durables.
+        self.alerts.restore_cooldowns(config.SQLITE_DB_PATH)
         self.mqtt_client = create_client("voltaneum-main")
         self.collector = GatewayCollector(
             mqtt_client=self.mqtt_client, db_path=config.SQLITE_DB_PATH,
@@ -352,6 +359,15 @@ class VoltaneumApp:
             t_oil, slope, t_outdoor, setpoint, t_oil_predicted if self._prediction_used else None,
             now, self._supervisor_state)
         event = decision.event
+        if self._resend_pending and self._resend_since is not None and \
+                now - self._resend_since > STEP_MESSAGE_VALIDITY_SECONDS:
+            # Un message d'étape expire côté automate après `valid_for_seconds` : le renvoyer plus tard
+            # n'a plus de sens (l'automate a repris sa propre régulation). Sans cette limite, un broker
+            # absent faisait renvoyer et journaliser « NON transmis » chaque minute, sans fin. La
+            # prochaine vraie étape (activation, fin...) sera de nouveau envoyée normalement.
+            logger.info("Message d'étape non transmis depuis plus de %.0f min : renvoi abandonné (expiré).",
+                        STEP_MESSAGE_VALIDITY_SECONDS / 60)
+            self._resend_pending, self._resend_since = False, None
         if event is None and self._resend_pending:
             event = "renvoi"     # le message précédent n'a pas pu partir : on le renvoie
         if decision.event == "insuffisant" and self.alerts is not None:
@@ -372,7 +388,12 @@ class VoltaneumApp:
                 setpoint_message = self._publish(config.MQTT_TOPIC_SETPOINT, {
                     "percent": decision.command_percent, "pid_percent": setpoint, "mode": mode,
                     "phase": decision.phase, "event": event})
-            self._resend_pending = conditions_message is None
+            failed = conditions_message is None
+            if failed and not self._resend_pending:
+                self._resend_since = now           # premier échec de ce message
+            elif not failed:
+                self._resend_since = None
+            self._resend_pending = failed
             log = logger.warning if self._resend_pending else logger.info
             log("Étape %s (%s) : %s%s", decision.phase, event, decision.reason,
                 " — NON transmis, renvoi au prochain cycle" if self._resend_pending else "")

@@ -116,7 +116,12 @@ def decide(t_oil: float, slope: float | None, t_outdoor: float | None, pid_perce
     # --- Repos : rien à envoyer tant que rien ne chauffe. --------------------------------
     if phase == REST:
         if trigger is None:
-            return quiet(f"PT02 à {_fr(t_oil)} °C, stable : rien à envoyer, l'automate régule seul")
+            # « Repos » veut dire « rien ne pousse à refroidir » (ni au-dessus de la cible, ni en train
+            # de monter, ni prédit au-dessus), pas forcément « stable » : la tendance est donnée telle
+            # quelle (ex. PT02 qui baisse de 1 °C / 10 min, 22/10/2026).
+            trend = "" if slope is None else f", tendance {_signed(slope)} °C / 10 min"
+            return quiet(f"PT02 à {_fr(t_oil)} °C{trend} : ne se réchauffe pas, rien à envoyer, "
+                         "l'automate régule seul")
         if air_ok:
             return send(OUTDOOR_AIR, "activation", 0.0,
                         f"{trigger} : air extérieur seul (ventilateur arrêté), l'air froid devrait suffire")

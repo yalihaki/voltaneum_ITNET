@@ -16,6 +16,7 @@ import logging
 import math
 import queue
 import smtplib
+import sqlite3
 import ssl
 import threading
 import time
@@ -419,6 +420,30 @@ class AlertEngine:
         self._latest_outdoor_consistency: dict | None = None
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+
+    def restore_cooldowns(self, db_path: str) -> int:
+        """Reprend, depuis `alerts_log`, l'heure du dernier envoi de chaque règle, pour que le délai
+        entre deux e-mails survive à un redémarrage. Sans cela, chaque `./voltaneum restart` renvoyait
+        aussitôt toutes les alertes durables (shunts, consigne : rappel « une fois par jour » envoyé
+        deux fois en 17 min le 22/10/2026). Seuls comptent les e-mails réellement partis (ou, sans
+        SMTP configuré, les alertes journalisées). Retourne le nombre de règles reprises ; ne lève
+        jamais d'exception (une base illisible ne fait que perdre cette reprise)."""
+        try:
+            with sqlite_client.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT rule_name, MAX(CAST(strftime('%s', timestamp) AS REAL)) FROM alerts_log "
+                    "WHERE email_sent = 1 OR ? GROUP BY rule_name",
+                    (0 if smtp_configured() else 1,),
+                ).fetchall()
+        except sqlite3.Error:
+            logger.exception("Reprise des délais entre alertes impossible")
+            return 0
+        with self._lock:
+            last_sent = self._state.setdefault("last_sent_at", {})
+            for rule, ts in rows:
+                if rule and ts is not None:
+                    last_sent[rule] = max(float(ts), last_sent.get(rule, 0.0))
+        return len(rows)
 
     def on_telemetry(self, snapshot: dict) -> None:
         payload = {**snapshot, "ts": snapshot.get("ts", time.time())}

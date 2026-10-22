@@ -140,3 +140,11 @@ def test_slope_needs_enough_points_and_span():
     assert slope_per_10min([(0, 34.0), (15, 34.0)], 600) is None
     assert slope_per_10min([(t, 34.0) for t in range(0, 100, 15)], 600) is None   # 100 s sur 600
     assert slope_per_10min([(t, 30 + t / 600) for t in range(0, 600, 15)], 600) == pytest.approx(1.0)
+
+
+def test_rest_message_gives_the_trend_instead_of_saying_stable():
+    """Cas réel (22/10/2026 16:50) : PT02 baissait de 1 °C / 10 min et l'écran disait « stable »."""
+    from control.supervisor import decide
+    decision, _ = decide(34.0, -1.0, 15.0, 0.0, None, 1000.0, {})
+    assert decision.event is None and "stable" not in decision.reason
+    assert "tendance −1,0 °C / 10 min" in decision.reason and "ne se réchauffe pas" in decision.reason
