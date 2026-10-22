@@ -415,6 +415,21 @@ SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS: float = _env_float("SENSOR_FROZEN_REFERENC
 # les marches de 1 °C de PT02 (lue au degré près) passent, les pics réels (1,1 à 2,3 °C) sont pris.
 SPIKE_THRESHOLD_CELSIUS: float = _env_float("SPIKE_THRESHOLD_CELSIUS", 1.0)
 
+# Contrôles de l'installation (notifications/plant_checks.py), faits toutes les
+# PLANT_CHECK_INTERVAL_SECONDS à partir des données déjà reçues (catalogue de l'automate, PT04) :
+# shunt de sécurité actif, consigne de l'automate différente de TARGET_TEMP, court-cycle du
+# ventilateur. Rappel une fois par jour au plus. Valeurs indicatives, à valider avec l'automaticien.
+PLANT_CHECK_INTERVAL_SECONDS: int = _env_int("PLANT_CHECK_INTERVAL_SECONDS", 900)
+# Écart toléré entre la consigne de l'automate et TARGET_TEMP (°C).
+AUTOMATE_SETPOINT_TOLERANCE_CELSIUS: float = _env_float("AUTOMATE_SETPOINT_TOLERANCE_CELSIUS", 0.5)
+# Démarrages du ventilateur par heure au-delà desquels on signale un court-cycle (0 = désactivé).
+# Ordre de grandeur courant pour un moteur standard : quelques démarrages par heure ; mesuré sur
+# l'installation (22/10/2026) : 12 en moyenne, 18 par air chaud.
+FAN_STARTS_PER_HOUR_MAX: int = _env_int("FAN_STARTS_PER_HOUR_MAX", 6)
+# Un démarrage du ventilateur = PT04 (retour du dry cooler) qui perd au moins cet écart en 30 s.
+# Mesuré : 3,3 °C en médiane ; un pic isolé de PT04 est retiré avant (database/quality.py).
+FAN_START_DROP_CELSIUS: float = _env_float("FAN_START_DROP_CELSIUS", 1.5)
+
 # ---------------------------------------------------------------------------
 # Protection automatique du stockage (purge pilotée par la TAILLE de la base)
 # ---------------------------------------------------------------------------
@@ -608,6 +623,10 @@ def validate_config() -> None:
              "REGULATION_EFFECT_WAIT_SECONDS doit couvrir au moins un cycle de contrôle.")
     _require(SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS > 0, "SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS doit être positif.")
     _require(SPIKE_THRESHOLD_CELSIUS > 0, "SPIKE_THRESHOLD_CELSIUS doit être positif.")
+    _require(PLANT_CHECK_INTERVAL_SECONDS > 0, "PLANT_CHECK_INTERVAL_SECONDS doit être positif.")
+    _require(AUTOMATE_SETPOINT_TOLERANCE_CELSIUS >= 0, "AUTOMATE_SETPOINT_TOLERANCE_CELSIUS doit être positif ou nul.")
+    _require(FAN_STARTS_PER_HOUR_MAX >= 0, "FAN_STARTS_PER_HOUR_MAX doit être positif ou nul (0 = désactivé).")
+    _require(FAN_START_DROP_CELSIUS > 0, "FAN_START_DROP_CELSIUS doit être positif.")
     _require(set(ML_EXCLUDED_FEATURES) <= set(FEATURE_COLUMNS) - {TARGET_COLUMN},
              f"ML_EXCLUDED_FEATURES : seulement parmi {[c for c in FEATURE_COLUMNS if c != TARGET_COLUMN]} "
              f"(la grandeur surveillée {TARGET_COLUMN} ne peut pas être écartée).")

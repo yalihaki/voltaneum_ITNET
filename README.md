@@ -124,6 +124,9 @@ sont pas renseignées (`THERMAL_POWER_CONFIRMED`).
 | `telemetry_lost` | CRITIQUE | aucune mesure depuis `TELEMETRY_TIMEOUT_SECONDS` |
 | `oil_sensor_missing` | ATTENTION | PT02 absente alors que la passerelle émet (aucune consigne publiée) |
 | `oil_sensor_frozen` | ATTENTION | PT02 strictement constante depuis `SENSOR_FROZEN_ALERT_MINUTES` alors que PT01 a bougé d'au moins 1 °C |
+| `safety_bypass_active` | CRITIQUE | shunt de sécurité actif sur l'automate (`Emergency stop bypass`, `Phase sequence bypass`), lu dans le catalogue ; rappel une fois par jour |
+| `automate_setpoint_mismatch` | ATTENTION | consigne de l'automate (`Temperature setpoint`, `VD500`) à plus de `AUTOMATE_SETPOINT_TOLERANCE_CELSIUS` de `TARGET_TEMP` ; une fois par jour |
+| `fan_short_cycling` | ATTENTION | ventilateur du dry cooler démarré plus de `FAN_STARTS_PER_HOUR_MAX` fois sur la dernière heure (démarrage = PT04 −1,5 °C en 30 s) ; une fois par jour |
 | `cooling_ineffective` | ATTENTION | consigne au maximum et PT02 ne baisse toujours pas (ventilateur, dry cooler ou automate à vérifier) |
 | `model_disagreement` | ATTENTION | les deux modèles divergent (la prédiction n'est alors pas utilisée) |
 | `outdoor_sensor_weather_mismatch` | ATTENTION | capteur extérieur et météo très différents |
@@ -169,7 +172,10 @@ de l'armoire ; le même calcul sert à l'entraînement, en service et pour juger
 (`ML_EXCLUDED_FEATURES=temp_outdoor`) : sur quelques semaines, elle ne sert que d'horloge et fait
 apprendre par cœur. Sur les relevés réels du 12 au 22/10/2026 : +25 % sur la persistance à 10 min
 (0,18 °C d'erreur), contre −38 % avec la PT02 brute et la température extérieure. Les alertes et la
-sécurité restent sur la vraie PT02. Un modèle qui ne
+sécurité restent sur la vraie PT02. L'interface et `./voltaneum watch` affichent PT02 estimée à côté
+de la mesure, et comparent la prédiction à PT02 estimée (la grandeur prédite). La **tendance** de la
+régulation par étapes reste celle de la PT02 **mesurée** : sur les relevés réels, la pente de PT02
+estimée suit les cycles du ventilateur et donnait deux fois plus de faux signaux. Un modèle qui ne
 bat pas la persistance n'est jamais sauvegardé ; un seul ré-entraînement tourne à la fois. Changer d'horizon change
 l'anticipation du PID (pensée pour 10 min) : la proposition le signale. Au-delà de quelques
 heures, le modèle ne connaît ni la charge à venir ni la météo prévue.

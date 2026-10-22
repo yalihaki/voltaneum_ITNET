@@ -22,6 +22,8 @@ from pathlib import Path
 import config
 from collectors.catalogue import describe, reference_points
 from control.cooling_advice import compute_cooling_conditions, fan_thresholds
+from database.quality import drop_spike_points
+from ml.features import ESTIMATE_WINDOW_SECONDS, watched_state, with_estimated_target
 
 # Les requêtes marquées « nosec B608 » n'interpolent que des noms de colonnes CONSTANTS (définis
 # dans ce module) ; toutes les valeurs passent en paramètres SQL.
@@ -90,8 +92,10 @@ def _utc_text(epoch_seconds: float) -> str:
 # Instantané courant
 # ---------------------------------------------------------------------------
 def latest_snapshot(db_path: str, now: float | None = None) -> dict:
-    """Dernière ligne de `telemetry`, son âge, la tendance de la grandeur surveillée (PT02) et les conditions de
-    refroidissement qu'en déduit `control/cooling_advice.py` (même calcul que la boucle de contrôle)."""
+    """Dernière ligne de `telemetry`, son âge, PT02 ESTIMÉE au dixième (ce que prédit le modèle), la
+    tendance de PT02 utilisée par la régulation, et les conditions de refroidissement qu'en déduit
+    `control/cooling_advice.py` : mêmes calculs que la boucle de contrôle (ml/features.watched_state),
+    pour que l'écran montre ce que la régulation voit."""
     now = time.time() if now is None else now
     with connect_readonly(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry)")}
@@ -104,14 +108,14 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
             return {"empty": True, "server_time": int(now * 1000), "thresholds": thresholds()}
         ts = int(row[1])
         values = {name: _finite(v) for name, v in zip(MEASURES, row[2:2 + len(MEASURES)])}
-        # Tendance de la grandeur surveillée : comparaison avec la valeur d'il y a ~10 minutes.
+        # PT02 estimée et sa tendance : 20 min de PT02 et PT01 (estimation sur 10 min + pente sur 10 min).
         target = config.TARGET_COLUMN
-        past = conn.execute(
-            f"SELECT {target} FROM telemetry WHERE timestamp <= ? AND {target} IS NOT NULL "  # nosec B608
-            "ORDER BY timestamp DESC LIMIT 1",
-            (_utc_text(ts - 600),),
-        ).fetchone()
         hot, cold = config.DIELECTRIC_HOT_COLUMN, config.DIELECTRIC_COLD_COLUMN
+        recent = conn.execute(
+            f"SELECT CAST(strftime('%s', timestamp) AS REAL), {target}, {cold} FROM telemetry "  # nosec B608
+            "WHERE timestamp > ? ORDER BY timestamp",
+            (_utc_text(ts - config.REGULATION_TREND_WINDOW_SECONDS - ESTIMATE_WINDOW_SECONDS),),
+        ).fetchall()
         load = conn.execute(
             f"SELECT AVG({hot}) - AVG({cold}), COUNT({hot}), COUNT({cold}), "  # nosec B608
             f"{'AVG(thermal_power_kw)' if 'thermal_power_kw' in columns else 'NULL'} FROM telemetry "
@@ -121,9 +125,13 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
         control = _latest_control(conn, now)
 
     current = values[target]
-    target_trend = None
-    if past is not None and current is not None and _finite(past[0]) is not None:
-        target_trend = round(current - float(past[0]), 2)
+    # Mêmes données que la régulation : pics isolés retirés (database/quality.py).
+    target_points = drop_spike_points([(float(t), float(v)) for t, v, _ in recent if _finite(v) is not None])
+    cold_points = drop_spike_points([(float(t), float(c)) for t, _, c in recent if _finite(c) is not None])
+    watched = watched_state(target_points, cold_points, float(ts), values.get(cold),
+                            config.REGULATION_TREND_WINDOW_SECONDS)
+    target_trend = None if watched["slope"] is None else round(watched["slope"], 2)
+    target_estimate = None if watched["estimate"] is None else round(watched["estimate"], 2)
 
     cooling = None
     if current is not None:
@@ -138,6 +146,10 @@ def latest_snapshot(db_path: str, now: float | None = None) -> dict:
         "server_time": int(now * 1000),
         "values": values,
         "temp_outdoor_source": row[2 + len(MEASURES)],
+        # PT02 estimée au dixième (PT01 + échauffement moyen sur 10 min) : c'est elle que le modèle
+        # prédit ; les comparaisons « prédiction / maintenant » se font donc avec elle.
+        "target_estimate": target_estimate,
+        # Pente sur 10 min (°C / 10 min, moindres carrés) de PT02 mesurée : celle de la régulation.
         "target_trend_10min": target_trend,
         # Puissance moyenne sur 10 min : l'instantanée est très bruitée (PT02 lue au degré près).
         "thermal_power_kw_10min": _round(_finite(load[3])) if load else None,
@@ -476,6 +488,8 @@ def telemetry_series(db_path: str, start: float, end: float,
         "start": int(start * 1000),
         "end": int(end * 1000),
         "bucket_seconds": bucket,
+        # PT02 estimée au dixième, tranche par tranche (la grandeur que prédit le modèle).
+        "target_estimate": _estimate_series(db_path, start, end, bucket, rows),
         # Deux points plus éloignés que ce délai ne sont pas reliés (trou de collecte).
         "gap_ms": max(bucket * 2, config.MAX_GAP_SECONDS) * 1000,
         "t": [int(r[0]) * 1000 for r in rows],
@@ -484,6 +498,32 @@ def telemetry_series(db_path: str, start: float, end: float,
         "target_max": [_round(r[2 + n]) for r in rows],
         "count": sum(int(r[3 + n]) for r in rows),
     }
+
+
+def _estimate_series(db_path: str, start: float, end: float, bucket: int, rows: list) -> list[float | None]:
+    """PT02 estimée (ml/features.with_estimated_target) moyennée sur les mêmes tranches que les
+    autres courbes. Sur des tranches de 10 min ou plus, la moyenne de l'estimation est celle de la
+    PT02 mesurée (PT01 moyen + échauffement moyen) : on reprend alors directement la moyenne
+    mesurée, sans relire chaque mesure d'une longue période."""
+    measured = [_round(r[1 + MEASURES.index(config.TARGET_COLUMN)]) for r in rows]
+    if bucket >= ESTIMATE_WINDOW_SECONDS or not rows:
+        return measured
+    target, cold = config.TARGET_COLUMN, config.DIELECTRIC_COLD_COLUMN
+    with connect_readonly(db_path) as conn:
+        raw = conn.execute(
+            f"SELECT CAST(strftime('%s', timestamp) AS INTEGER), {target}, {cold} FROM telemetry "  # nosec B608
+            "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp",
+            (_utc_text(start - ESTIMATE_WINDOW_SECONDS), _utc_text(end)),
+        ).fetchall()
+    if not raw:
+        return [None] * len(rows)
+    import pandas as pd
+
+    frame = pd.DataFrame(raw, columns=["t", target, cold])
+    frame["timestamp"] = pd.to_datetime(frame["t"], unit="s")
+    estimated = with_estimated_target(frame)
+    by_bucket = estimated.groupby(estimated["t"] // bucket)[target].mean()
+    return [_round(_finite(by_bucket.get(int(r[0]) // bucket))) for r in rows]
 
 
 def prediction_series(db_path: str, start: float, end: float,

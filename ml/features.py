@@ -96,6 +96,27 @@ def estimate_from_history(target_points: list[tuple[float, float]], cold_points:
     return float(cold_now) + float(heating), history
 
 
+def watched_state(target_points: list[tuple[float, float]], cold_points: list[tuple[float, float]],
+                  now: float, cold_now: float | None, window_seconds: float) -> dict:
+    """État de la grandeur surveillée pour la RÉGULATION et l'AFFICHAGE (même calcul aux deux
+    endroits) : PT02 estimée maintenant (ce que prédit le modèle, pour comparer prédiction et
+    présent) et la tendance (°C / 10 min) utilisée par la régulation par étapes.
+
+    La tendance est la pente des moindres carrés (control/trend.py) de la PT02 MESURÉE, pas de PT02
+    estimée. Décision prise sur les relevés réels (14 252 minutes, 12 au 22/10/2026) : la pente de
+    PT02 estimée suit les cycles du ventilateur (PT01 oscille de 0,4 °C toutes les 5 min) ; elle est
+    deux fois plus agitée d'une minute à l'autre et déclenche à tort « ça monte » 7,9 % du temps
+    (contre 4,8 %) et « ça refroidit » 14,6 % (contre 6,1 %). Pour une décision qui attend 10 min
+    l'effet d'un changement, ce sont des faux signaux. PT02 estimée garde son intérêt pour la
+    prédiction à 10 min, où ces variations rapides sont justement l'information utile.
+    Les historiques sont attendus SANS pics isolés (sqlite_client.recent_values les retire)."""
+    from control.trend import slope_per_10min
+
+    estimate, _ = estimate_from_history(target_points, cold_points, now, cold_now)
+    slope = slope_per_10min([p for p in target_points if p[0] > now - window_seconds], window_seconds)
+    return {"estimate": estimate, "slope": slope}
+
+
 def add_trend_features(df: pd.DataFrame) -> pd.DataFrame:
     """Ajoute les colonnes TREND_FEATURES à un historique trié (colonne `timestamp`).
 

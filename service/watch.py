@@ -179,7 +179,9 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     if regulated is not None and regulated > th["critical_temp"]:
         regulated_txt = s.crit(regulated_txt + " CRITIQUE")
     trend = snap.get("target_trend_10min")
+    estimate = snap.get("target_estimate")
     row(f"Surveillée ({reg_name})", f"{s.bold(regulated_txt)}  cible {_num(th['target_temp'], 1, '°C')}"
+        + (f"  estimée {_num(estimate, 2, '°C')}" if estimate is not None else "")
         + (f"  tendance {_signed(trend, 1)} °C / 10 min" if trend is not None else ""))
     def pair(columns: tuple[str, ...]) -> str:
         text = "   ".join(f"{c.upper()} {_num(v[c], 1, '°C')}" for c in columns)

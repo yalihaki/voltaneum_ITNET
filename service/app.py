@@ -43,7 +43,6 @@ from collectors.outdoor_temperature import OutdoorTemperatureSource
 from collectors.weather_collector import get_outdoor_conditions
 from control.cooling_advice import compute_cooling_conditions, mean_load_delta
 from control.supervisor import decide
-from control.trend import slope_per_10min
 from control.pid_controller import compute_setpoint_detailed
 from database import sqlite_client
 from database.storage_manager import StorageManager
@@ -51,8 +50,9 @@ from messaging.mqtt import connect_with_retry, create_client
 from dashboard.server import DashboardServer, is_loopback, make_server
 from ml.monitor import run_monitor_loop
 from ml.features import (ESTIMATE_WINDOW_SECONDS, TREND_COLUMNS, TREND_FEATURES, TREND_WINDOWS_SECONDS,
-                         estimate_from_history, trend_features_at)
+                         estimate_from_history, trend_features_at, watched_state)
 from ml.predictor import DualModelPredictor
+from notifications.plant_checks import run_plant_checks
 from notifications.alerts import AlertEngine
 
 logger = logging.getLogger("voltaneum.app")
@@ -91,6 +91,8 @@ class VoltaneumApp:
         self._supervisor_state: dict = {}     # étape de la régulation (control/supervisor.py)
         self._resend_pending = False          # dernier message d'étape non transmis
         self._prediction_used = False
+        # Prochain contrôle de l'installation (horloge monotone) : le premier dès le premier cycle.
+        self._next_plant_check = 0.0
         self._disagreement_reported = False
         self._out_of_domain_reported = False
         self._retrain_process: subprocess.Popen | None = None
@@ -246,6 +248,20 @@ class VoltaneumApp:
             except Exception:
                 logger.exception("Erreur inattendue dans la boucle de contrôle")
 
+    def _plant_checks_if_due(self) -> None:
+        """Contrôles de l'installation (notifications/plant_checks.py) toutes les
+        PLANT_CHECK_INTERVAL_SECONDS, seulement quand les mesures sont fraîches. Ne bloque jamais la
+        régulation : une erreur est journalisée et le cycle continue."""
+        now = time.monotonic()
+        if self.alerts is None or now < self._next_plant_check:
+            return
+        self._next_plant_check = now + config.PLANT_CHECK_INTERVAL_SECONDS
+        try:
+            for level, rule, message in run_plant_checks(config.SQLITE_DB_PATH):
+                self.alerts.report(level, rule, message)
+        except Exception:
+            logger.exception("Contrôles de l'installation en échec")
+
     def _control_tick(self, dt: float) -> None:
         """Un cycle : lecture des mesures -> prédiction ML -> PID -> publication de la consigne.
 
@@ -282,6 +298,7 @@ class VoltaneumApp:
             self._pid_state = {}
             self._supervisor_state = {}   # le dernier message a expiré côté automate : on repart du repos
 
+        self._plant_checks_if_due()
         last_known = collector.snapshot()   # valeurs périmées capteur par capteur déjà remplacées par None
         t_oil = last_known.get(config.TARGET_COLUMN)
         if t_oil is None:
@@ -321,11 +338,16 @@ class VoltaneumApp:
 
         # Régulation par étapes : publier seulement quand il y a quelque chose à dire (PT02 se
         # réchauffe, effet vérifié, renforcement, fin), jamais à l'aveugle chaque minute.
+        # Tendance de PT02 MESURÉE (ml/features.watched_state, même calcul que l'affichage) : la pente
+        # de PT02 estimée suit les cycles du ventilateur et donnait deux fois plus de faux signaux sur
+        # les relevés réels. Les seuils (cible, critique) sont aussi comparés à la PT02 mesurée.
         now = time.time()
-        slope = slope_per_10min(
-            sqlite_client.recent_values(config.TARGET_COLUMN, now - config.REGULATION_TREND_WINDOW_SECONDS,
-                                        db_path=config.SQLITE_DB_PATH),
-            config.REGULATION_TREND_WINDOW_SECONDS)
+        window = config.REGULATION_TREND_WINDOW_SECONDS
+        since = now - window - ESTIMATE_WINDOW_SECONDS
+        target_points = sqlite_client.recent_values(config.TARGET_COLUMN, since, db_path=config.SQLITE_DB_PATH)
+        cold_points = sqlite_client.recent_values(config.DIELECTRIC_COLD_COLUMN, since, db_path=config.SQLITE_DB_PATH)
+        watched = watched_state(target_points, cold_points, now, last_known.get(config.DIELECTRIC_COLD_COLUMN), window)
+        slope = watched["slope"]
         decision, self._supervisor_state = decide(
             t_oil, slope, t_outdoor, setpoint, t_oil_predicted if self._prediction_used else None,
             now, self._supervisor_state)
@@ -335,10 +357,8 @@ class VoltaneumApp:
         if decision.event == "insuffisant" and self.alerts is not None:
             self.alerts.report("ATTENTION", "cooling_ineffective", decision.reason)
 
-        window_start = now - config.REGULATION_TREND_WINDOW_SECONDS
         load_delta = mean_load_delta(
-            sqlite_client.recent_values(config.DIELECTRIC_HOT_COLUMN, window_start, db_path=config.SQLITE_DB_PATH),
-            sqlite_client.recent_values(config.DIELECTRIC_COLD_COLUMN, window_start, db_path=config.SQLITE_DB_PATH))
+            [p for p in target_points if p[0] > now - window], [p for p in cold_points if p[0] > now - window])
         conditions = compute_cooling_conditions(t_oil, t_outdoor, load_delta)
         conditions_message = setpoint_message = None
         if event is not None and conditions is not None:

@@ -33,7 +33,11 @@ logger = logging.getLogger("voltaneum.alerts")
 SEND_RETRY_SECONDS = 60
 # Délai entre deux e-mails propre à certaines règles (minutes). Un défaut DURABLE (sonde surveillée
 # figée) n'a pas à être rappelé toutes les 30 min : une fois par jour.
-RULE_COOLDOWN_MINUTES: dict[str, int] = {"oil_sensor_frozen": 24 * 60}
+RULE_COOLDOWN_MINUTES: dict[str, int] = {
+    "oil_sensor_frozen": 24 * 60,
+    # Contrôles de l'installation (notifications/plant_checks.py) : situations durables.
+    "safety_bypass_active": 24 * 60, "automate_setpoint_mismatch": 24 * 60, "fan_short_cycling": 24 * 60,
+}
 
 
 def cooldown_seconds(rule_name: str) -> float:

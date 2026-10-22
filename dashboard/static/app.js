@@ -225,7 +225,9 @@
       trend.textContent = (tr > 0.05 ? '↗ ' : tr < -0.05 ? '↘ ' : '→ ') + signed(tr) + ' °C / 10 min';
       trend.className = 'trend num ' + (tr > 0.3 ? 'up' : tr < -0.3 ? 'down' : '');
     } else trend.textContent = '';
-    $('.hint', treg).textContent = vreg == null ? 'mesure absente' : 'cible ' + num(th.target_temp) + ' °C';
+    // PT02 est lue au degré près : son estimation au dixième (PT01 + échauffement moyen) est affichée à côté.
+    $('.hint', treg).textContent = vreg == null ? 'mesure absente' : 'cible ' + num(th.target_temp) + ' °C'
+      + (s.target_estimate != null ? ' · estimée ' + num(s.target_estimate, 2) + ' °C' : '');
 
     const tp = tile('pred');
     const pred = s.predictions && s.predictions.models[s.predictions.best_model];
@@ -456,7 +458,9 @@
     const models = Object.entries(p.models);
     const any = models[0][1];
     $('#ml-horizon').textContent = regName() + ' dans ' + fmtHorizon(any.horizon_seconds);
-    const now = s.values[REG];
+    // Le modèle prédit PT02 ESTIMÉE au dixième : l'écart « par rapport à maintenant » se calcule donc
+    // depuis PT02 estimée, pas depuis la mesure au degré près (qui donnerait un faux sens de variation).
+    const now = s.target_estimate ?? s.values[REG];
     const live = {};
     for (const r of (state.models && state.models.live) || []) if (r.horizon_seconds === any.horizon_seconds) live[r.model] = r;
     const box = $('#ml-models'); box.replaceChildren();
@@ -490,6 +494,7 @@
     label: 'Tendance de ' + regName(), unit: '°C', digits: 1, minSpan: 4, now: true, group: supGroup,
     series: [
       { key: REG, label: regName(), color: '--s1', width: 2, area: true, band: true, endpoint: true },
+      { key: 'estimate', label: regName() + ' estimée', color: '--s2', width: 1.4, dash: [3, 2] },
       { key: 'pred_hist', label: 'Prédit', color: '--pred', width: 1.4, dash: [2, 3] },
       { key: 'forecast', label: 'Prévision', color: '--pred', width: 2, dash: [6, 4], endpoint: true },
     ],
@@ -527,12 +532,14 @@
       const ph = best && d.predictions.models[best];
       const out = {
         [REG]: { t: d.t, v: d.series[REG] },
+        estimate: { t: d.t, v: d.target_estimate || [] },
         freq_pompe: { t: d.t, v: d.series.freq_pompe },
         pred_hist: ph ? { t: ph.t, v: ph.v } : { t: [], v: [] },
         forecast: { t: [], v: [] },
       };
       const p = s && !s.empty && s.predictions && s.predictions.models[s.predictions.best_model];
-      if (p && p.value != null && s.values[REG] != null) out.forecast = { t: [s.ts, p.target_ts], v: [s.values[REG], p.value] };
+      const from = s && !s.empty ? (s.target_estimate ?? s.values[REG]) : null;   // la prévision part de PT02 estimée
+      if (p && p.value != null && from != null) out.forecast = { t: [s.ts, p.target_ts], v: [from, p.value] };
       return out;
     },
     xRange() {
@@ -578,6 +585,7 @@
           d.t.push(s.ts);
           for (const k of Object.keys(d.series)) d.series[k].push(s.values[k] ?? null);
           d.target_min.push(s.values[REG] ?? null); d.target_max.push(s.values[REG] ?? null);
+          if (d.target_estimate) d.target_estimate.push(s.target_estimate ?? null);
           const ctl = d.control;
           if (ctl && s.control && (!ctl.t.length || s.control.ts > ctl.t[ctl.t.length - 1])) {
             ctl.t.push(s.control.ts); ctl.setpoint.push(s.control.setpoint); ctl.t_predicted.push(s.control.t_predicted);
@@ -587,6 +595,7 @@
             d.t.splice(0, cut);
             for (const k of Object.keys(d.series)) d.series[k].splice(0, cut);
             d.target_min.splice(0, cut); d.target_max.splice(0, cut);
+            if (d.target_estimate) d.target_estimate.splice(0, cut);
           }
         }
         this.render();
@@ -599,7 +608,7 @@
   const supRange = segmented($('#sup-range'), b => { supChart.minutes = +b.dataset.min; supChart.loadedAt = Date.now(); supChart.load(); });
   supChart.minutes = +supRange().dataset.min;
   legend('#legend-sup', [
-    ['--s1', regName() + ' mesurée', ''], ['--pred', 'Prévision du modèle', 'dash'], ['--pred', 'Prédictions passées, à leur échéance', 'dotted'],
+    ['--s1', regName() + ' mesurée', ''], ['--s2', regName() + ' estimée', 'dash'], ['--pred', 'Prévision du modèle', 'dash'], ['--pred', 'Prédictions passées, à leur échéance', 'dotted'],
     ['--ok', 'Seuils marche / arrêt ventilateur', 'dotted'], ['--crit', 'Seuil critique', ''], ['--s5', 'Fréquence pompe (Hz)', ''], ['--s2', 'Consigne PID (%)', ''], ['--s5', 'Fréquence en % de la plage', 'dash'],
   ]);
   function legend(sel, items) {
@@ -1083,11 +1092,12 @@
     label: 'Prédiction comparée à la mesure', unit: '°C', digits: 2, minSpan: 3,
     series: [
       { key: REG, label: regName() + ' mesurée', color: '--s1', width: 2 },
+      { key: 'estimate', label: regName() + ' estimée (ce que prédit le modèle)', color: '--s2', width: 1.4 },
       { key: 'random_forest', label: MODEL_LABELS.random_forest, color: MODEL_COLORS.random_forest, width: 1.4, dash: [5, 3] },
       { key: 'gradient_boosting', label: MODEL_LABELS.gradient_boosting, color: MODEL_COLORS.gradient_boosting, width: 1.4, dash: [2, 3] },
     ],
   });
-  legend('#legend-models', [['--s1', regName() + ' mesurée', ''], ['--pred', MODEL_LABELS.random_forest, 'dash'], ['--pred-2', MODEL_LABELS.gradient_boosting, 'dotted']]);
+  legend('#legend-models', [['--s1', regName() + ' mesurée', ''], ['--s2', regName() + ' estimée', ''], ['--pred', MODEL_LABELS.random_forest, 'dash'], ['--pred-2', MODEL_LABELS.gradient_boosting, 'dotted']]);
   let modelMinutes = 1440;
   segmented($('#model-range'), b => { modelMinutes = +b.dataset.min; loadModelChart(); });
   function setModelExports() {
@@ -1101,7 +1111,7 @@
     const box = $('#chart-models'); box.classList.add('loading');
     try {
       const d = await api('/api/series?minutes=' + modelMinutes + '&points=' + Math.max(300, Math.round(box.clientWidth)));
-      const series = { [REG]: { t: d.t, v: d.series[REG] } };
+      const series = { [REG]: { t: d.t, v: d.series[REG] }, estimate: { t: d.t, v: d.target_estimate || [] } };
       for (const [m, s] of Object.entries(d.predictions.models || {})) series[m] = { t: s.t, v: s.v };
       modelChart.o.emptyText = 'Aucune mesure ni prédiction sur cette période';
       modelChart.setData({ xMin: d.start, xMax: d.end, gapMs: d.gap_ms, series });
