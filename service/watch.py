@@ -115,19 +115,31 @@ def _ml_status(s: "_Style") -> list[str]:
     from ml import auto_retrain
 
     installed = auto_retrain.installed_model(config.MODEL_DIR)
-    parts = [f"modèle installé : prédiction à {auto_retrain.format_horizon(installed['horizon_seconds'])}"
-             if installed else "aucun modèle installé"]
+    history = auto_retrain.read_history(config.MODEL_DIR, limit=50)
+    if installed:
+        accepted = next((e for e in history if e.get("event") == "accepted"), None)
+        since = ("" if not accepted else
+                 " (accepté le " + datetime.fromisoformat(accepted["at"]).astimezone().strftime("%d/%m %H:%M") + ")")
+        best = installed.get("best_model")
+        rmse, base = (installed.get(best) or {}).get("rmse"), (installed.get("baseline_persistence") or {}).get("rmse")
+        gain = f", {100 * (1 - rmse / base):+.0f} % sur la persistance" if rmse and base else ""
+        parts = [f"modèle installé : prédiction à {auto_retrain.format_horizon(installed['horizon_seconds'])}"
+                 f"{gain}{since}"]
+    else:
+        parts = ["aucun modèle installé"]
     try:
         proposal = auto_retrain.pending_proposal(config.MODEL_DIR)
         parts.append(s.pred(f"NOUVEAU MODÈLE PROPOSÉ ({auto_retrain.format_horizon(proposal['proposed']['horizon_seconds'])})"
                             " -> ./voltaneum model"))
     except auto_retrain.ProposalError:
         pass
-    runs = [e for e in auto_retrain.read_history(config.MODEL_DIR, limit=50) if e.get("event") == "run"]
+    runs = [e for e in history if e.get("event") == "run"]
     if runs:
         last = runs[0]
         when = datetime.fromisoformat(last["started_at"]).astimezone().strftime("%d/%m %H:%M")
-        parts.append(f"dernier ré-entraînement {when} : {last.get('reason', '?')}")
+        # La raison est celle du moment du ré-entraînement (avant une éventuelle validation) : on la
+        # présente comme telle pour qu'elle ne contredise pas la ligne « modèle installé ».
+        parts.append(f"dernier ré-entraînement {when}, décision à ce moment-là : {last.get('reason', '?')}")
         refused = {c.get("reason") for c in last.get("candidates", []) if not c.get("eligible")}
         if len(refused) == 1:
             parts.append(f"cause : {refused.pop()}")
@@ -199,7 +211,7 @@ def render(db_path: str, minutes: int = 60, width: int = 100, color: bool = Fals
     row("Pompe et air", f"fréquence {_num(v['freq_pompe'], 1, 'Hz')}   débit HT01 {_num(v['ht01'], 2, 'm³/h')}   "
         f"air extérieur {_num(v['temp_outdoor'], 1, '°C')} ({source})")
     tp = th.get("thermal_power", {})
-    status = "confirmée" if tp.get("confirmed") else "ESTIMATION, fluide et sondes à confirmer"
+    status = "confirmée" if tp.get("confirmed") else "ESTIMATION, propriétés du fluide à confirmer"
     mean_power = snap.get("thermal_power_kw_10min")
     row("Puissance", f"{s.bold(_num(mean_power if mean_power is not None else v.get('thermal_power_kw'), 1, 'kW'))} "
         "dissipée (moy. 10 min)  "

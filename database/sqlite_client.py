@@ -69,7 +69,10 @@ CREATE TABLE IF NOT EXISTS predictions_log (
     model_name TEXT NOT NULL,
     predicted_value REAL NOT NULL,
     actual_value REAL,
-    error REAL
+    error REAL,
+    -- PT02 telle qu'envoyée par l'automate à l'échéance (au degré près). `actual_value` est la
+    -- valeur de référence de l'erreur : PT02 estimée si le modèle la prédit (ML_TARGET_ESTIMATE).
+    measured_value REAL
 );
 """
 
@@ -190,6 +193,9 @@ def init_db(db_path: str = SQLITE_DB_PATH) -> None:
         conn.execute(_CREATE_INDEX_SQL)
         conn.execute(_CREATE_PREDICTIONS_TABLE_SQL)
         conn.execute(_CREATE_PREDICTIONS_INDEX_SQL)
+        prediction_columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions_log)")}
+        if "measured_value" not in prediction_columns:   # migration des bases existantes, aucune perte
+            conn.execute("ALTER TABLE predictions_log ADD COLUMN measured_value REAL")
         conn.execute(_CREATE_ALERTS_TABLE_SQL)
         conn.execute(_CREATE_CONTROL_TABLE_SQL)
         control_columns = {row[1] for row in conn.execute("PRAGMA table_info(control_log)")}
@@ -299,24 +305,28 @@ _HEATING_BEFORE_SQL = (
 )
 
 
-def _actual_at(conn: sqlite3.Connection, target_ts: str) -> float | None:
-    """Valeur réelle à comparer à une prédiction échue : la PT02 mesurée, ou, avec
-    config.ML_TARGET_ESTIMATE, la PT02 ESTIMÉE (PT01 + échauffement moyen sur 10 min), c'est-à-dire
-    exactement la grandeur que le modèle a appris à prédire (ml/features.py). None si indisponible."""
+def _actual_at(conn: sqlite3.Connection, target_ts: str) -> tuple[float, float] | None:
+    """(référence, mesure) à l'échéance d'une prédiction, ou None si indisponible.
+
+    - mesure : la PT02 envoyée par l'automate, la plus proche de l'échéance (±15 s) ;
+    - référence : la grandeur que le modèle a appris à prédire, sur laquelle son erreur est jugée :
+      la PT02 ESTIMÉE (PT01 + échauffement moyen sur 10 min, ml/features.py) avec
+      config.ML_TARGET_ESTIMATE, sinon la mesure elle-même."""
     from ml.features import ESTIMATE_MIN_SAMPLES, ESTIMATE_WINDOW_SECONDS
 
     row = conn.execute(_MEASURE_AT_SQL, (target_ts, target_ts, target_ts)).fetchone()
     if row is None:
         return None
+    measured = float(row[0])
     if not config.ML_TARGET_ESTIMATE:
-        return float(row[0])
+        return measured, measured
     if row[1] is None:
         return None
     heating, count = conn.execute(
         _HEATING_BEFORE_SQL, (target_ts, f"-{ESTIMATE_WINDOW_SECONDS} seconds", target_ts)).fetchone()
     if heating is None or count < ESTIMATE_MIN_SAMPLES:
         return None
-    return float(row[1]) + float(heating)
+    return float(row[1]) + float(heating), measured
 
 
 def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
@@ -334,15 +344,15 @@ def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
 
         completed = 0
         for pred_id, target_ts, horizon_seconds, model_name, predicted_value in pending:
-            actual = _actual_at(conn, target_ts)
-            if actual is None:
+            found = _actual_at(conn, target_ts)
+            if found is None:
                 continue
 
-            actual_value = actual
+            actual_value, measured_value = found
             error = float(predicted_value - actual_value)
             conn.execute(
-                "UPDATE predictions_log SET actual_value = ?, error = ? WHERE id = ?",
-                (actual_value, error, pred_id),
+                "UPDATE predictions_log SET actual_value = ?, error = ?, measured_value = ? WHERE id = ?",
+                (actual_value, error, measured_value, pred_id),
             )
             completed += 1
 

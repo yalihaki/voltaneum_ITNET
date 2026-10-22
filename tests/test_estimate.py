@@ -102,3 +102,28 @@ def test_due_predictions_are_judged_on_the_estimate(tmp_path, monkeypatch):
         actual, error = conn.execute("SELECT actual_value, error FROM predictions_log").fetchone()
     assert actual == pytest.approx(34.0)                                 # 33,4 + 0,6
     assert error == pytest.approx(0.1)
+
+
+def test_due_predictions_keep_the_plc_value_and_the_report_shows_both(tmp_path, monkeypatch, capsys):
+    """« À 10:00 on prédit PT02 pour 10:15 : que valait-elle à 10:15 ? » — la PT02 de l'automate est
+    gardée à côté de la référence, et le rapport compare le modèle à la persistance."""
+    from ml.verification import prediction_report
+    monkeypatch.setattr(config, "ML_TARGET_ESTIMATE", True)
+    monkeypatch.setattr(config, "MODEL_DIR", str(tmp_path / "models"))
+    db = str(tmp_path / "v.db")
+    sqlite_client.init_db(db)
+    start = pd.Timestamp.now(tz="UTC").floor("min") - pd.Timedelta(minutes=40)
+    for i in range(160):                                                 # 40 min, PT01 qui monte doucement
+        ts = (start + pd.Timedelta(seconds=15 * i)).strftime("%Y-%m-%d %H:%M:%S")
+        sqlite_client.insert_reading(33.0 + 0.005 * i, 34.0 if i < 100 else 35.0, 33.0, 32.5, 10.4, 30.0, 12.0,
+                                     timestamp=ts, db_path=db)
+    made = (start + pd.Timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+    target = (start + pd.Timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    sqlite_client.log_prediction(made, target, 900, "gradient_boosting", 34.4, db_path=db)
+    assert sqlite_client.complete_due_predictions(pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S"),
+                                                  db_path=db) == 1
+    with sqlite_client.connect(db) as conn:
+        actual, measured = conn.execute("SELECT actual_value, measured_value FROM predictions_log").fetchone()
+    assert measured == 35.0 and actual == pytest.approx(34.62, abs=0.05)  # PT01 33,6 + échauffement moyen 1,02
+    report = prediction_report(db, hours=2)
+    assert "1 vérifiée(s)" in report and "35.0" in report and "persistance" in report

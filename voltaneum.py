@@ -258,6 +258,19 @@ def cmd_catalogue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_predictions(args: argparse.Namespace) -> int:
+    """Prédictions échues : prédit, PT02 de référence et PT02 de l'automate à l'échéance, erreur."""
+    from dashboard.data import DatabaseUnavailable
+    from ml.verification import prediction_report
+
+    try:
+        print(prediction_report(args.db, hours=args.hours, rows=args.rows, model=args.model))
+    except DatabaseUnavailable as exc:
+        print(f"Base indisponible : {exc}")
+        return 1
+    return 0
+
+
 def cmd_copie(args: argparse.Namespace) -> int:
     """Copie de la base à récupérer sur un autre poste (analyse, tests, ré-entraînement hors ligne).
 
@@ -428,6 +441,13 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--details", action="store_true", help="afficher comment Voltaneum utilise chaque point")
     cat.add_argument("--used", action="store_true", help="seulement les points utilisés")
     cat.set_defaults(func=cmd_catalogue)
+
+    preds = sub.add_parser("predictions", help="vérifier les prédictions : prédit / réel à l'échéance / erreur")
+    preds.add_argument("--db", default=config.SQLITE_DB_PATH)
+    preds.add_argument("--hours", type=float, default=24, help="période (heures, défaut 24)")
+    preds.add_argument("--rows", type=int, default=20, help="nombre de lignes affichées (défaut 20)")
+    preds.add_argument("--model", help="random_forest ou gradient_boosting (défaut : le modèle retenu)")
+    preds.set_defaults(func=cmd_predictions)
 
     copie = sub.add_parser("copie", help="copie cohérente de la base, à récupérer sur votre poste (scp)")
     copie.add_argument("--db", default=config.SQLITE_DB_PATH)

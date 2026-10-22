@@ -108,17 +108,21 @@ def alerts(db_path: str, start: float, end: float) -> Iterator[tuple]:
 
 def predictions(db_path: str, start: float, end: float) -> Iterator[tuple]:
     yield ("prédite le (UTC)", "prédite le (heure locale)", "échéance (UTC)", "échéance (heure locale)",
-           "horizon (s)", "modèle", "PT02 prédite (°C)", "PT02 mesurée à l'échéance (°C)", "erreur (°C)")
+           "horizon (s)", "modèle", "PT02 prédite (°C)", "PT02 de référence à l'échéance (°C, estimée si le modèle la prédit)",
+           "erreur (°C)", "PT02 envoyée par l'automate à l'échéance (°C)", "écart à la PT02 de l'automate (°C)")
     with data.connect_readonly(db_path) as conn:
         if not data._table_exists(conn, "predictions_log"):
             return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions_log)")}
+        measured = "measured_value" if "measured_value" in columns else "NULL"
         cursor = conn.execute(
-            "SELECT made_at, target_ts, horizon_seconds, model_name, predicted_value, actual_value, error "
-            "FROM predictions_log WHERE made_at >= ? AND made_at <= ? ORDER BY made_at, model_name",
+            "SELECT made_at, target_ts, horizon_seconds, model_name, predicted_value, actual_value, error, "  # nosec B608
+            f"{measured} FROM predictions_log WHERE made_at >= ? AND made_at <= ? ORDER BY made_at, model_name",
             (data._utc_text(start), data._utc_text(end)),
         )
-        for made, target, horizon, model, predicted, actual, error in cursor:
-            yield (made, _local(made), target, _local(target), horizon, model, predicted, actual, error)
+        for made, target, horizon, model, predicted, actual, error, plc in cursor:
+            gap = None if plc is None or predicted is None else round(predicted - plc, 4)
+            yield (made, _local(made), target, _local(target), horizon, model, predicted, actual, error, plc, gap)
 
 
 def retraining(db_path: str, start: float, end: float) -> Iterator[tuple]:

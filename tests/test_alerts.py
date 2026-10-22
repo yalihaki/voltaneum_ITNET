@@ -380,6 +380,16 @@ class TestOilSensor:
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES * 3):
             assert self._feed(state, 34.0, 10_000.0 + minute * 60, monkeypatch, pt01=33.2 + (minute % 3) * 0.1) == []
 
+    def test_fan_cycles_on_pt01_are_not_a_move(self, monkeypatch):
+        """Cas réel (19 fausses alertes du 12 au 22/10/2026) : PT02 au degré reste à 35,0 pendant des
+        heures pendant que PT01 oscille de ±0,5 °C toutes les 5 min (cycles du ventilateur), avec un
+        pic isolé de +2 °C. La moyenne sur 10 min de PT01 ne bouge pas : pas d'alerte."""
+        state = {"started_at": 0.0}
+        start = 10_000.0
+        for i in range(3 * 3600 // 15):
+            pt01 = 34.3 + (0.5 if (i % 20) < 2 else -0.1) + (2.0 if i == 300 else 0.0)
+            assert self._feed(state, 35.0, start + 15 * i, monkeypatch, pt01=pt01) == []
+
     def test_frozen_without_reference_falls_back_to_duration(self, monkeypatch):
         state = {"started_at": 0.0}
         for minute in range(config.SENSOR_FROZEN_ALERT_MINUTES):

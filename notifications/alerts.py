@@ -33,6 +33,9 @@ logger = logging.getLogger("voltaneum.alerts")
 SEND_RETRY_SECONDS = 60
 # Délai entre deux e-mails propre à certaines règles (minutes). Un défaut DURABLE (sonde surveillée
 # figée) n'a pas à être rappelé toutes les 30 min : une fois par jour.
+# Constante de temps (s) de la moyenne glissante de PT01 utilisée par la règle « PT02 figée ».
+FROZEN_REFERENCE_SMOOTHING_SECONDS = 600.0
+
 RULE_COOLDOWN_MINUTES: dict[str, int] = {
     "oil_sensor_frozen": 24 * 60,
     # Contrôles de l'installation (notifications/plant_checks.py) : situations durables.
@@ -295,6 +298,11 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
     # près : constante pendant une heure sur un procédé stable n'est PAS une panne. Elle n'est
     # jugée figée que si l'autre sonde du circuit (PT01) a bougé d'au moins
     # SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS pendant ce temps (sans PT01 : la durée seule fait foi).
+    # PT01 est jugée sur sa MOYENNE GLISSANTE (constante de temps FROZEN_REFERENCE_SMOOTHING_SECONDS,
+    # 10 min), pas sur ses valeurs brutes : les cycles du ventilateur la font osciller de 0,4 à 1 °C
+    # toutes les 5 min, et un pic isolé ajoute jusqu'à 2 °C. Sur les relevés réels du 12 au 22/10/2026,
+    # la règle sur PT01 brute s'est déclenchée 19 fois à tort ; sur la moyenne, aucune. Un vrai
+    # changement de l'armoire déplace la moyenne : une sonde réellement bloquée reste détectée.
     reference = next((c for c in config.DIELECTRIC_COLUMNS if c != config.TARGET_COLUMN), None)
     if telemetry is not None and _is_new_sample(state, "oil_sensor", telemetry):
         oil = _number(telemetry, config.TARGET_COLUMN)
@@ -306,7 +314,15 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
                 state["oil_last_value"] = oil
                 state["oil_unchanged_since"] = now
                 state["frozen_reference_range"] = None
-            ref_value = _number(telemetry, reference) if reference else None
+            raw_reference = _number(telemetry, reference) if reference else None
+            ref_value = None
+            if raw_reference is not None:
+                sample_ts = _number(telemetry, "ts") or now
+                ema, ema_ts = state.get("frozen_reference_ema"), state.get("frozen_reference_ema_ts")
+                weight = 1.0 if ema is None or ema_ts is None else \
+                    1.0 - math.exp(-max(0.0, sample_ts - ema_ts) / FROZEN_REFERENCE_SMOOTHING_SECONDS)
+                ref_value = raw_reference if ema is None else ema + weight * (raw_reference - ema)
+                state["frozen_reference_ema"], state["frozen_reference_ema_ts"] = ref_value, sample_ts
             if ref_value is not None:
                 low, high = state.get("frozen_reference_range") or (ref_value, ref_value)
                 state["frozen_reference_range"] = (min(low, ref_value), max(high, ref_value))
@@ -324,7 +340,8 @@ def evaluate_rules(telemetry: dict | None, prediction: dict | None, state: dict,
         neighbour_moved = ref_span is None or ref_span >= config.SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS
         if (frozen_after and missing_since is None and unchanged_since is not None
                 and now - unchanged_since >= frozen_after and neighbour_moved):
-            moved = "" if ref_span is None else f" alors que {str(reference).upper()} a varié de {ref_span:.1f} °C"
+            moved = ("" if ref_span is None else
+                     f" alors que {str(reference).upper()} (moyenne sur 10 min) a varié de {ref_span:.1f} °C")
             emit("ATTENTION", "oil_sensor_frozen",
                  f"{regulated} figée à {state['oil_last_value']:.1f} °C depuis {(now - unchanged_since) / 60:.0f} min{moved} : "
                  "valeur suspecte (mauvais point de passerelle, consigne lue à la place de la mesure, sonde "
