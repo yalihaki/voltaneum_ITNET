@@ -21,6 +21,11 @@ from dashboard import data
 from database import sqlite_client
 
 
+# Nombre minimal de prédictions vérifiées avant de comparer le modèle à la persistance (une par
+# minute : environ une demi-heure de fonctionnement).
+MIN_FOR_VERDICT = 30
+
+
 def _local(utc_text: str) -> str:
     moment = datetime.strptime(utc_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     return moment.astimezone().strftime("%d/%m %H:%M")
@@ -85,10 +90,18 @@ def prediction_report(db_path: str, hours: float = 24, rows: int = 20, model: st
     lines += ["", "Bilan sur la période :"]
     mean_model, mean_persist = _mean(model_err), _mean(persist_err)
     lines.append(f"  erreur moyenne du modèle (vs {reference}) : {mean_model:.2f} °C")
-    if mean_persist and mean_model is not None:
-        verdict = "le modèle fait MIEUX" if mean_model < mean_persist else "le modèle ne fait PAS mieux"
-        lines.append(f"  erreur moyenne de « rien ne change » (persistance) : {mean_persist:.2f} °C -> {verdict} "
-                     f"({100 * (1 - mean_model / mean_persist):+.0f} %)")
+    if mean_persist is not None and mean_model is not None:
+        line = f"  erreur moyenne de « rien ne change » (persistance) : {mean_persist:.2f} °C"
+        if len(persist_err) < MIN_FOR_VERDICT:
+            # Sur quelques prédictions, la température a pu ne pas bouger du tout : la persistance est
+            # alors « parfaite » et n'importe quel petit écart du modèle donne un pourcentage absurde
+            # (cas réel : −1093 % sur une seule prédiction). Pas de verdict avant MIN_FOR_VERDICT.
+            line += (f" -> pas encore de verdict : {len(persist_err)} prédiction(s) vérifiée(s), il en faut "
+                     f"{MIN_FOR_VERDICT} (environ {MIN_FOR_VERDICT} min de fonctionnement)")
+        elif mean_persist > 0:
+            verdict = "le modèle fait MIEUX" if mean_model < mean_persist else "le modèle ne fait PAS mieux"
+            line += f" -> {verdict} ({100 * (1 - mean_model / mean_persist):+.0f} %)"
+        lines.append(line)
     if plc_err:
         within = sum(e <= 0.5 for e in plc_err) / len(plc_err)
         lines.append(f"  écart moyen à la PT02 de l'automate : {_mean(plc_err):.2f} °C ; "

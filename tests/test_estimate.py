@@ -127,3 +127,5 @@ def test_due_predictions_keep_the_plc_value_and_the_report_shows_both(tmp_path, 
     assert measured == 35.0 and actual == pytest.approx(34.62, abs=0.05)  # PT01 33,6 + échauffement moyen 1,02
     report = prediction_report(db, hours=2)
     assert "1 vérifiée(s)" in report and "35.0" in report and "persistance" in report
+    assert "pas encore de verdict : 1 prédiction(s) vérifiée(s), il en faut 30" in report
+    assert "%" not in report.split("persistance")[-1].split("\n")[0]     # pas de pourcentage absurde
