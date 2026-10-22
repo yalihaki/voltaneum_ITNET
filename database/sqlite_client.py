@@ -283,13 +283,40 @@ def log_prediction(
         return int(row_id) if row_id is not None else 0
 
 
-# Mesure de la grandeur régulée la plus proche d'une échéance (nom de colonne venant de config).
+# Mesure de la grandeur surveillée (et de la sonde froide du diélectrique) la plus proche d'une
+# échéance (noms de colonnes venant de config, jamais de l'extérieur).
 _MEASURE_AT_SQL = (
-    f"SELECT {config.TARGET_COLUMN} FROM telemetry "  # nosec B608
+    f"SELECT {config.TARGET_COLUMN}, {config.DIELECTRIC_COLD_COLUMN} FROM telemetry "  # nosec B608
     "WHERE timestamp BETWEEN datetime(?, '-15 seconds') AND datetime(?, '+15 seconds') "
     f"AND {config.TARGET_COLUMN} IS NOT NULL "
     "ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC, timestamp ASC LIMIT 1"
 )
+# Échauffement moyen (PT02 − PT01) sur la fenêtre qui précède une échéance : sert à la PT02 estimée.
+_HEATING_BEFORE_SQL = (
+    f"SELECT AVG({config.TARGET_COLUMN} - {config.DIELECTRIC_COLD_COLUMN}), COUNT(*) FROM telemetry "  # nosec B608
+    "WHERE timestamp > datetime(?, ?) AND timestamp <= ? "      # ]échéance − 10 min, échéance]
+    f"AND {config.TARGET_COLUMN} IS NOT NULL AND {config.DIELECTRIC_COLD_COLUMN} IS NOT NULL"
+)
+
+
+def _actual_at(conn: sqlite3.Connection, target_ts: str) -> float | None:
+    """Valeur réelle à comparer à une prédiction échue : la PT02 mesurée, ou, avec
+    config.ML_TARGET_ESTIMATE, la PT02 ESTIMÉE (PT01 + échauffement moyen sur 10 min), c'est-à-dire
+    exactement la grandeur que le modèle a appris à prédire (ml/features.py). None si indisponible."""
+    from ml.features import ESTIMATE_MIN_SAMPLES, ESTIMATE_WINDOW_SECONDS
+
+    row = conn.execute(_MEASURE_AT_SQL, (target_ts, target_ts, target_ts)).fetchone()
+    if row is None:
+        return None
+    if not config.ML_TARGET_ESTIMATE:
+        return float(row[0])
+    if row[1] is None:
+        return None
+    heating, count = conn.execute(
+        _HEATING_BEFORE_SQL, (target_ts, f"-{ESTIMATE_WINDOW_SECONDS} seconds", target_ts)).fetchone()
+    if heating is None or count < ESTIMATE_MIN_SAMPLES:
+        return None
+    return float(row[1]) + float(heating)
 
 
 def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
@@ -307,14 +334,11 @@ def complete_due_predictions(now_ts: str, db_path: str = SQLITE_DB_PATH) -> int:
 
         completed = 0
         for pred_id, target_ts, horizon_seconds, model_name, predicted_value in pending:
-            row = conn.execute(
-                _MEASURE_AT_SQL,
-                (target_ts, target_ts, target_ts),
-            ).fetchone()
-            if row is None:
+            actual = _actual_at(conn, target_ts)
+            if actual is None:
                 continue
 
-            actual_value = float(row[0])
+            actual_value = actual
             error = float(predicted_value - actual_value)
             conn.execute(
                 "UPDATE predictions_log SET actual_value = ?, error = ? WHERE id = ?",

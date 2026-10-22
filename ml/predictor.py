@@ -41,7 +41,8 @@ OUT_OF_DOMAIN_RATIO = 0.02
 def compatible_features(report: dict) -> bool:
     """Vrai si le modèle utilise un sous-ensemble NON VIDE de ml.features.MODEL_FEATURES, dans le
     même ordre, si toute variable écartée en fait aussi partie, et s'il déclare sa cible (écart ou
-    valeur) sur la grandeur surveillée actuelle (un ancien modèle, ou sur une autre sonde, est refusé)."""
+    valeur) sur la grandeur surveillée actuelle, avec le même choix PT02 estimée / brute que
+    config.ML_TARGET_ESTIMATE (un ancien modèle, ou sur une autre sonde, est refusé)."""
     features = report.get("features")
     constants = report.get("constant_features") or {}
     if not isinstance(features, list) or not features or not isinstance(constants, dict):
@@ -49,7 +50,8 @@ def compatible_features(report: dict) -> bool:
     return (features == [c for c in MODEL_FEATURES if c in features]
             and set(constants) <= set(MODEL_FEATURES)
             and report.get("target") in TARGET_MODES
-            and report.get("target_column") == config.TARGET_COLUMN)
+            and report.get("target_column") == config.TARGET_COLUMN
+            and bool(report.get("target_estimated", False)) == config.ML_TARGET_ESTIMATE)
 
 
 class DualModelPredictor:
@@ -102,6 +104,9 @@ class DualModelPredictor:
         self.features: list[str] = list(self.training_report["features"])
         self.constant_features: dict[str, float] = dict(self.training_report.get("constant_features") or {})
         self.target_mode: str = self.training_report["target"]
+        # Le modèle prédit PT02 ESTIMÉE au dixième : l'entrée « PT02 » qu'il reçoit doit l'être aussi
+        # (calculée par la boucle de contrôle, ml/features.estimate_from_history).
+        self.target_estimated: bool = bool(self.training_report.get("target_estimated", False))
 
         self.random_forest = joblib.load(rf_path)
         self.gradient_boosting = joblib.load(gb_path)

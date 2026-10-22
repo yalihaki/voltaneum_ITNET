@@ -58,13 +58,14 @@ def summarize(df: pd.DataFrame) -> str:
     df, _ = drop_spikes(raw)
     if "thermal_power_kw" in df:
         df["thermal_power_kw"] = power_mean(raw)
+    width = max(38, *(len(label) for label, _ in MEASURES.values()))     # noms réglables dans .env
     lines = [
         f"Résumé par mesure — du {df['timestamp'].min()} au {df['timestamp'].max()} (UTC), "
         f"{len(df)} ligne(s)",
         "",
-        f"{'Mesure':<38} {'Minimum':>12}  {'le':<19}  {'Maximum':>12}  {'le':<19}  "
+        f"{'Mesure':<{width}} {'Minimum':>12}  {'le':<19}  {'Maximum':>12}  {'le':<19}  "
         f"{'Moyenne':>12}  {'Valeurs':>7}",
-        "-" * 130,
+        "-" * (width + 92),
     ]
     for column, (label, unit) in MEASURES.items():
         if column not in df:
@@ -72,12 +73,12 @@ def summarize(df: pd.DataFrame) -> str:
         values = pd.to_numeric(df[column], errors="coerce")
         valid = values.dropna()
         if valid.empty:
-            lines.append(f"{label:<38} {'aucune valeur':>12}")
+            lines.append(f"{label:<{width}} {'aucune valeur':>12}")
             continue
         min_at = df.loc[valid.idxmin(), "timestamp"]
         max_at = df.loc[valid.idxmax(), "timestamp"]
         line = (
-            f"{label:<38} {valid.min():>7.1f} {unit:<4}  {min_at:<19}  "
+            f"{label:<{width}} {valid.min():>7.1f} {unit:<4}  {min_at:<19}  "
             f"{valid.max():>7.1f} {unit:<4}  {max_at:<19}  "
             f"{valid.mean():>7.1f} {unit:<4}  {len(valid):>7}"
         )
@@ -102,8 +103,8 @@ def summarize(df: pd.DataFrame) -> str:
 def spike_report(df: pd.DataFrame, shown: int = 5) -> list[str]:
     """Pics isolés par sonde, avec leurs premières dates (à transmettre à l'automaticien : ce sont des
     erreurs de lecture de la sonde, du module d'entrée ou de la transmission)."""
-    lines = ["", f"Qualité des mesures (pic isolé : écart > {config.SPIKE_THRESHOLD_CELSIUS:g} °C avec les deux "
-                 "mesures voisines, puis retour) :"]
+    lines = ["", f"Qualité des mesures (pic isolé : écart de plus de {config.SPIKE_THRESHOLD_CELSIUS:g} °C avec la "
+                 "moyenne des deux mesures voisines, qui sont d'accord entre elles) :"]
     found = False
     for column in SPIKE_COLUMNS:
         if column not in df:

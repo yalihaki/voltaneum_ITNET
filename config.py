@@ -209,6 +209,18 @@ FEATURE_COLUMNS: list[str] = ["pt02", "pt01", "pt03", "pt04", "ht01", "freq_pomp
 # Grandeur SURVEILLÉE et PRÉDITE : PT02, l'état du diélectrique dans l'armoire. Elle est comparée à
 # TARGET_TEMP par la régulation par étapes, et protégée par CRITICAL_TEMP.
 TARGET_COLUMN: str = "pt02"
+# PT02 ESTIMÉE au dixième de degré pour le ML (ml/features.py) : PT02 est lue au degré près, ce qui
+# cache ses variations réelles ; l'estimation vaut PT01 (lue au dixième) + l'échauffement moyen sur
+# 10 min (PT02 − PT01), qui suit lentement la charge. Sur les relevés réels du 12 au 22/10/2026, seul
+# ce choix permet à un modèle de battre nettement la persistance (+25 % à 10 min contre −38 % avec
+# la PT02 brute). Les alertes et la sécurité restent sur la vraie PT02. false = PT02 brute.
+ML_TARGET_ESTIMATE: bool = _env_bool("ML_TARGET_ESTIMATE", True)
+# Entrées écartées des modèles (séparées par des virgules). Par défaut la température extérieure :
+# sur quelques semaines de données, elle sert surtout d'horloge (jour / nuit) et fait apprendre par
+# cœur la période passée (relevés réels : +25 % sans elle, +12 % avec à 10 min). À remettre
+# (ML_EXCLUDED_FEATURES=) quand plusieurs mois de données couvriront des météos variées.
+ML_EXCLUDED_FEATURES: tuple[str, ...] = tuple(
+    f.strip().lower() for f in _env_str("ML_EXCLUDED_FEATURES", "temp_outdoor").split(",") if f.strip())
 # Horizons dont l'erreur en production est suivie ; 600 s = horizon par défaut d'un entraînement.
 PREDICTION_HORIZONS_SECONDS: list[int] = [30, 60, 120, 300, 600]
 # Tolérance du rapprochement d'horodatage entre une mesure et sa valeur future (secondes).
@@ -397,11 +409,11 @@ SENSOR_FROZEN_ALERT_MINUTES: int = _env_int("SENSOR_FROZEN_ALERT_MINUTES", 60)
 # écart (°C). PT02 est lue au degré près : sur un procédé stable, elle peut rester à 34,0 °C
 # pendant des heures sans être en panne. Sans PT01, la durée seule fait foi.
 SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS: float = _env_float("SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS", 1.0)
-# Pics isolés (database/quality.py) : une mesure de température qui s'écarte de plus de ce seuil (°C)
-# de ses DEUX voisines, puis revient, est une erreur de lecture. Elle reste en base mais est écartée
-# de l'apprentissage, des tendances et des statistiques. Au-dessus de la marche de 1 °C de PT02 (lue
-# au degré près) et des pics observés (2,1 et 2,3 °C) en dessous.
-SPIKE_THRESHOLD_CELSIUS: float = _env_float("SPIKE_THRESHOLD_CELSIUS", 1.5)
+# Pics isolés (database/quality.py) : une mesure de température qui s'écarte de PLUS de ce seuil (°C)
+# de la moyenne de ses deux voisines, alors que celles-ci sont d'accord, est une erreur de lecture.
+# Elle reste en base mais est écartée de l'apprentissage, des tendances et des statistiques. 1,0 °C :
+# les marches de 1 °C de PT02 (lue au degré près) passent, les pics réels (1,1 à 2,3 °C) sont pris.
+SPIKE_THRESHOLD_CELSIUS: float = _env_float("SPIKE_THRESHOLD_CELSIUS", 1.0)
 
 # ---------------------------------------------------------------------------
 # Protection automatique du stockage (purge pilotée par la TAILLE de la base)
@@ -596,6 +608,9 @@ def validate_config() -> None:
              "REGULATION_EFFECT_WAIT_SECONDS doit couvrir au moins un cycle de contrôle.")
     _require(SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS > 0, "SENSOR_FROZEN_REFERENCE_SPAN_CELSIUS doit être positif.")
     _require(SPIKE_THRESHOLD_CELSIUS > 0, "SPIKE_THRESHOLD_CELSIUS doit être positif.")
+    _require(set(ML_EXCLUDED_FEATURES) <= set(FEATURE_COLUMNS) - {TARGET_COLUMN},
+             f"ML_EXCLUDED_FEATURES : seulement parmi {[c for c in FEATURE_COLUMNS if c != TARGET_COLUMN]} "
+             f"(la grandeur surveillée {TARGET_COLUMN} ne peut pas être écartée).")
     _require(CRITICAL_CONFIRMATION_SAMPLES >= 1, "CRITICAL_CONFIRMATION_SAMPLES doit valoir au moins 1.")
     _require(THERMAL_FLUID_DENSITY_KG_M3 > 0 and THERMAL_FLUID_HEAT_CAPACITY_J_KG_K > 0,
              "THERMAL_FLUID_DENSITY_KG_M3 et THERMAL_FLUID_HEAT_CAPACITY_J_KG_K doivent être positifs.")

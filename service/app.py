@@ -50,7 +50,8 @@ from database.storage_manager import StorageManager
 from messaging.mqtt import connect_with_retry, create_client
 from dashboard.server import DashboardServer, is_loopback, make_server
 from ml.monitor import run_monitor_loop
-from ml.features import TREND_COLUMNS, TREND_FEATURES, TREND_WINDOWS_SECONDS, trend_features_at
+from ml.features import (ESTIMATE_WINDOW_SECONDS, TREND_COLUMNS, TREND_FEATURES, TREND_WINDOWS_SECONDS,
+                         estimate_from_history, trend_features_at)
 from ml.predictor import DualModelPredictor
 from notifications.alerts import AlertEngine
 
@@ -505,13 +506,26 @@ class VoltaneumApp:
         if self._predictor is None:
             return t_oil_current
         columns = getattr(self._predictor, "required_columns", config.FEATURE_COLUMNS)
+        estimated = bool(getattr(self._predictor, "target_estimated", False))
         inputs = dict(last_known)
-        if any(c in TREND_FEATURES for c in columns):
-            # Tendances : même calcul qu'à l'entraînement, sur les dernières mesures en base.
+        if estimated or any(c in TREND_FEATURES for c in columns):
+            # Dernières mesures en base (pics isolés retirés) : de quoi calculer PT02 estimée sur
+            # 10 min ET ses tendances sur 10 min, soit 20 min d'historique.
             now = time.time()
-            since = now - max(TREND_WINDOWS_SECONDS) - 60
+            since = now - max(TREND_WINDOWS_SECONDS) - ESTIMATE_WINDOW_SECONDS - 60
             history = {c: sqlite_client.recent_values(c, since, db_path=config.SQLITE_DB_PATH) for c in TREND_COLUMNS}
-            inputs.update(trend_features_at(history, now, last_known))
+            if estimated:
+                # Le modèle a appris sur PT02 ESTIMÉE au dixième (ml/features.py) : il doit la recevoir
+                # aussi, calculée de la même façon, ainsi que ses tendances. Sans 10 min d'historique
+                # (redémarrage, trou de collecte), pas de prédiction : le PID travaille sur la mesure.
+                target, cold = config.TARGET_COLUMN, config.DIELECTRIC_COLD_COLUMN
+                estimate, history[target] = estimate_from_history(
+                    history.get(target, []), history.get(cold, []), now, last_known.get(cold))
+                if estimate is None:
+                    logger.debug("PT02 estimée indisponible (historique trop court) : prédiction ML ignorée.")
+                    return t_oil_current
+                inputs[target] = estimate
+            inputs.update(trend_features_at(history, now, inputs))
         if any(inputs.get(column) is None for column in columns):
             logger.debug("Variables d'entrée incomplètes : prédiction ML ignorée pour ce cycle.")
             return t_oil_current

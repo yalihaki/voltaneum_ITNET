@@ -160,7 +160,16 @@ pas »), sous 0,5 °C, et mesurée sur une période de test d'au moins 3 fois l'
 Les modèles reçoivent les mesures actuelles et leurs **tendances** (PT01, PT02, PT04 : valeur
 maintenant − il y a 5 et 10 min, où se voient les marches et arrêts du ventilateur, non mesuré).
 Chaque entraînement essaie deux cibles, l'**écart à venir** (valeur future − actuelle) et la valeur
-future, et garde la meilleure sur une période de validation distincte du test. Un modèle qui ne
+future, et garde la meilleure sur une période de validation distincte du test.
+
+**PT02 estimée** (`ML_TARGET_ESTIMATE=true`, défaut) : PT02 étant lue au degré près, les modèles
+prédisent `PT01 + moyenne sur 10 min de (PT02 − PT01)`, un signal au dixième qui respecte le bilan
+de l'armoire ; le même calcul sert à l'entraînement, en service et pour juger les prédictions
+échues. La **température extérieure est écartée** des entrées par défaut
+(`ML_EXCLUDED_FEATURES=temp_outdoor`) : sur quelques semaines, elle ne sert que d'horloge et fait
+apprendre par cœur. Sur les relevés réels du 12 au 22/10/2026 : +25 % sur la persistance à 10 min
+(0,18 °C d'erreur), contre −38 % avec la PT02 brute et la température extérieure. Les alertes et la
+sécurité restent sur la vraie PT02. Un modèle qui ne
 bat pas la persistance n'est jamais sauvegardé ; un seul ré-entraînement tourne à la fois. Changer d'horizon change
 l'anticipation du PID (pensée pour 10 min) : la proposition le signale. Au-delà de quelques
 heures, le modèle ne connaît ni la charge à venir ni la météo prévue.

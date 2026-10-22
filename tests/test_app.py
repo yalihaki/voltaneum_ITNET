@@ -691,6 +691,29 @@ class TestPredictions:
         assert features["pt01_d5min"] == pytest.approx(0.0, abs=0.1)
         assert features["pt04_d10min"] == pytest.approx(-1.0, abs=0.1)
 
+    def test_estimated_model_receives_the_estimated_pt02(self, app, monkeypatch):
+        """Modèle appris sur PT02 ESTIMÉE : il reçoit PT01 actuelle + échauffement moyen sur 10 min
+        (lu en base), pas la PT02 brute au degré près ; sans historique, pas de prédiction."""
+        self._install_models(app)
+        received = []
+        monkeypatch.setattr(FakePredictor, "target_estimated", True, raising=False)
+        monkeypatch.setattr(FakePredictor, "required_columns", list(config.FEATURE_COLUMNS), raising=False)
+        original = FakePredictor.predict
+        monkeypatch.setattr(FakePredictor, "predict", lambda self, f: received.append(f) or original(self, f))
+        app.start()
+        feed_measurements(app, t_oil=35.0)                       # PT01 actuelle = 25,0 (feed_measurements)
+        FakeOutdoorSensor.value = 15.0
+        app._control_tick(60.0)
+        assert received == []                                    # base vide : pas d'estimation possible
+        now = time.time()
+        for ago in range(0, 1201, 15):
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now - ago))
+            sqlite_client.insert_reading(33.4, 34.0, 33.0, 32.5, 10.4, 30.0, 15.0, timestamp=ts,
+                                         db_path=config.SQLITE_DB_PATH)
+        app._control_tick(60.0)
+        (features,) = received
+        assert features["pt02"] == pytest.approx(25.0 + 0.6)     # PT01 actuelle + (34,0 − 33,4)
+
     def test_disagreeing_models_are_not_used_by_the_pid(self, app, monkeypatch):
         """Deux modèles en désaccord : la prédiction n'est pas fiable, l'anticipation du PID est
         neutralisée (le PID travaille sur la mesure) et rien n'est noté comme « prédiction utilisée »."""

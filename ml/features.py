@@ -29,13 +29,71 @@ def trend_name(column: str, window_seconds: int) -> str:
 
 
 TREND_FEATURES: list[str] = [trend_name(c, w) for c in TREND_COLUMNS for w in TREND_WINDOWS_SECONDS]
-# Entrées complètes des modèles : mesures actuelles puis tendances (ordre fixe, enregistré).
-MODEL_FEATURES: list[str] = list(config.FEATURE_COLUMNS) + TREND_FEATURES
+# Entrées complètes des modèles : mesures actuelles puis tendances (ordre fixe, enregistré), moins
+# celles écartées par config.ML_EXCLUDED_FEATURES (la température extérieure par défaut).
+def model_features(excluded: tuple[str, ...] = config.ML_EXCLUDED_FEATURES) -> list[str]:
+    return [f for f in list(config.FEATURE_COLUMNS) + TREND_FEATURES if f not in excluded]
+
+
+MODEL_FEATURES: list[str] = model_features()
+
+# PT02 ESTIMÉE (config.ML_TARGET_ESTIMATE) : PT01 + moyenne glissante de (PT02 − PT01) sur cette
+# fenêtre, calculée seulement si elle contient au moins ESTIMATE_MIN_SAMPLES mesures.
+ESTIMATE_WINDOW_SECONDS: int = 600
+ESTIMATE_MIN_SAMPLES: int = 20
 # Ce que les modèles prédisent, choisi à chaque entraînement (ml/train.py) :
 #   - "delta"    : l'ÉCART entre la valeur future et la valeur actuelle de la grandeur surveillée
 #                  (prédiction = valeur actuelle + écart prédit) ;
 #   - "absolute" : la valeur future elle-même.
 TARGET_MODES: tuple[str, ...] = ("delta", "absolute")
+
+
+def with_estimated_target(df: pd.DataFrame) -> pd.DataFrame:
+    """Copie de `df` (trié par `timestamp`) où la grandeur surveillée (PT02) est remplacée par son
+    ESTIMATION au dixième de degré :
+
+        PT02 estimée(t) = PT01(t) + moyenne de (PT02 − PT01) sur [t − 10 min, t]
+
+    Pourquoi : PT02 est lue au degré près ; ses variations réelles de quelques dixièmes sont
+    invisibles, et un modèle ne peut pas les prévoir. PT01 (sortie de la CDU) est lue au dixième et
+    réagit en 30 s au ventilateur ; l'échauffement apporté par les équipements (PT02 − PT01) varie
+    lentement avec la charge, et sa moyenne sur 10 min lisse la lecture au degré. La somme donne un
+    signal au dixième qui respecte le bilan de l'armoire (PT02 = PT01 + échauffement). Limite : un
+    changement brusque de charge n'apparaît dans l'échauffement moyen qu'avec ~10 min de retard.
+
+    Le même calcul sert à l'entraînement, à l'évaluation du modèle installé et en service
+    (`estimate_from_history`) : jamais deux définitions différentes. Moins de ESTIMATE_MIN_SAMPLES
+    mesures dans la fenêtre (début de série, après un trou) : valeur absente, ligne écartée."""
+    target, cold = config.TARGET_COLUMN, config.DIELECTRIC_COLD_COLUMN
+    out = df.copy()
+    times = pd.to_datetime(out["timestamp"])
+    heating = pd.Series((pd.to_numeric(out[target], errors="coerce")
+                         - pd.to_numeric(out[cold], errors="coerce")).to_numpy(), index=times)
+    mean = heating.rolling(f"{ESTIMATE_WINDOW_SECONDS}s", min_periods=ESTIMATE_MIN_SAMPLES).mean()
+    out[target] = pd.to_numeric(out[cold], errors="coerce").to_numpy() + mean.to_numpy()
+    return out
+
+
+def estimate_from_history(target_points: list[tuple[float, float]], cold_points: list[tuple[float, float]],
+                          now: float, cold_now: float | None) -> tuple[float | None, list[tuple[float, float]]]:
+    """En service : PT02 estimée MAINTENANT et son historique récent, à partir des dernières mesures
+    en base ([(instant epoch, valeur)] de PT02 et de PT01) et de la valeur actuelle de PT01. Même
+    définition que `with_estimated_target`. (None, []) si l'historique est trop court."""
+    if cold_now is None or not target_points or not cold_points:
+        return None, []
+    rows = pd.DataFrame(target_points, columns=["t", config.TARGET_COLUMN]).merge(
+        pd.DataFrame(cold_points, columns=["t", config.DIELECTRIC_COLD_COLUMN]), on="t").sort_values("t")
+    if rows.empty:
+        return None, []
+    rows["timestamp"] = pd.to_datetime(rows["t"], unit="s")
+    estimated = with_estimated_target(rows)
+    history = [(float(t), float(v)) for t, v in zip(estimated["t"], estimated[config.TARGET_COLUMN])
+               if pd.notna(v)]
+    recent = rows[rows["t"] > now - ESTIMATE_WINDOW_SECONDS]      # ]now − 10 min, now], comme rolling()
+    if len(recent) < ESTIMATE_MIN_SAMPLES:
+        return None, history
+    heating = (recent[config.TARGET_COLUMN] - recent[config.DIELECTRIC_COLD_COLUMN]).mean()
+    return float(cold_now) + float(heating), history
 
 
 def add_trend_features(df: pd.DataFrame) -> pd.DataFrame:

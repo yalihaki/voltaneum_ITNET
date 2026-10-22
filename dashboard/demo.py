@@ -256,6 +256,7 @@ def _write_demo_training_report(history: list[tuple[float, float]], horizon: int
         "status": "ok", "best_model": "gradient_boosting", "beats_persistence": True,
         "trained_at": int(time.time()), "n_samples": len(history), "horizon_seconds": horizon,
         "features": list(MODEL_FEATURES), "target": "delta", "target_column": config.TARGET_COLUMN,
+        "target_estimated": config.ML_TARGET_ESTIMATE, "excluded_features": list(config.ML_EXCLUDED_FEATURES),
         "random_forest": {"rmse": 0.35, "mae": 0.28},
         "gradient_boosting": {"rmse": 0.28, "mae": 0.22},
         "baseline_persistence": {"rmse": round(max(persistence, 0.45), 3), "mae": round(max(persistence, 0.45) * 0.8, 3)},

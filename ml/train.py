@@ -39,7 +39,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import config
 from database import sqlite_client
 from database.quality import drop_spikes
-from ml.features import MODEL_FEATURES, TARGET_MODES, add_trend_features
+from ml.features import MODEL_FEATURES, TARGET_MODES, add_trend_features, with_estimated_target
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +163,18 @@ def prepare_frame(df: pd.DataFrame, horizon_seconds: int) -> pd.DataFrame:
     Les pics isolés (database/quality.py : une mesure aberrante qui revient aussitôt) sont d'abord
     remplacés par des valeurs absentes : sinon le modèle apprendrait qu'une température peut sauter
     de 2 °C en 15 s, et un pic pris comme cible ou comme point de tendance fausserait l'erreur
-    mesurée. Les lignes concernées sont simplement écartées (une sur plusieurs milliers)."""
+    mesurée. Les lignes concernées sont simplement écartées (une sur plusieurs milliers).
+
+    Avec config.ML_TARGET_ESTIMATE, la grandeur surveillée est ensuite remplacée par son estimation
+    au dixième (PT01 + échauffement moyen sur 10 min, ml/features.py)."""
     df, spikes = drop_spikes(df.sort_values("timestamp").reset_index(drop=True))
     if any(spikes.values()):
         logger.info("Pics isolés écartés de l'apprentissage : %s",
                     ", ".join(f"{c.upper()} {n}" for c, n in spikes.items() if n))
+    if config.ML_TARGET_ESTIMATE:
+        # PT02 estimée au dixième (ml/features.py) : la cible ET l'entrée « PT02 » des modèles,
+        # comme en service ; la persistance de référence est jugée sur la même grandeur.
+        df = with_estimated_target(df)
     merged = add_trend_features(build_target(df, horizon_seconds=horizon_seconds))
     return merged.dropna(subset=MODEL_FEATURES + ["target_future"])
 
@@ -389,6 +396,9 @@ def train_and_compare(
         # Ce que prédisent les modèles : "delta" (écart à la valeur actuelle) ou "absolute",
         # choisi sur la période de validation (erreurs de validation de chaque façon).
         "target": target_mode,
+        # Cible prédite : PT02 estimée au dixième (True) ou PT02 brute ; entrées écartées par réglage.
+        "target_estimated": config.ML_TARGET_ESTIMATE,
+        "excluded_features": list(config.ML_EXCLUDED_FEATURES),
         "validation_rmse": validation_rmse,
         # Part de chaque entrée dans les décisions du meilleur modèle (somme = 1), de la plus forte
         # à la plus faible : montre ce qui fait réellement bouger la prédiction.

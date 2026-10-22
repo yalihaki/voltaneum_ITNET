@@ -22,6 +22,10 @@ TEST_ENV = {
     "ALERT_EMAIL_TO": "",
     "SMTP_PORT": "587",
     "VOLTANEUM_LAT": "49.0364",
+    # ML : les tests historiques travaillent sur la PT02 brute et toutes les entrées ; le mode
+    # « PT02 estimée » et l'exclusion d'entrées ont leurs propres tests (tests/test_estimate.py).
+    "ML_TARGET_ESTIMATE": "false",
+    "ML_EXCLUDED_FEATURES": "",
     "VOLTANEUM_LON": "2.0761",
 }
 for _name, _value in TEST_ENV.items():
